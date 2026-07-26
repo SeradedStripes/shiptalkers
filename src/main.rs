@@ -47,7 +47,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     tracing::info!("Starting web server on {}", addr);
     let listener = TcpListener::bind(&addr).await?;
-    axum::serve(listener, website::router(database)).await?;
+    axum::serve(listener, website::router(database.clickhouse)).await?;
 
     Ok(())
 }

@@ -3,10 +3,16 @@ use axum::{
     routing::get,
     Json,
     response::Html,
+    extract::State,
 };
+use clickhouse::Client;
 use serde::Serialize;
 use tower_http::services::ServeDir;
-use crate::db::Database;
+
+#[derive(Clone)]
+pub struct AppState {
+    pub clickhouse: Client,
+}
 
 #[derive(Serialize)]
 pub struct Stats {
@@ -24,7 +30,9 @@ pub struct UserStats {
     pub coding_minutes: u64,
 }
 
-pub fn router(db: Database) -> Router {
+pub fn router(clickhouse: Client) -> Router {
+    let state = AppState { clickhouse };
+
     let api_routes = Router::new()
         .route("/stats", get(get_stats));
 
@@ -34,15 +42,68 @@ pub fn router(db: Database) -> Router {
         .route("/stats", get(|| async { Html(include_str!("static/stats.html")) }))
         .nest("/api", api_routes)
         .fallback_service(ServeDir::new("static"))
+        .with_state(state)
 }
 
-async fn get_stats() -> Json<Stats> {
-    // TODO: Query ClickHouse for real data
+async fn get_stats(State(state): State<AppState>) -> Json<Stats> {
+    let ch = &state.clickhouse;
+
+    let total_messages: u64 = ch
+        .query("SELECT count() FROM slack_messages")
+        .fetch_one()
+        .await
+        .unwrap_or(0);
+
+    let active_users: u64 = ch
+        .query("SELECT uniqExact(user_id) FROM slack_messages")
+        .fetch_one()
+        .await
+        .unwrap_or(0);
+
+    let channels: u64 = ch
+        .query("SELECT uniqExact(channel_id) FROM slack_messages")
+        .fetch_one()
+        .await
+        .unwrap_or(0);
+
+    let coding_minutes: u64 = ch
+        .query("SELECT sum(minutes) FROM coding_activity")
+        .fetch_one()
+        .await
+        .unwrap_or(0);
+
+    #[derive(clickhouse::Row, serde::Deserialize)]
+    struct LeaderboardRow {
+        user_id: String,
+        messages: u64,
+    }
+
+    let leaderboard: Vec<UserStats> = ch
+        .query(
+            "SELECT user_id, count() as messages
+             FROM slack_messages
+             GROUP BY user_id
+             ORDER BY messages DESC
+             LIMIT 20"
+        )
+        .fetch_all::<LeaderboardRow>()
+        .await
+        .map(|rows| {
+            rows.into_iter()
+                .map(|r| UserStats {
+                    user_id: r.user_id,
+                    messages: r.messages,
+                    coding_minutes: 0,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
     Json(Stats {
-        total_messages: 0,
-        active_users: 0,
-        channels: 0,
-        coding_minutes: 0,
-        leaderboard: vec![],
+        total_messages,
+        active_users,
+        channels,
+        coding_minutes,
+        leaderboard,
     })
 }
