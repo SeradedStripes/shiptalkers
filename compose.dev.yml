@@ -7,12 +7,21 @@ services:
       - .:/app
       - cargo-cache:/usr/local/cargo/registry
     env_file: .env
+    environment:
+      - CLICKHOUSE_DB=ship_talkers
+      - CLICKHOUSE_USER=ship_talkers
+      - CLICKHOUSE_PASSWORD=ship_talkers
+      - CLICKHOUSE_URL=http://clickhouse:8123
     depends_on:
       clickhouse:
         condition: service_healthy
 
   clickhouse:
     image: clickhouse/clickhouse-server:latest
+    environment:
+      - CLICKHOUSE_DB=ship_talkers
+      - CLICKHOUSE_USER=ship_talkers
+      - CLICKHOUSE_PASSWORD=ship_talkers
     ports:
       - "8123:8123"
       - "9000:9000"

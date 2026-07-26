@@ -10,10 +10,19 @@ pub struct Database {
 }
 
 impl Database {
-    pub fn new(sqlite_path: &str, clickhouse_url: &str) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn new(
+        sqlite_path: &str,
+        clickhouse_url: &str,
+        clickhouse_user: &str,
+        clickhouse_password: &str,
+        clickhouse_db: &str,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         let sqlite = Connection::open(sqlite_path)?;
         let clickhouse = Client::default()
-            .with_url(clickhouse_url);
+            .with_url(clickhouse_url)
+            .with_user(clickhouse_user)
+            .with_password(clickhouse_password)
+            .with_database(clickhouse_db);
 
         Ok(Self { sqlite, clickhouse })
     }

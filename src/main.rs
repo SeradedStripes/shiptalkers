@@ -19,10 +19,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let slack_token = env::var("SLACK_BOT_TOKEN")?;
     let clickhouse_url = env::var("CLICKHOUSE_URL").unwrap_or_else(|_| "http://localhost:8123".into());
+    let clickhouse_user = env::var("CLICKHOUSE_USER").unwrap_or_else(|_| "default".into());
+    let clickhouse_password = env::var("CLICKHOUSE_PASSWORD").unwrap_or_default();
+    let clickhouse_db = env::var("CLICKHOUSE_DB").unwrap_or_else(|_| "default".into());
     let sqlite_path = env::var("SQLITE_PATH").unwrap_or_else(|_| "ship-talkers.db".into());
 
-    let database = db::Database::new(&sqlite_path, &clickhouse_url)?;
+    let database = db::Database::new(&sqlite_path, &clickhouse_url, &clickhouse_user, &clickhouse_password, &clickhouse_db)?;
     database.init_sqlite()?;
+
+    tracing::info!("Initializing ClickHouse tables...");
+    db::clickhouse_db::init_tables(&database.clickhouse).await?;
 
     let slack_client = slack::SlackClient::new(slack_token);
 
@@ -38,6 +44,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         match slack_client.get_channel_history(&channel.id).await {
             Ok(messages) => {
                 tracing::info!("  {} messages", messages.len());
+
+                let rows: Vec<db::clickhouse_db::SlackMessageRow> = messages
+                    .iter()
+                    .map(|m| db::clickhouse_db::SlackMessageRow {
+                        user_id: m.user.clone(),
+                        channel_id: m.channel.clone(),
+                        message_ts: m.ts.clone(),
+                        text: m.text.clone(),
+                    })
+                    .collect();
+
+                if !rows.is_empty() {
+                    db::clickhouse_db::insert_messages(&database.clickhouse, &rows).await?;
+                }
+
                 total_messages += messages.len();
             }
             Err(e) => {
@@ -46,6 +67,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    tracing::info!("Done! Total messages: {}", total_messages);
+    tracing::info!("Done! Total messages scraped: {}", total_messages);
     Ok(())
 }

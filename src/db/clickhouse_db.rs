@@ -18,6 +18,15 @@ pub struct CodingActivityRow {
 }
 
 pub async fn init_tables(client: &Client) -> Result<(), Box<dyn std::error::Error>> {
+    let admin_client = client.clone().with_database("");
+
+    admin_client
+        .query(
+            "CREATE DATABASE IF NOT EXISTS ship_talkers"
+        )
+        .execute()
+        .await?;
+
     client
         .query(
             "CREATE TABLE IF NOT EXISTS slack_messages (
