@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Link Account - Ship Talkers</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: system-ui, sans-serif; background: #0f0f0f; color: #fff; min-height: 100vh; }
+        .container { max-width: 600px; margin: 0 auto; padding: 2rem; }
+        h1 { font-size: 2rem; margin-bottom: 1rem; }
+        p { color: #888; line-height: 1.6; margin-bottom: 1.5rem; }
+        .card { background: #1a1a1a; border-radius: 12px; padding: 1.5rem; margin-bottom: 1rem; }
+        .card h2 { font-size: 1.25rem; margin-bottom: 0.5rem; }
+        .btn { display: inline-block; padding: 0.75rem 1.5rem; background: #7c3aed; color: #fff; text-decoration: none; border-radius: 8px; font-weight: 600; border: none; cursor: pointer; }
+        .btn:hover { background: #6d28d9; }
+        .btn:disabled { background: #444; cursor: not-allowed; }
+        .connected { color: #22c55e; }
+        .status { margin-top: 0.5rem; font-size: 0.875rem; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Link Accounts</h1>
+        <p>Connect your Slack and Hackatime accounts to start tracking.</p>
+        
+        <div class="card">
+            <h2>Slack</h2>
+            <p class="status" id="slack-status">Not connected</p>
+        </div>
+
+        <div class="card">
+            <h2>Hackatime</h2>
+            <p class="status" id="hackatime-status">Not connected</p>
+            <a href="/api/auth/hackatime" class="btn" style="margin-top: 1rem;">Connect Hackatime</a>
+        </div>
+    </div>
+</body>
+</html>

@@ -34,7 +34,7 @@ impl SlackClient {
         }
     }
 
-    async fn get(&self, method: &str, params: &[(String, String)]) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    async fn get(&self, method: &str, params: &[(String, String)]) -> Result<serde_json::Value, Box<dyn std::error::Error + Send + Sync>> {
         let url = format!("{}/{}", self.base_url, method);
 
         loop {
@@ -68,7 +68,7 @@ impl SlackClient {
         }
     }
 
-    pub async fn get_all_channels(&self) -> Result<Vec<SlackChannel>, Box<dyn std::error::Error>> {
+    pub async fn get_all_channels(&self) -> Result<Vec<SlackChannel>, Box<dyn std::error::Error + Send + Sync>> {
         let mut channels = Vec::new();
         let mut cursor: Option<String> = None;
 
@@ -112,7 +112,7 @@ impl SlackClient {
         Ok(channels)
     }
 
-    pub async fn get_channel_history(&self, channel_id: &str) -> Result<Vec<SlackMessage>, Box<dyn std::error::Error>> {
+    pub async fn get_channel_history(&self, channel_id: &str) -> Result<Vec<SlackMessage>, Box<dyn std::error::Error + Send + Sync>> {
         let mut messages = Vec::new();
         let mut cursor: Option<String> = None;
 

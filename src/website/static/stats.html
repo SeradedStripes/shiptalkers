@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Stats - Ship Talkers</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: system-ui, sans-serif; background: #0f0f0f; color: #fff; min-height: 100vh; }
+        .container { max-width: 1000px; margin: 0 auto; padding: 2rem; }
+        h1 { font-size: 2rem; margin-bottom: 1rem; }
+        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; margin-bottom: 2rem; }
+        .stat { background: #1a1a1a; border-radius: 12px; padding: 1.5rem; }
+        .stat h3 { color: #888; font-size: 0.875rem; text-transform: uppercase; margin-bottom: 0.5rem; }
+        .stat .value { font-size: 2rem; font-weight: 700; }
+        .stat .value.purple { color: #7c3aed; }
+        table { width: 100%; border-collapse: collapse; background: #1a1a1a; border-radius: 12px; overflow: hidden; }
+        th, td { padding: 1rem; text-align: left; border-bottom: 1px solid #333; }
+        th { color: #888; font-size: 0.875rem; text-transform: uppercase; }
+        tr:last-child td { border-bottom: none; }
+        .live { display: inline-block; width: 8px; height: 8px; background: #22c55e; border-radius: 50%; margin-right: 0.5rem; animation: pulse 2s infinite; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1><span class="live"></span>Stats</h1>
+        
+        <div class="grid">
+            <div class="stat">
+                <h3>Total Messages</h3>
+                <div class="value purple" id="total-messages">-</div>
+            </div>
+            <div class="stat">
+                <h3>Active Users</h3>
+                <div class="value purple" id="active-users">-</div>
+            </div>
+            <div class="stat">
+                <h3>Channels Tracked</h3>
+                <div class="value purple" id="channels">-</div>
+            </div>
+            <div class="stat">
+                <h3>Coding Minutes</h3>
+                <div class="value purple" id="coding-minutes">-</div>
+            </div>
+        </div>
+
+        <h2 style="margin-bottom: 1rem;">Top Chatters</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>User</th>
+                    <th>Messages</th>
+                    <th>Coding Time</th>
+                </tr>
+            </thead>
+            <tbody id="leaderboard">
+                <tr><td colspan="3" style="text-align: center; color: #666;">Loading...</td></tr>
+            </tbody>
+        </table>
+    </div>
+
+    <script>
+        async function fetchStats() {
+            try {
+                const resp = await fetch('/api/stats');
+                const data = await resp.json();
+                
+                document.getElementById('total-messages').textContent = data.total_messages.toLocaleString();
+                document.getElementById('active-users').textContent = data.active_users.toLocaleString();
+                document.getElementById('channels').textContent = data.channels.toLocaleString();
+                document.getElementById('coding-minutes').textContent = data.coding_minutes.toLocaleString();
+                
+                const tbody = document.getElementById('leaderboard');
+                if (data.leaderboard && data.leaderboard.length > 0) {
+                    tbody.innerHTML = data.leaderboard.map(u => `
+                        <tr>
+                            <td>${u.user_id}</td>
+                            <td>${u.messages.toLocaleString()}</td>
+                            <td>${u.coding_minutes.toLocaleString()} min</td>
+                        </tr>
+                    `).join('');
+                }
+            } catch (e) {
+                console.error('Failed to fetch stats:', e);
+            }
+        }
+        
+        fetchStats();
+        setInterval(fetchStats, 10000);
+    </script>
+</body>
+</html>
