@@ -1,3 +1,7 @@
+mod socket;
+
+pub use socket::start_socket_mode;
+
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::future::Future;
@@ -70,14 +74,21 @@ impl SlackClient {
         }
     }
 
-    pub async fn fetch_channels_paginated<F>(&self, mut on_page: F) -> Result<usize, Box<dyn std::error::Error + Send + Sync>>
+    pub async fn fetch_channels_paginated<F>(&self, mut on_page: F, max_pages: Option<usize>) -> Result<usize, Box<dyn std::error::Error + Send + Sync>>
     where
         F: FnMut(Vec<SlackChannel>) -> Pin<Box<dyn Future<Output = ()> + Send>>,
     {
         let mut total = 0;
         let mut cursor: Option<String> = None;
+        let mut page_count = 0;
 
         loop {
+            if let Some(max) = max_pages {
+                if page_count >= max {
+                    break;
+                }
+            }
+
             let mut params = vec![
                 ("types".to_string(), "public_channel".to_string()),
                 ("limit".to_string(), "200".to_string()),
@@ -101,6 +112,7 @@ impl SlackClient {
             }
 
             total += page_channels.len();
+            page_count += 1;
             tracing::info!("Fetched {} channels ({} total)", page_channels.len(), total);
 
             on_page(page_channels).await;
@@ -119,6 +131,29 @@ impl SlackClient {
         }
 
         Ok(total)
+    }
+
+    pub async fn fetch_first_page(&self) -> Result<Vec<SlackChannel>, Box<dyn std::error::Error + Send + Sync>> {
+        let params = vec![
+            ("types".to_string(), "public_channel".to_string()),
+            ("limit".to_string(), "200".to_string()),
+        ];
+
+        let resp = self.get("conversations.list", &params).await?;
+
+        let mut channels = Vec::new();
+        if let Some(channels_arr) = resp.get("channels").and_then(|v| v.as_array()) {
+            for ch in channels_arr {
+                if let (Some(id), Some(name)) = (ch.get("id"), ch.get("name")) {
+                    channels.push(SlackChannel {
+                        id: id.as_str().unwrap_or_default().to_string(),
+                        name: name.as_str().unwrap_or_default().to_string(),
+                    });
+                }
+            }
+        }
+
+        Ok(channels)
     }
 
     pub async fn get_channel_history(&self, channel_id: &str) -> Result<Vec<SlackMessage>, Box<dyn std::error::Error + Send + Sync>> {

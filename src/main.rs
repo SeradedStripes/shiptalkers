@@ -43,6 +43,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
+    if let Ok(app_token) = env::var("SLACK_APP_TOKEN") {
+        let clickhouse_for_socket = database.clickhouse.clone();
+        tokio::spawn(async move {
+            if let Err(e) = slack::start_socket_mode(app_token, clickhouse_for_socket).await {
+                tracing::error!("Socket Mode error: {}", e);
+            }
+        });
+    } else {
+        tracing::warn!("SLACK_APP_TOKEN not set, Socket Mode disabled");
+    }
+
     let host = env::var("HOST").unwrap_or_else(|_| "0.0.0.0".into());
     let port = env::var("PORT").unwrap_or_else(|_| "3000".into());
     let addr = format!("{}:{}", host, port);
@@ -79,26 +90,26 @@ async fn run_scraper(clickhouse: clickhouse::Client, slack_token: String) -> Res
 
     if existing.is_empty() {
         tracing::info!("No channels in ClickHouse, fetching all from Slack...");
-
-        let ch = clickhouse.clone();
-        let total = slack_client
-            .fetch_channels_paginated(move |page| insert_page(ch.clone(), page))
-            .await
-            .map_err(|e| e.to_string())?;
-
-        tracing::info!("Done! {} total channels", total);
+        full_fetch(&slack_client, &clickhouse).await?;
     } else {
         tracing::info!("{} channels already in ClickHouse, skipping initial fetch", existing.len());
     }
 
-    tracing::info!("Checking for new channels every 60s...");
+    tracing::info!("Will do a full rescan every 24 hours");
     loop {
-        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
-
-        tracing::debug!("Checking for new channels...");
-        let ch = clickhouse.clone();
-        let _ = slack_client
-            .fetch_channels_paginated(move |page| insert_page(ch.clone(), page))
-            .await;
+        tokio::time::sleep(std::time::Duration::from_secs(86400)).await;
+        tracing::info!("24hr rescan starting...");
+        full_fetch(&slack_client, &clickhouse).await?;
     }
+}
+
+async fn full_fetch(slack_client: &slack::SlackClient, clickhouse: &clickhouse::Client) -> Result<(), String> {
+    let ch = clickhouse.clone();
+    let total = slack_client
+        .fetch_channels_paginated(move |page| insert_page(ch.clone(), page), None)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    tracing::info!("Full rescan done! {} total channels", total);
+    Ok(())
 }
