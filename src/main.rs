@@ -25,14 +25,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     database.init_sqlite()?;
 
     let slack_client = slack::SlackClient::new(slack_token);
-    let hackatime_client = hackatime::HackatimeClient::new(
-        env::var("HACKATIME_URL").unwrap_or_else(|_| "https://hackatime.hackclub.com".into())
-    );
 
-    tracing::info!("Ship Talkers starting up...");
+    tracing::info!("Fetching all public channels...");
+    let channels = slack_client.get_all_channels().await?;
 
-    // TODO: Set up scheduler to periodically sync data
-    // TODO: Set up HTTP server for OAuth callbacks
+    tracing::info!("Scraping message history from {} channels...", channels.len());
+    let mut total_messages = 0;
 
+    for (i, channel) in channels.iter().enumerate() {
+        tracing::info!("[{}/{}] #{}", i + 1, channels.len(), channel.name);
+
+        match slack_client.get_channel_history(&channel.id).await {
+            Ok(messages) => {
+                tracing::info!("  {} messages", messages.len());
+                total_messages += messages.len();
+            }
+            Err(e) => {
+                tracing::warn!("  failed: {}", e);
+            }
+        }
+    }
+
+    tracing::info!("Done! Total messages: {}", total_messages);
     Ok(())
 }
