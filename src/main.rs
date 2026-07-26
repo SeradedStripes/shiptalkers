@@ -6,6 +6,8 @@ mod website;
 
 use dotenvy::dotenv;
 use std::env;
+use std::future::Future;
+use std::pin::Pin;
 use tokio::net::TcpListener;
 
 #[tokio::main]
@@ -32,11 +34,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!("Initializing ClickHouse tables...");
     db::clickhouse_db::init_tables(&database.clickhouse).await?;
 
-    let db_for_scraper = database.clickhouse.clone();
+    let clickhouse_for_scraper = database.clickhouse.clone();
     let slack_token_clone = slack_token.clone();
 
     tokio::spawn(async move {
-        if let Err(e) = run_scraper(db_for_scraper, slack_token_clone).await {
+        if let Err(e) = run_scraper(clickhouse_for_scraper, slack_token_clone).await {
             tracing::error!("Scraper error: {}", e);
         }
     });
@@ -52,46 +54,51 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+fn insert_page(clickhouse: clickhouse::Client, page: Vec<slack::SlackChannel>) -> Pin<Box<dyn Future<Output = ()> + Send>> {
+    Box::pin(async move {
+        let rows: Vec<db::clickhouse_db::SlackChannelRow> = page
+            .iter()
+            .map(|ch| db::clickhouse_db::SlackChannelRow {
+                channel_id: ch.id.clone(),
+                name: ch.name.clone(),
+            })
+            .collect();
+
+        if let Err(e) = db::clickhouse_db::insert_new_channels(&clickhouse, &rows).await {
+            tracing::error!("Failed to insert channels: {}", e);
+        }
+    })
+}
+
 async fn run_scraper(clickhouse: clickhouse::Client, slack_token: String) -> Result<(), String> {
     let slack_client = slack::SlackClient::new(slack_token);
 
-    tracing::info!("Fetching all public channels...");
-    let channels = slack_client.get_all_channels().await.map_err(|e| e.to_string())?;
+    let existing = db::clickhouse_db::get_known_channel_ids(&clickhouse)
+        .await
+        .map_err(|e| e.to_string())?;
 
-    tracing::info!("Scraping message history from {} channels...", channels.len());
-    let mut total_messages = 0;
+    if existing.is_empty() {
+        tracing::info!("No channels in ClickHouse, fetching all from Slack...");
 
-    for (i, channel) in channels.iter().enumerate() {
-        tracing::info!("[{}/{}] #{}", i + 1, channels.len(), channel.name);
+        let ch = clickhouse.clone();
+        let total = slack_client
+            .fetch_channels_paginated(move |page| insert_page(ch.clone(), page))
+            .await
+            .map_err(|e| e.to_string())?;
 
-        match slack_client.get_channel_history(&channel.id).await {
-            Ok(messages) => {
-                tracing::info!("  {} messages", messages.len());
-
-                let rows: Vec<db::clickhouse_db::SlackMessageRow> = messages
-                    .iter()
-                    .map(|m| db::clickhouse_db::SlackMessageRow {
-                        user_id: m.user.clone(),
-                        channel_id: m.channel.clone(),
-                        message_ts: m.ts.clone(),
-                        text: m.text.clone(),
-                    })
-                    .collect();
-
-                if !rows.is_empty() {
-                    db::clickhouse_db::insert_messages(&clickhouse, &rows)
-                        .await
-                        .map_err(|e| e.to_string())?;
-                }
-
-                total_messages += messages.len();
-            }
-            Err(e) => {
-                tracing::warn!("  failed: {}", e);
-            }
-        }
+        tracing::info!("Done! {} total channels", total);
+    } else {
+        tracing::info!("{} channels already in ClickHouse, skipping initial fetch", existing.len());
     }
 
-    tracing::info!("Done scraping! Total messages: {}", total_messages);
-    Ok(())
+    tracing::info!("Checking for new channels every 60s...");
+    loop {
+        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+
+        tracing::debug!("Checking for new channels...");
+        let ch = clickhouse.clone();
+        let _ = slack_client
+            .fetch_channels_paginated(move |page| insert_page(ch.clone(), page))
+            .await;
+    }
 }

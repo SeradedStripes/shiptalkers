@@ -18,7 +18,8 @@ pub struct AppState {
 pub struct Stats {
     pub total_messages: u64,
     pub active_users: u64,
-    pub channels: u64,
+    pub channels_tracked: u64,
+    pub total_channels: u64,
     pub coding_minutes: u64,
     pub leaderboard: Vec<UserStats>,
 }
@@ -60,8 +61,14 @@ async fn get_stats(State(state): State<AppState>) -> Json<Stats> {
         .await
         .unwrap_or(0);
 
-    let channels: u64 = ch
+    let channels_tracked: u64 = ch
         .query("SELECT uniqExact(channel_id) FROM slack_messages")
+        .fetch_one()
+        .await
+        .unwrap_or(0);
+
+    let total_channels: u64 = ch
+        .query("SELECT count() FROM slack_channels")
         .fetch_one()
         .await
         .unwrap_or(0);
@@ -102,7 +109,8 @@ async fn get_stats(State(state): State<AppState>) -> Json<Stats> {
     Json(Stats {
         total_messages,
         active_users,
-        channels,
+        channels_tracked,
+        total_channels,
         coding_minutes,
         leaderboard,
     })

@@ -1,5 +1,7 @@
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use std::future::Future;
+use std::pin::Pin;
 use std::time::Duration;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -10,7 +12,7 @@ pub struct SlackMessage {
     pub channel: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SlackChannel {
     pub id: String,
     pub name: String,
@@ -51,7 +53,7 @@ impl SlackClient {
                     .and_then(|v| v.to_str().ok())
                     .and_then(|v| v.parse::<u64>().ok())
                     .unwrap_or(5);
-                tracing::warn!("Rate limited, waiting {} seconds", retry_after);
+                tracing::warn!("Rate limited on {}, waiting {} seconds", method, retry_after);
                 tokio::time::sleep(Duration::from_secs(retry_after)).await;
                 continue;
             }
@@ -68,8 +70,11 @@ impl SlackClient {
         }
     }
 
-    pub async fn get_all_channels(&self) -> Result<Vec<SlackChannel>, Box<dyn std::error::Error + Send + Sync>> {
-        let mut channels = Vec::new();
+    pub async fn fetch_channels_paginated<F>(&self, mut on_page: F) -> Result<usize, Box<dyn std::error::Error + Send + Sync>>
+    where
+        F: FnMut(Vec<SlackChannel>) -> Pin<Box<dyn Future<Output = ()> + Send>>,
+    {
+        let mut total = 0;
         let mut cursor: Option<String> = None;
 
         loop {
@@ -81,20 +86,24 @@ impl SlackClient {
                 params.push(("cursor".to_string(), c.clone()));
             }
 
-            tracing::debug!("Fetching channels, {} so far", channels.len());
-
             let resp = self.get("conversations.list", &params).await?;
 
+            let mut page_channels = Vec::new();
             if let Some(channels_arr) = resp.get("channels").and_then(|v| v.as_array()) {
                 for ch in channels_arr {
                     if let (Some(id), Some(name)) = (ch.get("id"), ch.get("name")) {
-                        channels.push(SlackChannel {
+                        page_channels.push(SlackChannel {
                             id: id.as_str().unwrap_or_default().to_string(),
                             name: name.as_str().unwrap_or_default().to_string(),
                         });
                     }
                 }
             }
+
+            total += page_channels.len();
+            tracing::info!("Fetched {} channels ({} total)", page_channels.len(), total);
+
+            on_page(page_channels).await;
 
             cursor = resp
                 .get("response_metadata")
@@ -103,25 +112,25 @@ impl SlackClient {
                 .filter(|c| !c.is_empty())
                 .map(|c| c.to_string());
 
-            if cursor.is_none() {
-                break;
+            match &cursor {
+                Some(c) if !c.is_empty() => {}
+                _ => break,
             }
         }
 
-        tracing::info!("Found {} public channels", channels.len());
-        Ok(channels)
+        Ok(total)
     }
 
     pub async fn get_channel_history(&self, channel_id: &str) -> Result<Vec<SlackMessage>, Box<dyn std::error::Error + Send + Sync>> {
         let mut messages = Vec::new();
         let mut cursor: Option<String> = None;
 
-        for page in 0..500 {
+        for _page in 0..500 {
             let mut params = vec![
                 ("channel".to_string(), channel_id.to_string()),
                 ("limit".to_string(), "100".to_string()),
             ];
-            if let Some(ref c) = cursor {
+            if let Some(c) = &cursor {
                 params.push(("cursor".to_string(), c.clone()));
             }
 
