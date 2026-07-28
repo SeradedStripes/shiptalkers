@@ -128,11 +128,25 @@ async fn scrape_all_messages(user_client: &slack::SlackClient, clickhouse: &clic
     let mut total = 0u64;
 
     for (i, channel_id) in channels.iter().enumerate() {
-        let oldest = db::clickhouse_db::get_max_message_ts(clickhouse, channel_id).await
-            .ok()
-            .flatten();
+        let fully_scraped = db::clickhouse_db::is_fully_scraped(clickhouse, channel_id).await.unwrap_or(false);
 
-        tracing::info!("[{}/{}] Scraping channel {} (oldest={:?})", i + 1, channels.len(), channel_id, oldest);
+        // Use oldest = max_ts if channel already has messages (avoids re-fetching on restart)
+        let oldest = match db::clickhouse_db::get_max_message_ts(clickhouse, channel_id).await {
+            Ok(Some(ts)) => {
+                tracing::info!("[{}/{}] Scraping channel {} (fully={}, oldest={})", i + 1, channels.len(), channel_id, fully_scraped, ts);
+                Some(ts)
+            }
+            Ok(None) => {
+                tracing::info!("[{}/{}] Scraping channel {} (fully={}, oldest=None, fresh)", i + 1, channels.len(), channel_id, fully_scraped);
+                None
+            }
+            Err(e) => {
+                tracing::warn!("[{}/{}] Failed to get max ts for {}: {}, doing full scrape", i + 1, channels.len(), channel_id, e);
+                None
+            }
+        };
+
+        tracing::info!("[{}/{}] Scraping channel {} (fully={}, oldest={:?})", i + 1, channels.len(), channel_id, fully_scraped, oldest);
 
         let messages = match user_client.get_channel_history(channel_id, oldest.as_deref()).await {
             Ok(m) => m,
@@ -164,6 +178,13 @@ async fn scrape_all_messages(user_client: &slack::SlackClient, clickhouse: &clic
             tracing::info!("[{}/{}] Inserted {} messages from {}", i + 1, channels.len(), count, channel_id);
         } else {
             tracing::info!("[{}/{}] No new messages from {}", i + 1, channels.len(), channel_id);
+        }
+
+        // Mark channel as fully scraped after a successful full scrape
+        if !fully_scraped {
+            if let Err(e) = db::clickhouse_db::mark_fully_scraped(clickhouse, channel_id).await {
+                tracing::warn!("[{}/{}] Failed to mark {} as fully scraped: {}", i + 1, channels.len(), channel_id, e);
+            }
         }
     }
 

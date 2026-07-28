@@ -84,7 +84,7 @@ pub async fn start_socket_mode(
                                     }
                                 }
 
-                                if let Some(envelope_id) = payload.get("envelope_id").and_then(|v| v.as_str()) {
+                                if let Some(envelope_id) = &socket_msg.envelope_id {
                                     let ack = serde_json::json!({
                                         "envelope_id": envelope_id
                                     });

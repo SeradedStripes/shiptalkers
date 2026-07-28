@@ -208,6 +208,7 @@ impl SlackClient {
             let resp = self.get("conversations.history", &params).await?;
 
             if let Some(msgs) = resp.get("messages").and_then(|v| v.as_array()) {
+                let count = msgs.len();
                 for msg in msgs {
                     if let (Some(user), Some(text), Some(ts)) = (
                         msg.get("user").and_then(|v| v.as_str()),
@@ -221,6 +222,9 @@ impl SlackClient {
                             channel: channel_id.to_string(),
                         });
                     }
+                }
+                if count > 0 && (page % 10 == 0) {
+                    tracing::info!("  page {} for {} ({} msgs, {} total so far)", page, channel_id, count, messages.len());
                 }
             }
 

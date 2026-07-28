@@ -38,6 +38,9 @@ pub async fn init_tables(client: &Client) -> Result<(), Box<dyn std::error::Erro
         .execute()
         .await?;
 
+    // Migrate existing MergeTree to ReplacingMergeTree if needed
+    migrate_slack_messages(client).await?;
+
     client
         .query(
             "CREATE TABLE IF NOT EXISTS slack_messages (
@@ -45,8 +48,8 @@ pub async fn init_tables(client: &Client) -> Result<(), Box<dyn std::error::Erro
                 channel_id String,
                 message_ts String,
                 text String
-            ) ENGINE = MergeTree()
-            ORDER BY (user_id, message_ts)"
+            ) ENGINE = ReplacingMergeTree()
+            ORDER BY (channel_id, message_ts)"
         )
         .execute()
         .await?;
@@ -75,6 +78,92 @@ pub async fn init_tables(client: &Client) -> Result<(), Box<dyn std::error::Erro
         .execute()
         .await?;
 
+    client
+        .query(
+            "CREATE TABLE IF NOT EXISTS scrape_checkpoints (
+                channel_id String,
+                fully_scraped UInt8
+            ) ENGINE = ReplacingMergeTree()
+            ORDER BY channel_id"
+        )
+        .execute()
+        .await?;
+
+    // Always deduplicate slack_messages on startup
+    client
+        .query("OPTIMIZE TABLE slack_messages FINAL")
+        .execute()
+        .await
+        .ok();
+
+    Ok(())
+}
+
+async fn migrate_slack_messages(client: &Client) -> Result<(), Box<dyn std::error::Error>> {
+    #[derive(Debug, Row, Deserialize)]
+    struct CountRow { count: u64 }
+
+    // Check if table is already ReplacingMergeTree
+    let existing: Option<CountRow> = client
+        .query("SELECT count() as count FROM system.tables WHERE database = currentDatabase() AND name = 'slack_messages' AND engine = 'ReplacingMergeTree'")
+        .fetch_optional()
+        .await
+        .unwrap_or(None);
+
+    if existing.map(|r| r.count > 0).unwrap_or(false) {
+        return Ok(());
+    }
+
+    let pre_count: u64 = client
+        .query("SELECT count() FROM slack_messages")
+        .fetch_one()
+        .await
+        .unwrap_or(0);
+
+    if pre_count == 0 {
+        return Ok(());
+    }
+
+    tracing::info!("Migrating slack_messages to ReplacingMergeTree ({} rows)...", pre_count);
+
+    client
+        .query("CREATE TABLE IF NOT EXISTS slack_messages_new (
+            user_id String,
+            channel_id String,
+            message_ts String,
+            text String
+        ) ENGINE = ReplacingMergeTree()
+        ORDER BY (channel_id, message_ts)")
+        .execute()
+        .await?;
+
+    client
+        .query("INSERT INTO slack_messages_new SELECT * FROM slack_messages")
+        .execute()
+        .await?;
+
+    client
+        .query("DROP TABLE IF EXISTS slack_messages")
+        .execute()
+        .await?;
+
+    client
+        .query("RENAME TABLE slack_messages_new TO slack_messages")
+        .execute()
+        .await?;
+
+    client
+        .query("OPTIMIZE TABLE slack_messages FINAL")
+        .execute()
+        .await?;
+
+    let dedupd: u64 = client
+        .query("SELECT count() FROM slack_messages")
+        .fetch_one()
+        .await
+        .unwrap_or(0);
+
+    tracing::info!("Migration complete: {} rows -> {} rows after dedup", pre_count, dedupd);
     Ok(())
 }
 
@@ -134,7 +223,7 @@ pub async fn insert_new_channels(client: &Client, channels: &[SlackChannelRow]) 
 pub async fn get_max_message_ts(client: &Client, channel_id: &str) -> Result<Option<String>, Box<dyn std::error::Error>> {
     #[derive(Debug, Row, Deserialize)]
     struct MaxTsRow {
-        max_ts: Option<String>,
+        max_ts: String,
     }
 
     let row: Option<MaxTsRow> = client
@@ -145,5 +234,33 @@ pub async fn get_max_message_ts(client: &Client, channel_id: &str) -> Result<Opt
         .fetch_optional()
         .await?;
 
-    Ok(row.and_then(|r| r.max_ts))
+    Ok(row.map(|r| r.max_ts))
+}
+
+pub async fn is_fully_scraped(client: &Client, channel_id: &str) -> Result<bool, Box<dyn std::error::Error>> {
+    let count: u64 = client
+        .query(&format!(
+            "SELECT count() FROM scrape_checkpoints FINAL WHERE channel_id = '{}' AND fully_scraped = 1",
+            channel_id
+        ))
+        .fetch_one()
+        .await?;
+
+    Ok(count > 0)
+}
+
+pub async fn mark_fully_scraped(client: &Client, channel_id: &str) -> Result<(), Box<dyn std::error::Error>> {
+    #[derive(Debug, Row, Serialize)]
+    struct CheckpointRow {
+        channel_id: String,
+        fully_scraped: u8,
+    }
+
+    let mut insert = client.insert("scrape_checkpoints")?;
+    insert.write(&CheckpointRow {
+        channel_id: channel_id.to_string(),
+        fully_scraped: 1,
+    }).await?;
+    insert.end().await?;
+    Ok(())
 }

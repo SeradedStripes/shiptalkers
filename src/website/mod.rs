@@ -50,7 +50,7 @@ async fn get_stats(State(state): State<AppState>) -> Json<Stats> {
     let ch = &state.clickhouse;
 
     let total_messages: u64 = ch
-        .query("SELECT count() FROM slack_messages")
+        .query("SELECT count() FROM slack_messages FINAL")
         .fetch_one()
         .await
         .unwrap_or(0);
@@ -68,7 +68,7 @@ async fn get_stats(State(state): State<AppState>) -> Json<Stats> {
         .unwrap_or(0);
 
     let total_channels: u64 = ch
-        .query("SELECT count() FROM slack_channels")
+        .query("SELECT count() FROM slack_channels FINAL")
         .fetch_one()
         .await
         .unwrap_or(0);
@@ -88,7 +88,7 @@ async fn get_stats(State(state): State<AppState>) -> Json<Stats> {
     let leaderboard: Vec<UserStats> = ch
         .query(
             "SELECT user_id, count() as messages
-             FROM slack_messages
+             FROM slack_messages FINAL
              GROUP BY user_id
              ORDER BY messages DESC
              LIMIT 20"
