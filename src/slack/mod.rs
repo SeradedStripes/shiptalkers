@@ -20,8 +20,10 @@ pub struct SlackMessage {
 pub struct SlackChannel {
     pub id: String,
     pub name: String,
+    pub is_archived: bool,
 }
 
+#[derive(Clone)]
 pub struct SlackClient {
     client: Client,
     token: String,
@@ -103,9 +105,13 @@ impl SlackClient {
             if let Some(channels_arr) = resp.get("channels").and_then(|v| v.as_array()) {
                 for ch in channels_arr {
                     if let (Some(id), Some(name)) = (ch.get("id"), ch.get("name")) {
+                        let is_archived = ch.get("is_archived")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false);
                         page_channels.push(SlackChannel {
                             id: id.as_str().unwrap_or_default().to_string(),
                             name: name.as_str().unwrap_or_default().to_string(),
+                            is_archived,
                         });
                     }
                 }
@@ -145,9 +151,13 @@ impl SlackClient {
         if let Some(channels_arr) = resp.get("channels").and_then(|v| v.as_array()) {
             for ch in channels_arr {
                 if let (Some(id), Some(name)) = (ch.get("id"), ch.get("name")) {
+                    let is_archived = ch.get("is_archived")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
                     channels.push(SlackChannel {
                         id: id.as_str().unwrap_or_default().to_string(),
                         name: name.as_str().unwrap_or_default().to_string(),
+                        is_archived,
                     });
                 }
             }
@@ -156,7 +166,43 @@ impl SlackClient {
         Ok(channels)
     }
 
-    pub async fn get_channel_history(&self, channel_id: &str) -> Result<Vec<SlackMessage>, Box<dyn std::error::Error + Send + Sync>> {
+    pub async fn get_archived_channel_count(&self) -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
+        let mut total = 0;
+        let mut cursor: Option<String> = None;
+
+        loop {
+            let mut params = vec![
+                ("types".to_string(), "public_channel".to_string()),
+                ("is_archived".to_string(), "true".to_string()),
+                ("limit".to_string(), "200".to_string()),
+            ];
+            if let Some(ref c) = cursor {
+                params.push(("cursor".to_string(), c.clone()));
+            }
+
+            let resp = self.get("conversations.list", &params).await?;
+
+            if let Some(channels_arr) = resp.get("channels").and_then(|v| v.as_array()) {
+                total += channels_arr.len();
+            }
+
+            cursor = resp
+                .get("response_metadata")
+                .and_then(|m| m.get("next_cursor"))
+                .and_then(|c| c.as_str())
+                .filter(|c| !c.is_empty())
+                .map(|c| c.to_string());
+
+            match &cursor {
+                Some(c) if !c.is_empty() => {}
+                _ => break,
+            }
+        }
+
+        Ok(total)
+    }
+
+    pub async fn get_channel_history(&self, channel_id: &str, oldest: Option<&str>) -> Result<Vec<SlackMessage>, Box<dyn std::error::Error + Send + Sync>> {
         let mut messages = Vec::new();
         let mut cursor: Option<String> = None;
 
@@ -167,6 +213,9 @@ impl SlackClient {
             ];
             if let Some(c) = &cursor {
                 params.push(("cursor".to_string(), c.clone()));
+            }
+            if let Some(o) = oldest {
+                params.push(("oldest".to_string(), o.to_string()));
             }
 
             let resp = self.get("conversations.history", &params).await?;
