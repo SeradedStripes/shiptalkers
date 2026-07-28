@@ -115,6 +115,10 @@ impl SlackClient {
             page_count += 1;
             tracing::info!("Fetched {} channels ({} total)", page_channels.len(), total);
 
+            if total > 0 && page_channels.is_empty() {
+                break;
+            }
+
             on_page(page_channels).await;
 
             cursor = resp
