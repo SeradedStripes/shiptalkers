@@ -130,7 +130,6 @@ async fn scrape_all_messages(user_client: &slack::SlackClient, clickhouse: &clic
     for (i, channel_id) in channels.iter().enumerate() {
         let fully_scraped = db::clickhouse_db::is_fully_scraped(clickhouse, channel_id).await.unwrap_or(false);
 
-        // Use oldest = max_ts if channel already has messages (avoids re-fetching on restart)
         let oldest = match db::clickhouse_db::get_max_message_ts(clickhouse, channel_id).await {
             Ok(Some(ts)) => {
                 tracing::info!("[{}/{}] Scraping channel {} (fully={}, oldest={})", i + 1, channels.len(), channel_id, fully_scraped, ts);
@@ -145,8 +144,6 @@ async fn scrape_all_messages(user_client: &slack::SlackClient, clickhouse: &clic
                 None
             }
         };
-
-        tracing::info!("[{}/{}] Scraping channel {} (fully={}, oldest={:?})", i + 1, channels.len(), channel_id, fully_scraped, oldest);
 
         let messages = match user_client.get_channel_history(channel_id, oldest.as_deref()).await {
             Ok(m) => m,
@@ -163,16 +160,77 @@ async fn scrape_all_messages(user_client: &slack::SlackClient, clickhouse: &clic
             messages
         };
 
-        if !messages.is_empty() {
-            let rows: Vec<db::clickhouse_db::SlackMessageRow> = messages.iter().map(|m| {
-                db::clickhouse_db::SlackMessageRow {
-                    user_id: m.user.clone(),
-                    channel_id: m.channel.clone(),
-                    message_ts: m.ts.clone(),
-                    text: m.text.clone(),
+        // Collect unique thread parents from replies and fetch full thread replies
+        let mut thread_parents: Vec<String> = Vec::new();
+        for msg in &messages {
+            if let Some(ref t) = msg.thread_ts {
+                if t != &msg.ts && !thread_parents.contains(t) {
+                    thread_parents.push(t.clone());
                 }
-            }).collect();
+            }
+        }
 
+        if !thread_parents.is_empty() {
+            tracing::info!("[{}/{}] Found {} threads to scrape in {}", i + 1, channels.len(), thread_parents.len(), channel_id);
+        }
+
+        for thread_ts in &thread_parents {
+            let thread_fully = db::clickhouse_db::is_thread_fully_scraped(clickhouse, channel_id, thread_ts).await.unwrap_or(false);
+            let thread_oldest = if thread_fully {
+                db::clickhouse_db::get_max_thread_reply_ts(clickhouse, channel_id, thread_ts).await
+                    .ok()
+                    .flatten()
+            } else {
+                None
+            };
+
+            match user_client.fetch_thread_replies(channel_id, thread_ts, thread_oldest.as_deref()).await {
+                Ok(replies) => {
+                    let replies: Vec<_> = if let Some(ref o) = thread_oldest {
+                        replies.into_iter().filter(|m| m.ts > *o).collect()
+                    } else {
+                        replies
+                    };
+
+                    if !replies.is_empty() {
+                        let rows: Vec<db::clickhouse_db::SlackMessageRow> = replies.iter().map(|m| {
+                            db::clickhouse_db::SlackMessageRow {
+                                user_id: m.user.clone(),
+                                channel_id: m.channel.clone(),
+                                message_ts: m.ts.clone(),
+                                text: m.text.clone(),
+                                thread_ts: m.thread_ts.clone(),
+                            }
+                        }).collect();
+
+                        let count = db::clickhouse_db::insert_messages(clickhouse, &rows).await.unwrap_or(0);
+                        total += count;
+                        tracing::info!("[{}/{}] Inserted {} thread replies from thread {} in {}", i + 1, channels.len(), count, thread_ts, channel_id);
+                    }
+
+                    if thread_oldest.is_none() {
+                        if let Err(e) = db::clickhouse_db::mark_thread_fully_scraped(clickhouse, channel_id, thread_ts).await {
+                            tracing::warn!("[{}/{}] Failed to mark thread {} as scraped: {}", i + 1, channels.len(), thread_ts, e);
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("[{}/{}] Failed to scrape thread {} in {}: {}", i + 1, channels.len(), thread_ts, channel_id, e);
+                }
+            }
+        }
+
+        let rows: Vec<db::clickhouse_db::SlackMessageRow> = messages.iter().map(|m| {
+            db::clickhouse_db::SlackMessageRow {
+                user_id: m.user.clone(),
+                channel_id: m.channel.clone(),
+                message_ts: m.ts.clone(),
+                text: m.text.clone(),
+                thread_ts: m.thread_ts.clone(),
+            }
+        }).collect();
+
+        if !rows.is_empty() {
             let count = db::clickhouse_db::insert_messages(clickhouse, &rows).await.unwrap_or(0);
             total += count;
             tracing::info!("[{}/{}] Inserted {} messages from {}", i + 1, channels.len(), count, channel_id);
@@ -180,8 +238,7 @@ async fn scrape_all_messages(user_client: &slack::SlackClient, clickhouse: &clic
             tracing::info!("[{}/{}] No new messages from {}", i + 1, channels.len(), channel_id);
         }
 
-        // Mark channel as fully scraped after a successful full scrape
-        if !fully_scraped {
+        if !fully_scraped && oldest.is_none() {
             if let Err(e) = db::clickhouse_db::mark_fully_scraped(clickhouse, channel_id).await {
                 tracing::warn!("[{}/{}] Failed to mark {} as fully scraped: {}", i + 1, channels.len(), channel_id, e);
             }

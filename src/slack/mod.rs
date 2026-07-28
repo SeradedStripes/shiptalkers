@@ -15,6 +15,7 @@ pub struct SlackMessage {
     pub text: String,
     pub ts: String,
     pub channel: String,
+    pub thread_ts: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -188,6 +189,20 @@ impl SlackClient {
     }
 
     pub async fn get_channel_history(&self, channel_id: &str, oldest: Option<&str>) -> Result<Vec<SlackMessage>, Box<dyn std::error::Error + Send + Sync>> {
+        self.fetch_paginated("conversations.history", channel_id, None, oldest).await
+    }
+
+    pub async fn fetch_thread_replies(&self, channel_id: &str, thread_ts: &str, oldest: Option<&str>) -> Result<Vec<SlackMessage>, Box<dyn std::error::Error + Send + Sync>> {
+        self.fetch_paginated("conversations.replies", channel_id, Some(thread_ts), oldest).await
+    }
+
+    async fn fetch_paginated(
+        &self,
+        method: &str,
+        channel_id: &str,
+        thread_ts: Option<&str>,
+        oldest: Option<&str>,
+    ) -> Result<Vec<SlackMessage>, Box<dyn std::error::Error + Send + Sync>> {
         let mut messages = Vec::new();
         let mut cursor: Option<String> = None;
         let mut page = 0u32;
@@ -201,36 +216,37 @@ impl SlackClient {
             if let Some(c) = &cursor {
                 params.push(("cursor".to_string(), c.clone()));
             }
+            if let Some(ts) = thread_ts {
+                params.push(("ts".to_string(), ts.to_string()));
+            }
             if let Some(o) = oldest {
                 params.push(("oldest".to_string(), o.to_string()));
             }
 
-            let resp = self.get("conversations.history", &params).await?;
+            let resp = self.get(method, &params).await?;
 
             if let Some(msgs) = resp.get("messages").and_then(|v| v.as_array()) {
-                let count = msgs.len();
                 for msg in msgs {
                     if let (Some(user), Some(text), Some(ts)) = (
                         msg.get("user").and_then(|v| v.as_str()),
                         msg.get("text").and_then(|v| v.as_str()),
                         msg.get("ts").and_then(|v| v.as_str()),
                     ) {
+                        let thread = msg.get("thread_ts").and_then(|v| v.as_str());
                         messages.push(SlackMessage {
                             user: user.to_string(),
                             text: text.to_string(),
                             ts: ts.to_string(),
                             channel: channel_id.to_string(),
+                            thread_ts: thread.map(|t| t.to_string()),
                         });
                     }
-                }
-                if count > 0 && (page % 10 == 0) {
-                    tracing::info!("  page {} for {} ({} msgs, {} total so far)", page, channel_id, count, messages.len());
                 }
             }
 
             let has_more = resp.get("has_more").and_then(|v| v.as_bool()).unwrap_or(false);
             if !has_more {
-                if page > 1 {
+                if page > 1 && method != "conversations.replies" {
                     tracing::info!("Scraped {} ({} pages, {} messages)", channel_id, page, messages.len());
                 }
                 break;

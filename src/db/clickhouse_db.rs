@@ -7,6 +7,7 @@ pub struct SlackMessageRow {
     pub channel_id: String,
     pub message_ts: String,
     pub text: String,
+    pub thread_ts: Option<String>,
 }
 
 #[derive(Debug, Row, Serialize, Deserialize)]
@@ -47,12 +48,20 @@ pub async fn init_tables(client: &Client) -> Result<(), Box<dyn std::error::Erro
                 user_id String,
                 channel_id String,
                 message_ts String,
-                text String
+                text String,
+                thread_ts Nullable(String)
             ) ENGINE = ReplacingMergeTree()
             ORDER BY (channel_id, message_ts)"
         )
         .execute()
         .await?;
+
+    // Add thread_ts column if it doesn't exist (migration for existing tables)
+    client
+        .query("ALTER TABLE slack_messages ADD COLUMN IF NOT EXISTS thread_ts Nullable(String)")
+        .execute()
+        .await
+        .ok();
 
     client
         .query(
@@ -85,6 +94,18 @@ pub async fn init_tables(client: &Client) -> Result<(), Box<dyn std::error::Erro
                 fully_scraped UInt8
             ) ENGINE = ReplacingMergeTree()
             ORDER BY channel_id"
+        )
+        .execute()
+        .await?;
+
+    client
+        .query(
+            "CREATE TABLE IF NOT EXISTS thread_checkpoints (
+                channel_id String,
+                thread_ts String,
+                fully_scraped UInt8
+            ) ENGINE = ReplacingMergeTree()
+            ORDER BY (channel_id, thread_ts)"
         )
         .execute()
         .await?;
@@ -131,7 +152,8 @@ async fn migrate_slack_messages(client: &Client) -> Result<(), Box<dyn std::erro
             user_id String,
             channel_id String,
             message_ts String,
-            text String
+            text String,
+            thread_ts Nullable(String)
         ) ENGINE = ReplacingMergeTree()
         ORDER BY (channel_id, message_ts)")
         .execute()
@@ -263,4 +285,50 @@ pub async fn mark_fully_scraped(client: &Client, channel_id: &str) -> Result<(),
     }).await?;
     insert.end().await?;
     Ok(())
+}
+
+pub async fn is_thread_fully_scraped(client: &Client, channel_id: &str, thread_ts: &str) -> Result<bool, Box<dyn std::error::Error>> {
+    let count: u64 = client
+        .query(&format!(
+            "SELECT count() FROM thread_checkpoints FINAL WHERE channel_id = '{}' AND thread_ts = '{}' AND fully_scraped = 1",
+            channel_id, thread_ts
+        ))
+        .fetch_one()
+        .await?;
+    Ok(count > 0)
+}
+
+pub async fn mark_thread_fully_scraped(client: &Client, channel_id: &str, thread_ts: &str) -> Result<(), Box<dyn std::error::Error>> {
+    #[derive(Debug, Row, Serialize)]
+    struct ThreadCheckpointRow {
+        channel_id: String,
+        thread_ts: String,
+        fully_scraped: u8,
+    }
+
+    let mut insert = client.insert("thread_checkpoints")?;
+    insert.write(&ThreadCheckpointRow {
+        channel_id: channel_id.to_string(),
+        thread_ts: thread_ts.to_string(),
+        fully_scraped: 1,
+    }).await?;
+    insert.end().await?;
+    Ok(())
+}
+
+pub async fn get_max_thread_reply_ts(client: &Client, channel_id: &str, thread_ts: &str) -> Result<Option<String>, Box<dyn std::error::Error>> {
+    #[derive(Debug, Row, Deserialize)]
+    struct MaxTsRow {
+        max_ts: String,
+    }
+
+    let row: Option<MaxTsRow> = client
+        .query(&format!(
+            "SELECT max(message_ts) as max_ts FROM slack_messages WHERE channel_id = '{}' AND thread_ts = '{}'",
+            channel_id, thread_ts
+        ))
+        .fetch_optional()
+        .await?;
+
+    Ok(row.map(|r| r.max_ts))
 }
