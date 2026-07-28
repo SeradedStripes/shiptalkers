@@ -20,7 +20,6 @@ pub struct Stats {
     pub active_users: u64,
     pub channels_tracked: u64,
     pub total_channels: u64,
-    pub archived_channels: u64,
     pub coding_minutes: u64,
     pub leaderboard: Vec<UserStats>,
 }
@@ -74,10 +73,6 @@ async fn get_stats(State(state): State<AppState>) -> Json<Stats> {
         .await
         .unwrap_or(0);
 
-    let archived_channels: u64 = crate::db::clickhouse_db::get_metric(ch, "archived_channels")
-        .await
-        .unwrap_or(0);
-
     let coding_minutes: u64 = ch
         .query("SELECT sum(minutes) FROM coding_activity")
         .fetch_one()
@@ -116,7 +111,6 @@ async fn get_stats(State(state): State<AppState>) -> Json<Stats> {
         active_users,
         channels_tracked,
         total_channels,
-        archived_channels,
         coding_minutes,
         leaderboard,
     })

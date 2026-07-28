@@ -40,10 +40,6 @@
                 <div class="value purple" id="total-channels">-</div>
             </div>
             <div class="stat">
-                <h3>Archived Channels</h3>
-                <div class="value purple" id="archived-channels">-</div>
-            </div>
-            <div class="stat">
                 <h3>Channels with Messages</h3>
                 <div class="value purple" id="channels-tracked">-</div>
             </div>
@@ -77,7 +73,6 @@
                 document.getElementById('total-messages').textContent = data.total_messages.toLocaleString();
                 document.getElementById('active-users').textContent = data.active_users.toLocaleString();
                 document.getElementById('total-channels').textContent = data.total_channels.toLocaleString();
-                document.getElementById('archived-channels').textContent = data.archived_channels.toLocaleString();
                 document.getElementById('channels-tracked').textContent = data.channels_tracked.toLocaleString();
                 document.getElementById('coding-minutes').textContent = data.coding_minutes.toLocaleString();
                 

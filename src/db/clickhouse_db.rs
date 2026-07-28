@@ -13,7 +13,6 @@ pub struct SlackMessageRow {
 pub struct SlackChannelRow {
     pub channel_id: String,
     pub name: String,
-    pub is_archived: bool,
 }
 
 #[derive(Debug, Row, Deserialize)]
@@ -56,34 +55,8 @@ pub async fn init_tables(client: &Client) -> Result<(), Box<dyn std::error::Erro
         .query(
             "CREATE TABLE IF NOT EXISTS slack_channels (
                 channel_id String,
-                name String,
-                is_archived Bool
+                name String
             ) ENGINE = ReplacingMergeTree()
-            ORDER BY channel_id"
-        )
-        .execute()
-        .await?;
-
-    client
-        .query(
-            "CREATE TABLE IF NOT EXISTS metrics (
-                key String,
-                value UInt64,
-                updated_at DateTime DEFAULT now()
-            ) ENGINE = ReplacingMergeTree(updated_at)
-            ORDER BY key"
-        )
-        .execute()
-        .await?;
-
-    client
-        .query(
-            "CREATE TABLE IF NOT EXISTS channel_scrape_state (
-                channel_id String,
-                last_scraped_ts String,
-                message_count UInt64 DEFAULT 0,
-                updated_at DateTime DEFAULT now()
-            ) ENGINE = ReplacingMergeTree(updated_at)
             ORDER BY channel_id"
         )
         .execute()
@@ -105,34 +78,13 @@ pub async fn init_tables(client: &Client) -> Result<(), Box<dyn std::error::Erro
     Ok(())
 }
 
-pub async fn get_max_message_ts(client: &Client, channel_id: &str) -> Result<Option<String>, Box<dyn std::error::Error>> {
-    #[derive(Debug, Row, Deserialize)]
-    struct MaxTsRow {
-        max_ts: Option<String>,
-    }
-
-    let row: Option<MaxTsRow> = client
-        .query(&format!(
-            "SELECT max(message_ts) as max_ts FROM slack_messages WHERE channel_id = '{}'",
-            channel_id
-        ))
-        .fetch_optional()
-        .await?;
-
-    Ok(row.and_then(|r| r.max_ts))
-}
-
-pub async fn insert_messages(client: &Client, messages: &[SlackMessageRow]) -> Result<u64, Box<dyn std::error::Error>> {
-    if messages.is_empty() {
-        return Ok(0);
-    }
-    let count = messages.len() as u64;
+pub async fn insert_messages(client: &Client, messages: &[SlackMessageRow]) -> Result<(), Box<dyn std::error::Error>> {
     let mut insert = client.insert("slack_messages")?;
     for msg in messages {
         insert.write(msg).await?;
     }
     insert.end().await?;
-    Ok(count)
+    Ok(())
 }
 
 pub async fn insert_coding_activity(client: &Client, activities: &[CodingActivityRow]) -> Result<(), Box<dyn std::error::Error>> {
@@ -147,15 +99,6 @@ pub async fn insert_coding_activity(client: &Client, activities: &[CodingActivit
 pub async fn get_known_channel_ids(client: &Client) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     let rows: Vec<ChannelIdRow> = client
         .query("SELECT channel_id FROM slack_channels")
-        .fetch_all()
-        .await?;
-
-    Ok(rows.into_iter().map(|r| r.channel_id).collect())
-}
-
-pub async fn get_active_channel_ids(client: &Client) -> Result<Vec<String>, Box<dyn std::error::Error>> {
-    let rows: Vec<ChannelIdRow> = client
-        .query("SELECT channel_id FROM slack_channels WHERE is_archived = false")
         .fetch_all()
         .await?;
 
@@ -182,67 +125,4 @@ pub async fn insert_new_channels(client: &Client, channels: &[SlackChannelRow]) 
 
     tracing::info!("Inserted {} new channels into ClickHouse", count);
     Ok(count)
-}
-
-pub async fn update_channel_archive_status(client: &Client, channel_id: &str, is_archived: bool) -> Result<(), Box<dyn std::error::Error>> {
-    client
-        .query(&format!(
-            "ALTER TABLE slack_channels UPDATE is_archived = {} WHERE channel_id = '{}'",
-            is_archived, channel_id
-        ))
-        .execute()
-        .await?;
-    Ok(())
-}
-
-pub async fn set_metric(client: &Client, key: &str, value: u64) -> Result<(), Box<dyn std::error::Error>> {
-    client
-        .query(&format!(
-            "INSERT INTO metrics (key, value) VALUES ('{}', {})",
-            key, value
-        ))
-        .execute()
-        .await?;
-    Ok(())
-}
-
-pub async fn get_metric(client: &Client, key: &str) -> Result<u64, Box<dyn std::error::Error>> {
-    let value: u64 = client
-        .query(&format!(
-            "SELECT value FROM metrics WHERE key = '{}' LIMIT 1",
-            key
-        ))
-        .fetch_one()
-        .await
-        .unwrap_or(0);
-    Ok(value)
-}
-
-pub async fn get_scrape_state(client: &Client, channel_id: &str) -> Result<Option<(String, u64)>, Box<dyn std::error::Error>> {
-    #[derive(Debug, Row, Deserialize)]
-    struct ScrapeStateRow {
-        last_scraped_ts: String,
-        message_count: u64,
-    }
-
-    let row: Option<ScrapeStateRow> = client
-        .query(&format!(
-            "SELECT last_scraped_ts, message_count FROM channel_scrape_state WHERE channel_id = '{}' LIMIT 1",
-            channel_id
-        ))
-        .fetch_optional()
-        .await?;
-
-    Ok(row.map(|r| (r.last_scraped_ts, r.message_count)))
-}
-
-pub async fn update_scrape_state(client: &Client, channel_id: &str, last_ts: &str, message_count: u64) -> Result<(), Box<dyn std::error::Error>> {
-    client
-        .query(&format!(
-            "INSERT INTO channel_scrape_state (channel_id, last_scraped_ts, message_count) VALUES ('{}', '{}', {})",
-            channel_id, last_ts, message_count
-        ))
-        .execute()
-        .await?;
-    Ok(())
 }

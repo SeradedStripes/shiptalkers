@@ -74,7 +74,6 @@ pub async fn start_socket_mode(
                                                 let row = SlackChannelRow {
                                                     channel_id: created.channel.id,
                                                     name: created.channel.name,
-                                                    is_archived: false,
                                                 };
 
                                                 if let Err(e) = clickhouse_db::insert_new_channels(&clickhouse, &[row]).await {

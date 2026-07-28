@@ -6,8 +6,6 @@ mod website;
 
 use dotenvy::dotenv;
 use std::env;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
 use std::future::Future;
 use std::pin::Pin;
 use tokio::net::TcpListener;
@@ -74,7 +72,6 @@ fn insert_page(clickhouse: clickhouse::Client, page: Vec<slack::SlackChannel>) -
             .map(|ch| db::clickhouse_db::SlackChannelRow {
                 channel_id: ch.id.clone(),
                 name: ch.name.clone(),
-                is_archived: ch.is_archived,
             })
             .collect();
 
@@ -98,94 +95,12 @@ async fn run_scraper(clickhouse: clickhouse::Client, slack_token: String) -> Res
         tracing::info!("{} channels already in ClickHouse, skipping initial fetch", existing.len());
     }
 
-    tracing::info!("Starting message scraper...");
-    scrape_all_messages(&slack_client, &clickhouse).await;
-
     tracing::info!("Will do a full rescan every 24 hours");
     loop {
         tokio::time::sleep(std::time::Duration::from_secs(86400)).await;
         tracing::info!("24hr rescan starting...");
         full_fetch(&slack_client, &clickhouse).await?;
-        scrape_all_messages(&slack_client, &clickhouse).await;
     }
-}
-
-async fn scrape_all_messages(slack_client: &slack::SlackClient, clickhouse: &clickhouse::Client) {
-    let channels = match db::clickhouse_db::get_active_channel_ids(clickhouse).await {
-        Ok(c) => c,
-        Err(e) => {
-            tracing::error!("Failed to get active channel IDs: {}", e);
-            return;
-        }
-    };
-
-    tracing::info!("Scraping messages for {} channels...", channels.len());
-    let total_messages = Arc::new(AtomicU64::new(0));
-    let scraped = Arc::new(AtomicU64::new(0));
-    let concurrency = 3;
-    let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency));
-    let num_channels = channels.len();
-
-    let mut handles = Vec::new();
-    for channel_id in channels {
-        let slack_client = slack_client.clone();
-        let clickhouse = clickhouse.clone();
-        let total_messages = total_messages.clone();
-        let scraped = scraped.clone();
-        let semaphore = semaphore.clone();
-
-        let handle = tokio::spawn(async move {
-            let _permit = semaphore.acquire().await.unwrap();
-
-            let oldest = db::clickhouse_db::get_scrape_state(&clickhouse, &channel_id).await
-                .ok()
-                .flatten()
-                .map(|(ts, _)| ts);
-
-            let oldest_ref = oldest.as_deref();
-            let messages = match slack_client.get_channel_history(&channel_id, oldest_ref).await {
-                Ok(m) => m,
-                Err(e) => {
-                    tracing::warn!("Failed to scrape channel {}: {}", channel_id, e);
-                    return;
-                }
-            };
-
-            if !messages.is_empty() {
-                let rows: Vec<db::clickhouse_db::SlackMessageRow> = messages.iter().map(|m| {
-                    db::clickhouse_db::SlackMessageRow {
-                        user_id: m.user.clone(),
-                        channel_id: m.channel.clone(),
-                        message_ts: m.ts.clone(),
-                        text: m.text.clone(),
-                    }
-                }).collect();
-
-                let count = db::clickhouse_db::insert_messages(&clickhouse, &rows).await.unwrap_or(0);
-                total_messages.fetch_add(count, Ordering::Relaxed);
-
-                if let Some(last) = messages.last() {
-                    let _ = db::clickhouse_db::update_scrape_state(
-                        &clickhouse, &channel_id, &last.ts, rows.len() as u64
-                    ).await;
-                }
-            }
-
-            let done = scraped.fetch_add(1, Ordering::Relaxed) + 1;
-            if done % 100 == 0 || done == num_channels as u64 {
-                tracing::info!("Scraped {}/{} channels ({} messages so far)", done, num_channels, total_messages.load(Ordering::Relaxed));
-            }
-
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        });
-        handles.push(handle);
-    }
-
-    for handle in handles {
-        let _ = handle.await;
-    }
-
-    tracing::info!("Message scrape complete! {} total messages inserted", total_messages.load(Ordering::Relaxed));
 }
 
 async fn full_fetch(slack_client: &slack::SlackClient, clickhouse: &clickhouse::Client) -> Result<(), String> {
@@ -194,20 +109,6 @@ async fn full_fetch(slack_client: &slack::SlackClient, clickhouse: &clickhouse::
         .fetch_channels_paginated(move |page| insert_page(ch.clone(), page), None)
         .await
         .map_err(|e| e.to_string())?;
-
-    tracing::info!("Fetching archived channel count...");
-    match slack_client.get_archived_channel_count().await {
-        Ok(count) => {
-            if let Err(e) = db::clickhouse_db::set_metric(clickhouse, "archived_channels", count as u64).await {
-                tracing::error!("Failed to store archived count: {}", e);
-            } else {
-                tracing::info!("Archived channels: {}", count);
-            }
-        }
-        Err(e) => {
-            tracing::warn!("Failed to get archived count: {}", e);
-        }
-    }
 
     tracing::info!("Full rescan done! {} total channels", total);
     Ok(())
