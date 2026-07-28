@@ -6,7 +6,8 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::future::Future;
 use std::pin::Pin;
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SlackMessage {
@@ -22,14 +23,17 @@ pub struct SlackChannel {
     pub name: String,
 }
 
+#[derive(Clone)]
 pub struct SlackClient {
     client: Client,
     token: String,
     base_url: String,
+    delay_between_requests: Duration,
+    last_request_time: Arc<Mutex<Instant>>,
 }
 
 impl SlackClient {
-    pub fn new(token: String) -> Self {
+    pub fn new(token: String, delay_between_requests: Duration) -> Self {
         Self {
             client: Client::builder()
                 .timeout(Duration::from_secs(60))
@@ -37,13 +41,22 @@ impl SlackClient {
                 .unwrap(),
             token,
             base_url: "https://slack.com/api".to_string(),
+            delay_between_requests,
+            last_request_time: Arc::new(Mutex::new(Instant::now())),
         }
     }
 
     async fn get(&self, method: &str, params: &[(String, String)]) -> Result<serde_json::Value, Box<dyn std::error::Error + Send + Sync>> {
         let url = format!("{}/{}", self.base_url, method);
+        let mut retry_count = 0u32;
 
         loop {
+            // Enforce minimum delay between requests
+            let elapsed = self.last_request_time.lock().unwrap().elapsed();
+            if elapsed < self.delay_between_requests {
+                tokio::time::sleep(self.delay_between_requests - elapsed).await;
+            }
+
             let response = self.client
                 .get(&url)
                 .header("Authorization", format!("Bearer {}", self.token))
@@ -51,23 +64,37 @@ impl SlackClient {
                 .send()
                 .await?;
 
+            *self.last_request_time.lock().unwrap() = Instant::now();
+
             if response.status().as_u16() == 429 {
                 let retry_after = response.headers()
                     .get("Retry-After")
                     .and_then(|v| v.to_str().ok())
-                    .and_then(|v| v.parse::<u64>().ok())
-                    .unwrap_or(5);
-                tracing::warn!("Rate limited on {}, waiting {} seconds", method, retry_after);
-                tokio::time::sleep(Duration::from_secs(retry_after)).await;
+                    .and_then(|v| v.parse::<f64>().ok())
+                    .unwrap_or(5.0);
+                let backoff = (retry_after as u64).saturating_mul(2u64.saturating_pow(retry_count));
+                let wait = backoff.min(60);
+                tracing::warn!("Rate limited on {}, attempt {}, waiting {}s (retry_after={}s)", method, retry_count + 1, wait, retry_after);
+                tokio::time::sleep(Duration::from_secs(wait)).await;
+                retry_count += 1;
                 continue;
             }
 
             let parsed: serde_json::Value = response.json().await?;
 
-            if let Some(error) = parsed.get("error") {
-                if error.as_str() != Some("ok") {
-                    return Err(format!("Slack API error: {}", error).into());
+            if let Some(error) = parsed.get("error").and_then(|v| v.as_str()) {
+                if error == "ratelimited" {
+                    let retry_after = parsed.get("retry_after")
+                        .and_then(|v| v.as_f64())
+                        .unwrap_or(5.0);
+                    let backoff = (retry_after as u64).saturating_mul(2u64.saturating_pow(retry_count));
+                    let wait = backoff.min(60);
+                    tracing::warn!("Rate limited on {}, attempt {}, waiting {}s (retry_after={}s)", method, retry_count + 1, wait, retry_after);
+                    tokio::time::sleep(Duration::from_secs(wait)).await;
+                    retry_count += 1;
+                    continue;
                 }
+                return Err(format!("Slack API error: {}", error).into());
             }
 
             return Ok(parsed);
@@ -160,17 +187,22 @@ impl SlackClient {
         Ok(channels)
     }
 
-    pub async fn get_channel_history(&self, channel_id: &str) -> Result<Vec<SlackMessage>, Box<dyn std::error::Error + Send + Sync>> {
+    pub async fn get_channel_history(&self, channel_id: &str, oldest: Option<&str>) -> Result<Vec<SlackMessage>, Box<dyn std::error::Error + Send + Sync>> {
         let mut messages = Vec::new();
         let mut cursor: Option<String> = None;
+        let mut page = 0u32;
 
-        for _page in 0..500 {
+        loop {
+            page += 1;
             let mut params = vec![
                 ("channel".to_string(), channel_id.to_string()),
                 ("limit".to_string(), "100".to_string()),
             ];
             if let Some(c) = &cursor {
                 params.push(("cursor".to_string(), c.clone()));
+            }
+            if let Some(o) = oldest {
+                params.push(("oldest".to_string(), o.to_string()));
             }
 
             let resp = self.get("conversations.history", &params).await?;
@@ -194,6 +226,9 @@ impl SlackClient {
 
             let has_more = resp.get("has_more").and_then(|v| v.as_bool()).unwrap_or(false);
             if !has_more {
+                if page > 1 {
+                    tracing::info!("Scraped {} ({} pages, {} messages)", channel_id, page, messages.len());
+                }
                 break;
             }
 

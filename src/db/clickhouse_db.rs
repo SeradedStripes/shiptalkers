@@ -78,13 +78,17 @@ pub async fn init_tables(client: &Client) -> Result<(), Box<dyn std::error::Erro
     Ok(())
 }
 
-pub async fn insert_messages(client: &Client, messages: &[SlackMessageRow]) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn insert_messages(client: &Client, messages: &[SlackMessageRow]) -> Result<u64, Box<dyn std::error::Error>> {
+    if messages.is_empty() {
+        return Ok(0);
+    }
+    let count = messages.len() as u64;
     let mut insert = client.insert("slack_messages")?;
     for msg in messages {
         insert.write(msg).await?;
     }
     insert.end().await?;
-    Ok(())
+    Ok(count)
 }
 
 pub async fn insert_coding_activity(client: &Client, activities: &[CodingActivityRow]) -> Result<(), Box<dyn std::error::Error>> {
@@ -125,4 +129,21 @@ pub async fn insert_new_channels(client: &Client, channels: &[SlackChannelRow]) 
 
     tracing::info!("Inserted {} new channels into ClickHouse", count);
     Ok(count)
+}
+
+pub async fn get_max_message_ts(client: &Client, channel_id: &str) -> Result<Option<String>, Box<dyn std::error::Error>> {
+    #[derive(Debug, Row, Deserialize)]
+    struct MaxTsRow {
+        max_ts: Option<String>,
+    }
+
+    let row: Option<MaxTsRow> = client
+        .query(&format!(
+            "SELECT max(message_ts) as max_ts FROM slack_messages WHERE channel_id = '{}'",
+            channel_id
+        ))
+        .fetch_optional()
+        .await?;
+
+    Ok(row.and_then(|r| r.max_ts))
 }

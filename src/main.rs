@@ -22,6 +22,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .init();
 
     let slack_token = env::var("SLACK_BOT_TOKEN")?;
+    let slack_user_token = env::var("SLACK_USER_TOKEN").ok();
     let clickhouse_url = env::var("CLICKHOUSE_URL").unwrap_or_else(|_| "http://localhost:8123".into());
     let clickhouse_user = env::var("CLICKHOUSE_USER").unwrap_or_else(|_| "default".into());
     let clickhouse_password = env::var("CLICKHOUSE_PASSWORD").unwrap_or_default();
@@ -38,7 +39,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let slack_token_clone = slack_token.clone();
 
     tokio::spawn(async move {
-        if let Err(e) = run_scraper(clickhouse_for_scraper, slack_token_clone).await {
+        if let Err(e) = run_scraper(clickhouse_for_scraper, slack_token_clone, slack_user_token).await {
             tracing::error!("Scraper error: {}", e);
         }
     });
@@ -81,8 +82,9 @@ fn insert_page(clickhouse: clickhouse::Client, page: Vec<slack::SlackChannel>) -
     })
 }
 
-async fn run_scraper(clickhouse: clickhouse::Client, slack_token: String) -> Result<(), String> {
-    let slack_client = slack::SlackClient::new(slack_token);
+async fn run_scraper(clickhouse: clickhouse::Client, slack_token: String, slack_user_token: Option<String>) -> Result<(), String> {
+    let slack_client = slack::SlackClient::new(slack_token, std::time::Duration::from_millis(200));
+    let user_client = slack_user_token.map(|t| slack::SlackClient::new(t, std::time::Duration::from_secs(1)));
 
     let existing = db::clickhouse_db::get_known_channel_ids(&clickhouse)
         .await
@@ -95,12 +97,77 @@ async fn run_scraper(clickhouse: clickhouse::Client, slack_token: String) -> Res
         tracing::info!("{} channels already in ClickHouse, skipping initial fetch", existing.len());
     }
 
-    tracing::info!("Will do a full rescan every 24 hours");
+    if let Some(ref user_client) = user_client {
+        tracing::info!("Starting message scraper with user token...");
+        scrape_all_messages(user_client, &clickhouse).await;
+    } else {
+        tracing::warn!("SLACK_USER_TOKEN not set, message scraping disabled");
+    }
+
+    tracing::info!("Will do a full rescan and rescrape every 24 hours");
     loop {
         tokio::time::sleep(std::time::Duration::from_secs(86400)).await;
         tracing::info!("24hr rescan starting...");
         full_fetch(&slack_client, &clickhouse).await?;
+        if let Some(ref user_client) = user_client {
+            scrape_all_messages(user_client, &clickhouse).await;
+        }
     }
+}
+
+async fn scrape_all_messages(user_client: &slack::SlackClient, clickhouse: &clickhouse::Client) {
+    let channels = match db::clickhouse_db::get_known_channel_ids(clickhouse).await {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::error!("Failed to get channel IDs: {}", e);
+            return;
+        }
+    };
+
+    tracing::info!("Scraping messages for {} channels...", channels.len());
+    let mut total = 0u64;
+
+    for (i, channel_id) in channels.iter().enumerate() {
+        let oldest = db::clickhouse_db::get_max_message_ts(clickhouse, channel_id).await
+            .ok()
+            .flatten();
+
+        tracing::info!("[{}/{}] Scraping channel {} (oldest={:?})", i + 1, channels.len(), channel_id, oldest);
+
+        let messages = match user_client.get_channel_history(channel_id, oldest.as_deref()).await {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::warn!("[{}/{}] Failed to scrape {}: {}", i + 1, channels.len(), channel_id, e);
+                continue;
+            }
+        };
+
+        // Filter out messages at or before the oldest timestamp to avoid duplicates
+        let messages: Vec<_> = if let Some(ref oldest_ts) = oldest {
+            messages.into_iter().filter(|m| m.ts > *oldest_ts).collect()
+        } else {
+            messages
+        };
+
+        if !messages.is_empty() {
+            let rows: Vec<db::clickhouse_db::SlackMessageRow> = messages.iter().map(|m| {
+                db::clickhouse_db::SlackMessageRow {
+                    user_id: m.user.clone(),
+                    channel_id: m.channel.clone(),
+                    message_ts: m.ts.clone(),
+                    text: m.text.clone(),
+                }
+            }).collect();
+
+            let count = db::clickhouse_db::insert_messages(clickhouse, &rows).await.unwrap_or(0);
+            total += count;
+            tracing::info!("[{}/{}] Inserted {} messages from {}", i + 1, channels.len(), count, channel_id);
+        } else {
+            tracing::info!("[{}/{}] No new messages from {}", i + 1, channels.len(), channel_id);
+        }
+    }
+
+    tracing::info!("Message scrape complete! {} new messages", total);
 }
 
 async fn full_fetch(slack_client: &slack::SlackClient, clickhouse: &clickhouse::Client) -> Result<(), String> {
