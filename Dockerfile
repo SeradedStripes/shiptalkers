@@ -35,6 +35,7 @@ RUN mkdir -p src && echo "fn main() {}" > src/main.rs \
     && rm -rf src
 
 COPY src ./src
+COPY templates ./templates
 RUN cargo build --release --locked
 
 FROM debian:bookworm-slim AS runtime
