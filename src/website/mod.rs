@@ -19,6 +19,7 @@ pub struct Stats {
     pub active_users: String,
     pub channels_tracked: String,
     pub total_channels: String,
+    pub total_users: String,
     pub coding_minutes: String,
     pub db_size_label: String,
     pub top: Vec<TopUser>,
@@ -121,6 +122,12 @@ async fn load_stats(ch: &Client) -> Stats {
 
     let total_channels: u64 = ch
         .query("SELECT count() FROM slack_channels FINAL")
+        .fetch_one()
+        .await
+        .unwrap_or(0);
+
+    let total_users: u64 = ch
+        .query("SELECT count() FROM users FINAL")
         .fetch_one()
         .await
         .unwrap_or(0);
@@ -345,6 +352,7 @@ async fn load_stats(ch: &Client) -> Stats {
         active_users: fmt_thousands(active_users),
         channels_tracked: fmt_thousands(channels_tracked),
         total_channels: fmt_thousands(total_channels),
+        total_users: fmt_thousands(total_users),
         coding_minutes: fmt_thousands(coding_minutes),
         db_size_label,
         top,

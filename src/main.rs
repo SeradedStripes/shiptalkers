@@ -98,10 +98,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Duration::from_millis(user_sync_delay),
                 slack_max_inflight,
             );
-            sync_users(&client, &clickhouse_for_users).await;
             loop {
-                tokio::time::sleep(std::time::Duration::from_secs(86400)).await;
-                sync_users(&client, &clickhouse_for_users).await;
+                let ok = sync_users(&client, &clickhouse_for_users).await;
+                let wait = if ok { 86400 } else { 300 };
+                tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
             }
         });
     }
@@ -167,37 +167,67 @@ fn insert_page(
     })
 }
 
-async fn sync_users(slack_client: &slack::SlackClient, clickhouse: &clickhouse::Client) {
+async fn sync_users(slack_client: &slack::SlackClient, clickhouse: &clickhouse::Client) -> bool {
     let existing = match db::clickhouse_db::get_user_updates(clickhouse).await {
         Ok(m) => m,
         Err(e) => {
             tracing::warn!("Failed to get stored user updates: {}", e);
-            return;
+            return false;
         }
     };
-    let users = match slack_client.fetch_users().await {
-        Ok(u) => u,
+    tracing::info!(
+        "Syncing users from Slack ({} already stored)",
+        existing.len()
+    );
+    let existing = Arc::new(existing);
+    let changed_total = Arc::new(AtomicU64::new(0));
+    let result = slack_client
+        .fetch_users(|page| {
+            let clickhouse = clickhouse.clone();
+            let existing = existing.clone();
+            let changed_total = changed_total.clone();
+            Box::pin(async move {
+                let changed: Vec<db::clickhouse_db::SlackUserRow> = page
+                    .into_iter()
+                    .filter(|u| match existing.get(&u.id) {
+                        Some(prev) => *prev < u.updated,
+                        None => true,
+                    })
+                    .map(|u| db::clickhouse_db::SlackUserRow {
+                        user_id: u.id,
+                        display_name: u.display_name,
+                        updated: u.updated,
+                    })
+                    .collect();
+                if changed.is_empty() {
+                    return;
+                }
+                match db::clickhouse_db::upsert_users(&clickhouse, &changed).await {
+                    Ok(()) => {
+                        changed_total.fetch_add(changed.len() as u64, Ordering::Relaxed);
+                        tracing::info!("Upserted {} users so far", changed.len());
+                    }
+                    Err(e) => tracing::warn!("Failed to upsert users: {}", e),
+                }
+            })
+        })
+        .await;
+    match result {
+        Ok(total) => {
+            if total == 0 {
+                tracing::warn!("users.list returned no members");
+                return false;
+            }
+            if changed_total.load(Ordering::Relaxed) == 0 {
+                tracing::info!("No user changes since last sync, skipping upsert");
+            }
+            tracing::info!("Synced {} users from Slack", total);
+            true
+        }
         Err(e) => {
             tracing::warn!("Failed to fetch users: {}", e);
-            return;
+            false
         }
-    };
-    let changed: Vec<db::clickhouse_db::SlackUserRow> = users
-        .into_iter()
-        .filter(|u| existing.get(&u.id).copied().unwrap_or(0) < u.updated)
-        .map(|u| db::clickhouse_db::SlackUserRow {
-            user_id: u.id,
-            display_name: u.display_name,
-            updated: u.updated,
-        })
-        .collect();
-    if changed.is_empty() {
-        tracing::info!("No user changes since last sync, skipping upsert");
-        return;
-    }
-    match db::clickhouse_db::upsert_users(clickhouse, &changed).await {
-        Ok(()) => tracing::info!("Upserted {} changed users", changed.len()),
-        Err(e) => tracing::warn!("Failed to upsert users: {}", e),
     }
 }
 

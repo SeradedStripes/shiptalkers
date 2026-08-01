@@ -280,10 +280,14 @@ impl SlackClient {
         Ok(total)
     }
 
-    pub async fn fetch_users(
+    pub async fn fetch_users<F>(
         &self,
-    ) -> Result<Vec<SlackUser>, Box<dyn std::error::Error + Send + Sync>> {
-        let mut users = Vec::new();
+        mut on_page: F,
+    ) -> Result<usize, Box<dyn std::error::Error + Send + Sync>>
+    where
+        F: FnMut(Vec<SlackUser>) -> Pin<Box<dyn Future<Output = ()> + Send>>,
+    {
+        let mut total = 0;
         let mut cursor: Option<String> = None;
         let mut page = 0u32;
 
@@ -296,6 +300,7 @@ impl SlackClient {
 
             let resp = self.get("users.list", &params).await?;
 
+            let mut page_users = Vec::new();
             if let Some(members) = resp.get("members").and_then(|v| v.as_array()) {
                 for m in members {
                     let Some(id) = m.get("id").and_then(|v| v.as_str()) else {
@@ -319,8 +324,11 @@ impl SlackClient {
                         })
                         .unwrap_or("")
                         .to_string();
-                    let updated = m.get("updated").and_then(|v| v.as_u64()).unwrap_or(0);
-                    users.push(SlackUser {
+                    let updated = m
+                        .get("updated")
+                        .and_then(|v| v.as_u64().or_else(|| v.as_f64().map(|f| f as u64)))
+                        .unwrap_or(0);
+                    page_users.push(SlackUser {
                         id: id.to_string(),
                         display_name,
                         updated,
@@ -328,13 +336,12 @@ impl SlackClient {
                 }
             }
 
+            total += page_users.len();
             if page.is_multiple_of(25) {
-                tracing::info!(
-                    "users.list: fetched {} users so far (page {})",
-                    users.len(),
-                    page
-                );
+                tracing::info!("users.list: fetched {} users so far (page {})", total, page);
             }
+
+            on_page(page_users).await;
 
             cursor = resp
                 .get("response_metadata")
@@ -348,8 +355,8 @@ impl SlackClient {
             }
         }
 
-        tracing::info!("Fetched {} users from Slack", users.len());
-        Ok(users)
+        tracing::info!("Fetched {} users from Slack", total);
+        Ok(total)
     }
 
     pub async fn get_channel_history(
