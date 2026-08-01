@@ -1,7 +1,5 @@
 mod db;
 mod slack;
-mod hackatime;
-mod api;
 mod website;
 
 use dotenvy::dotenv;
@@ -37,10 +35,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let clickhouse_user = env::var("CLICKHOUSE_USER").unwrap_or_else(|_| "default".into());
     let clickhouse_password = env::var("CLICKHOUSE_PASSWORD").unwrap_or_default();
     let clickhouse_db = env::var("CLICKHOUSE_DB").unwrap_or_else(|_| "default".into());
-    let sqlite_path = env::var("SQLITE_PATH").unwrap_or_else(|_| "ship-talkers.db".into());
 
-    let database = db::Database::new(&sqlite_path, &clickhouse_url, &clickhouse_user, &clickhouse_password, &clickhouse_db)?;
-    database.init_sqlite()?;
+    let database = db::Database::new(&clickhouse_url, &clickhouse_user, &clickhouse_password, &clickhouse_db);
 
     tracing::info!("Initializing ClickHouse tables...");
     db::clickhouse_db::init_tables(&database.clickhouse).await?;
