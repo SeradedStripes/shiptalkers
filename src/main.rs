@@ -32,6 +32,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|| env::var("SLACK_USER_TOKEN").ok().map(|t| vec![t]).unwrap_or_default());
     let slack_request_delay_ms = env::var("SLACK_REQUEST_DELAY_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(1200);
     let slack_max_inflight = env::var("SLACK_MAX_INFLIGHT").ok().and_then(|v| v.parse().ok()).unwrap_or(8);
+    let slack_channel_concurrency = env::var("SLACK_CHANNEL_CONCURRENCY").ok().and_then(|v| v.parse().ok()).unwrap_or(64);
     let clickhouse_url = env::var("CLICKHOUSE_URL").unwrap_or_else(|_| "http://localhost:8123".into());
     let clickhouse_user = env::var("CLICKHOUSE_USER").unwrap_or_else(|_| "default".into());
     let clickhouse_password = env::var("CLICKHOUSE_PASSWORD").unwrap_or_default();
@@ -55,6 +56,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             slack_user_tokens_for_scraper,
             Duration::from_millis(slack_request_delay_ms),
             slack_max_inflight,
+            slack_channel_concurrency,
         ).await {
             tracing::error!("Scraper error: {}", e);
         }
@@ -104,6 +106,7 @@ async fn run_scraper(
     slack_user_tokens: Vec<String>,
     request_delay: Duration,
     max_inflight: usize,
+    channel_concurrency: usize,
 ) -> Result<(), String> {
     let slack_client = slack::SlackClient::new(slack_token, request_delay, max_inflight);
 
@@ -122,7 +125,7 @@ async fn run_scraper(
         tracing::warn!("No SLACK_USER_TOKEN / SLACK_USER_TOKENS set, message scraping disabled");
     } else {
         tracing::info!("Starting message scraper with {} user token(s)...", slack_user_tokens.len());
-        scrape_all_messages(&slack_user_tokens, &clickhouse, request_delay, max_inflight).await;
+        scrape_all_messages(&slack_user_tokens, &clickhouse, request_delay, max_inflight, channel_concurrency).await;
     }
 
     tracing::info!("Will do a full rescan and rescrape every 24 hours");
@@ -131,7 +134,7 @@ async fn run_scraper(
         tracing::info!("24hr rescan starting...");
         full_fetch(&slack_client, &clickhouse).await?;
         if !slack_user_tokens.is_empty() {
-            scrape_all_messages(&slack_user_tokens, &clickhouse, request_delay, max_inflight).await;
+            scrape_all_messages(&slack_user_tokens, &clickhouse, request_delay, max_inflight, channel_concurrency).await;
         }
     }
 }
@@ -141,6 +144,7 @@ async fn scrape_all_messages(
     clickhouse: &clickhouse::Client,
     request_delay: Duration,
     max_inflight: usize,
+    channel_concurrency: usize,
 ) {
     let channels = match db::clickhouse_db::get_known_channel_ids(clickhouse).await {
         Ok(c) => c,
@@ -193,7 +197,7 @@ async fn scrape_all_messages(
         let total = total.clone();
         let processed = processed.clone();
         workers.push(tokio::spawn(async move {
-            scrape_shard(&client, &clickhouse, &shard, token_idx, max_inflight, total, processed).await;
+            scrape_shard(&client, &clickhouse, &shard, token_idx, max_inflight, channel_concurrency, total, processed).await;
         }));
     }
 
@@ -211,6 +215,7 @@ async fn scrape_shard(
     channels: &[String],
     token_idx: usize,
     max_inflight: usize,
+    channel_concurrency: usize,
     total: Arc<AtomicU64>,
     processed: Arc<AtomicU64>,
 ) {
@@ -220,7 +225,7 @@ async fn scrape_shard(
     }
     tracing::info!("[token {}] Scraping {} channels", token_idx, channels.len());
 
-    let channel_concurrency = (max_inflight * 2).max(1);
+    let channel_concurrency = channel_concurrency.max(1);
     let total_channels = channels.len();
     let sem = Arc::new(tokio::sync::Semaphore::new(channel_concurrency));
 
