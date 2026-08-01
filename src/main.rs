@@ -154,7 +154,51 @@ async fn scrape_all_messages(
         }
     };
 
-    tracing::info!("Scraping messages for {} channels with {} token(s)...", channels.len(), user_tokens.len());
+    let scraped = match db::clickhouse_db::get_scraped_channel_ids(clickhouse).await {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!("Failed to get scraped channel IDs: {}", e);
+            return;
+        }
+    };
+    let scraped_set: std::collections::HashSet<&String> = scraped.iter().collect();
+
+    let new_channels: Vec<String> = channels.iter()
+        .filter(|c| !scraped_set.contains(c))
+        .cloned()
+        .collect();
+    let check_channels: Vec<String> = channels.iter()
+        .filter(|c| scraped_set.contains(c))
+        .cloned()
+        .collect();
+
+    tracing::info!(
+        "{} known channels: {} new to full-scrape, {} already-scraped to check for new messages",
+        channels.len(), new_channels.len(), check_channels.len()
+    );
+
+    if !new_channels.is_empty() {
+        tracing::info!("Full-scraping {} new channels...", new_channels.len());
+        scrape_channel_list(user_tokens, clickhouse, &new_channels, request_delay, max_inflight, channel_concurrency).await;
+    }
+
+    if !check_channels.is_empty() {
+        tracing::info!("Checking {} already-scraped channels for new messages...", check_channels.len());
+        scrape_channel_list(user_tokens, clickhouse, &check_channels, request_delay, max_inflight, channel_concurrency).await;
+    }
+
+    tracing::info!("Message scrape pass complete");
+}
+
+async fn scrape_channel_list(
+    user_tokens: &[String],
+    clickhouse: &clickhouse::Client,
+    channels: &[String],
+    request_delay: Duration,
+    max_inflight: usize,
+    channel_concurrency: usize,
+) {
+    tracing::info!("Scraping {} channels with {} token(s)...", channels.len(), user_tokens.len());
     let total = Arc::new(AtomicU64::new(0));
     let processed = Arc::new(AtomicU64::new(0));
     let done = Arc::new(AtomicBool::new(false));
@@ -206,7 +250,7 @@ async fn scrape_all_messages(
     }
 
     done.store(true, Ordering::Relaxed);
-    tracing::info!("Message scrape complete! {} new messages", total.load(Ordering::Relaxed));
+    tracing::info!("Pass complete! {} new messages inserted", total.load(Ordering::Relaxed));
 }
 
 async fn scrape_shard(
@@ -278,6 +322,10 @@ async fn scrape_shard(
         let _ = handle.await;
     }
     let _ = reporter.await;
+
+    if let Err(e) = db::clickhouse_db::mark_channels_scraped(clickhouse, channels).await {
+        tracing::warn!("[token {}] Failed to record {} channels as scraped: {}", token_idx, channels.len(), e);
+    }
 }
 
 async fn scrape_one_channel(

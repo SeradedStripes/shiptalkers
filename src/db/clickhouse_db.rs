@@ -110,6 +110,17 @@ pub async fn init_tables(client: &Client) -> Result<(), Box<dyn std::error::Erro
         .execute()
         .await?;
 
+    client
+        .query(
+            "CREATE TABLE IF NOT EXISTS scraped_channels (
+                channel_id String,
+                scraped_at DateTime('UTC') DEFAULT now()
+            ) ENGINE = ReplacingMergeTree()
+            ORDER BY channel_id"
+        )
+        .execute()
+        .await?;
+
     // Always deduplicate slack_messages on startup
     client
         .query("OPTIMIZE TABLE slack_messages FINAL")
@@ -257,6 +268,35 @@ pub async fn get_max_message_ts(client: &Client, channel_id: &str) -> Result<Opt
         .await?;
 
     Ok(row.map(|r| r.max_ts))
+}
+
+pub async fn get_scraped_channel_ids(client: &Client) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    let rows: Vec<ChannelIdRow> = client
+        .query("SELECT channel_id FROM scraped_channels")
+        .fetch_all()
+        .await?;
+
+    Ok(rows.into_iter().map(|r| r.channel_id).collect())
+}
+
+pub async fn mark_channels_scraped(client: &Client, channel_ids: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    if channel_ids.is_empty() {
+        return Ok(());
+    }
+
+    #[derive(Debug, Row, Serialize)]
+    struct ScrapedRow {
+        channel_id: String,
+    }
+
+    let mut insert = client.insert("scraped_channels")?;
+    for id in channel_ids {
+        insert.write(&ScrapedRow { channel_id: id.clone() }).await?;
+    }
+    insert.end().await?;
+
+    tracing::info!("Recorded {} channels as scraped", channel_ids.len());
+    Ok(())
 }
 
 pub async fn is_fully_scraped(client: &Client, channel_id: &str) -> Result<bool, Box<dyn std::error::Error>> {
