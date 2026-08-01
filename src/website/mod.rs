@@ -1,11 +1,5 @@
 use askama::Template;
-use axum::{
-    Router,
-    response::Html,
-    extract::State,
-    routing::get,
-    http::StatusCode,
-};
+use axum::{Router, extract::State, http::StatusCode, response::Html, routing::get};
 use clickhouse::Client;
 use std::collections::HashMap;
 use tower_http::services::ServeDir;
@@ -38,15 +32,24 @@ pub fn router(clickhouse: Client) -> Router {
     let state = AppState { clickhouse };
 
     Router::new()
-        .route("/", get(|| async { Html(include_str!("static/index.html")) }))
-        .route("/link", get(|| async { Html(include_str!("static/link.html")) }))
+        .route(
+            "/",
+            get(|| async { Html(include_str!("static/index.html")) }),
+        )
+        .route(
+            "/link",
+            get(|| async { Html(include_str!("static/link.html")) }),
+        )
         .route("/stats", get(get_stats_page))
-        .route("/style.css", get(|| async {
-            axum::response::Response::builder()
-                .header(axum::http::header::CONTENT_TYPE, "text/css")
-                .body(axum::body::Body::from(include_str!("static/style.css")))
-                .unwrap()
-        }))
+        .route(
+            "/style.css",
+            get(|| async {
+                axum::response::Response::builder()
+                    .header(axum::http::header::CONTENT_TYPE, "text/css")
+                    .body(axum::body::Body::from(include_str!("static/style.css")))
+                    .unwrap()
+            }),
+        )
         .fallback_service(ServeDir::new("static"))
         .with_state(state)
 }
@@ -65,7 +68,9 @@ fn fmt_thousands(n: u64) -> String {
 
 async fn get_stats_page(State(state): State<AppState>) -> Result<Html<String>, StatusCode> {
     let stats = load_stats(&state.clickhouse).await;
-    let html = stats.render().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let html = stats
+        .render()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Html(html))
 }
 
@@ -107,7 +112,11 @@ async fn load_stats(ch: &Client) -> Stats {
         .unwrap_or(0);
 
     let db_size_gib = db_size_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
-    let db_size_label = format!("{:.prec$} GiB", db_size_gib, prec = if db_size_gib < 1.0 { 5 } else { 2 });
+    let db_size_label = format!(
+        "{:.prec$} GiB",
+        db_size_gib,
+        prec = if db_size_gib < 1.0 { 5 } else { 2 }
+    );
 
     #[derive(clickhouse::Row, serde::Deserialize)]
     struct LeaderboardRow {
@@ -121,7 +130,7 @@ async fn load_stats(ch: &Client) -> Stats {
              FROM slack_messages FINAL
              GROUP BY user_id
              ORDER BY messages DESC
-             LIMIT 20"
+             LIMIT 20",
         )
         .fetch_all::<LeaderboardRow>()
         .await
@@ -190,8 +199,16 @@ async fn load_stats(ch: &Client) -> Stats {
     let mut scored: Vec<(String, u64, u64, f64)> = combined
         .into_iter()
         .map(|(uid, (m, c))| {
-            let z_m = if std_m > 0.0 { (m as f64 - mean_m) / std_m } else { 0.0 };
-            let z_c = if std_c > 0.0 { (c as f64 - mean_c) / std_c } else { 0.0 };
+            let z_m = if std_m > 0.0 {
+                (m as f64 - mean_m) / std_m
+            } else {
+                0.0
+            };
+            let z_c = if std_c > 0.0 {
+                (c as f64 - mean_c) / std_c
+            } else {
+                0.0
+            };
             (uid, m, c, z_m + z_c)
         })
         .collect();

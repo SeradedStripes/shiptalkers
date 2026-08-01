@@ -5,9 +5,9 @@ pub use socket::start_socket_mode;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::collections::VecDeque;
 use std::future::Future;
 use std::pin::Pin;
-use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::Notify;
@@ -66,14 +66,15 @@ impl RateLimiter {
         };
 
         loop {
-            let mut notified = self.notify.notified();
+            let notified = self.notify.notified();
             tokio::pin!(notified);
             notified.as_mut().enable();
 
             let wait = {
                 let mut s = self.state.lock().await;
                 let now = Instant::now();
-                s.tokens = (s.tokens + now.duration_since(s.last).as_secs_f64() * s.rate).min(s.burst);
+                s.tokens =
+                    (s.tokens + now.duration_since(s.last).as_secs_f64() * s.rate).min(s.burst);
                 s.last = now;
 
                 if s.queue.front() == Some(&ticket) && s.tokens >= 1.0 {
@@ -98,7 +99,7 @@ impl RateLimiter {
                     }
                 }
                 None => {
-                    &mut notified.await;
+                    notified.await;
                 }
             }
         }
@@ -138,14 +139,19 @@ impl SlackClient {
             .clone()
     }
 
-    async fn get(&self, method: &str, params: &[(String, String)]) -> Result<serde_json::Value, Box<dyn std::error::Error + Send + Sync>> {
+    async fn get(
+        &self,
+        method: &str,
+        params: &[(String, String)],
+    ) -> Result<serde_json::Value, Box<dyn std::error::Error + Send + Sync>> {
         let url = format!("{}/{}", self.base_url, method);
         let mut retry_count = 0u32;
 
         loop {
             self.limiter_for(method).acquire().await;
 
-            let response = self.client
+            let response = self
+                .client
                 .get(&url)
                 .header("Authorization", format!("Bearer {}", self.token))
                 .query(params)
@@ -153,14 +159,21 @@ impl SlackClient {
                 .await?;
 
             if response.status().as_u16() == 429 {
-                let retry_after = response.headers()
+                let retry_after = response
+                    .headers()
                     .get("Retry-After")
                     .and_then(|v| v.to_str().ok())
                     .and_then(|v| v.parse::<f64>().ok())
                     .unwrap_or(5.0);
                 let backoff = (retry_after as u64).saturating_mul(2u64.saturating_pow(retry_count));
                 let wait = backoff.min(60);
-                tracing::warn!("Rate limited on {}, attempt {}, waiting {}s (retry_after={}s)", method, retry_count + 1, wait, retry_after);
+                tracing::warn!(
+                    "Rate limited on {}, attempt {}, waiting {}s (retry_after={}s)",
+                    method,
+                    retry_count + 1,
+                    wait,
+                    retry_after
+                );
                 tokio::time::sleep(Duration::from_secs(wait)).await;
                 retry_count += 1;
                 continue;
@@ -170,12 +183,20 @@ impl SlackClient {
 
             if let Some(error) = parsed.get("error").and_then(|v| v.as_str()) {
                 if error == "ratelimited" {
-                    let retry_after = parsed.get("retry_after")
+                    let retry_after = parsed
+                        .get("retry_after")
                         .and_then(|v| v.as_f64())
                         .unwrap_or(5.0);
-                    let backoff = (retry_after as u64).saturating_mul(2u64.saturating_pow(retry_count));
+                    let backoff =
+                        (retry_after as u64).saturating_mul(2u64.saturating_pow(retry_count));
                     let wait = backoff.min(60);
-                    tracing::warn!("Rate limited on {}, attempt {}, waiting {}s (retry_after={}s)", method, retry_count + 1, wait, retry_after);
+                    tracing::warn!(
+                        "Rate limited on {}, attempt {}, waiting {}s (retry_after={}s)",
+                        method,
+                        retry_count + 1,
+                        wait,
+                        retry_after
+                    );
                     tokio::time::sleep(Duration::from_secs(wait)).await;
                     retry_count += 1;
                     continue;
@@ -187,7 +208,11 @@ impl SlackClient {
         }
     }
 
-    pub async fn fetch_channels_paginated<F>(&self, mut on_page: F, max_pages: Option<usize>) -> Result<usize, Box<dyn std::error::Error + Send + Sync>>
+    pub async fn fetch_channels_paginated<F>(
+        &self,
+        mut on_page: F,
+        max_pages: Option<usize>,
+    ) -> Result<usize, Box<dyn std::error::Error + Send + Sync>>
     where
         F: FnMut(Vec<SlackChannel>) -> Pin<Box<dyn Future<Output = ()> + Send>>,
     {
@@ -196,10 +221,8 @@ impl SlackClient {
         let mut page_count = 0;
 
         loop {
-            if let Some(max) = max_pages {
-                if page_count >= max {
-                    break;
-                }
+            if max_pages.is_some_and(|max| page_count >= max) {
+                break;
             }
 
             let mut params = vec![
@@ -250,35 +273,23 @@ impl SlackClient {
         Ok(total)
     }
 
-    pub async fn fetch_first_page(&self) -> Result<Vec<SlackChannel>, Box<dyn std::error::Error + Send + Sync>> {
-        let params = vec![
-            ("types".to_string(), "public_channel".to_string()),
-            ("limit".to_string(), "200".to_string()),
-        ];
-
-        let resp = self.get("conversations.list", &params).await?;
-
-        let mut channels = Vec::new();
-        if let Some(channels_arr) = resp.get("channels").and_then(|v| v.as_array()) {
-            for ch in channels_arr {
-                if let (Some(id), Some(name)) = (ch.get("id"), ch.get("name")) {
-                    channels.push(SlackChannel {
-                        id: id.as_str().unwrap_or_default().to_string(),
-                        name: name.as_str().unwrap_or_default().to_string(),
-                    });
-                }
-            }
-        }
-
-        Ok(channels)
+    pub async fn get_channel_history(
+        &self,
+        channel_id: &str,
+        oldest: Option<&str>,
+    ) -> Result<Vec<SlackMessage>, Box<dyn std::error::Error + Send + Sync>> {
+        self.fetch_paginated("conversations.history", channel_id, None, oldest)
+            .await
     }
 
-    pub async fn get_channel_history(&self, channel_id: &str, oldest: Option<&str>) -> Result<Vec<SlackMessage>, Box<dyn std::error::Error + Send + Sync>> {
-        self.fetch_paginated("conversations.history", channel_id, None, oldest).await
-    }
-
-    pub async fn fetch_thread_replies(&self, channel_id: &str, thread_ts: &str, oldest: Option<&str>) -> Result<Vec<SlackMessage>, Box<dyn std::error::Error + Send + Sync>> {
-        self.fetch_paginated("conversations.replies", channel_id, Some(thread_ts), oldest).await
+    pub async fn fetch_thread_replies(
+        &self,
+        channel_id: &str,
+        thread_ts: &str,
+        oldest: Option<&str>,
+    ) -> Result<Vec<SlackMessage>, Box<dyn std::error::Error + Send + Sync>> {
+        self.fetch_paginated("conversations.replies", channel_id, Some(thread_ts), oldest)
+            .await
     }
 
     async fn fetch_paginated(
@@ -297,7 +308,12 @@ impl SlackClient {
             page += 1;
             if page == 1 {
                 match oldest {
-                    Some(ts) if !ts.is_empty() => tracing::debug!("Fetching {} for {} (incremental, oldest={})", method, channel_id, ts),
+                    Some(ts) if !ts.is_empty() => tracing::debug!(
+                        "Fetching {} for {} (incremental, oldest={})",
+                        method,
+                        channel_id,
+                        ts
+                    ),
                     _ => tracing::debug!("Fetching {} for {} (full)", method, channel_id),
                 }
             }
@@ -311,10 +327,10 @@ impl SlackClient {
             if let Some(ts) = thread_ts {
                 params.push(("ts".to_string(), ts.to_string()));
             }
-            if let Some(o) = oldest {
-                if !o.is_empty() {
-                    params.push(("oldest".to_string(), o.to_string()));
-                }
+            if let Some(o) = oldest
+                && !o.is_empty()
+            {
+                params.push(("oldest".to_string(), o.to_string()));
             }
 
             let resp = self.get(method, &params).await?;
@@ -338,14 +354,32 @@ impl SlackClient {
                 }
             }
 
-            if page % 10 == 0 {
-                tracing::info!("{}: fetched page {} of {} ({} messages so far, {:.0}s)", channel_id, page, if thread_ts.is_some() { format!("thread {}", thread_ts.unwrap()) } else { "channel".to_string() }, messages.len(), start.elapsed().as_secs_f64());
+            let what = thread_ts.map_or("channel".to_string(), |ts| format!("thread {}", ts));
+            if page.is_multiple_of(10) {
+                tracing::info!(
+                    "{}: fetched page {} of {} ({} messages so far, {:.0}s)",
+                    channel_id,
+                    page,
+                    what,
+                    messages.len(),
+                    start.elapsed().as_secs_f64()
+                );
             }
 
-            let has_more = resp.get("has_more").and_then(|v| v.as_bool()).unwrap_or(false);
+            let has_more = resp
+                .get("has_more")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
             if !has_more {
                 if page > 1 {
-                    tracing::info!("{}: {} complete ({} pages, {} messages, {:.0}s)", channel_id, if thread_ts.is_some() { format!("thread {}", thread_ts.unwrap()) } else { "channel".to_string() }, page, messages.len(), start.elapsed().as_secs_f64());
+                    tracing::info!(
+                        "{}: {} complete ({} pages, {} messages, {:.0}s)",
+                        channel_id,
+                        what,
+                        page,
+                        messages.len(),
+                        start.elapsed().as_secs_f64()
+                    );
                 }
                 break;
             }

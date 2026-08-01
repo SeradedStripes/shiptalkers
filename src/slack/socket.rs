@@ -1,7 +1,7 @@
+use futures::{SinkExt, StreamExt};
 use reqwest::Client;
 use serde::Deserialize;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
-use futures::{SinkExt, StreamExt};
 
 use crate::db::clickhouse_db::{self, SlackChannelRow};
 
@@ -65,22 +65,29 @@ pub async fn start_socket_mode(
                         }
                         "events_api" => {
                             if let Some(payload) = &socket_msg.payload {
-                                if let Some(event) = payload.get("event") {
-                                    if let Some(event_type) = event.get("type").and_then(|v| v.as_str()) {
-                                        if event_type == "channel_created" {
-                                            if let Ok(created) = serde_json::from_value::<ChannelCreated>(event.clone()) {
-                                                tracing::info!("New channel created: #{} ({})", created.channel.name, created.channel.id);
+                                if let Some(event) = payload.get("event")
+                                    && let Some(event_type) =
+                                        event.get("type").and_then(|v| v.as_str())
+                                    && event_type == "channel_created"
+                                    && let Ok(created) =
+                                        serde_json::from_value::<ChannelCreated>(event.clone())
+                                {
+                                    tracing::info!(
+                                        "New channel created: #{} ({})",
+                                        created.channel.name,
+                                        created.channel.id
+                                    );
 
-                                                let row = SlackChannelRow {
-                                                    channel_id: created.channel.id,
-                                                    name: created.channel.name,
-                                                };
+                                    let row = SlackChannelRow {
+                                        channel_id: created.channel.id,
+                                        name: created.channel.name,
+                                    };
 
-                                                if let Err(e) = clickhouse_db::insert_new_channels(&clickhouse, &[row]).await {
-                                                    tracing::error!("Failed to insert new channel: {}", e);
-                                                }
-                                            }
-                                        }
+                                    if let Err(e) =
+                                        clickhouse_db::insert_new_channels(&clickhouse, &[row])
+                                            .await
+                                    {
+                                        tracing::error!("Failed to insert new channel: {}", e);
                                     }
                                 }
 

@@ -21,21 +21,11 @@ pub struct ChannelIdRow {
     pub channel_id: String,
 }
 
-#[derive(Debug, Row, Serialize, Deserialize)]
-pub struct CodingActivityRow {
-    pub user_id: String,
-    pub date: String,
-    pub minutes: i64,
-    pub language: Option<String>,
-}
-
 pub async fn init_tables(client: &Client) -> Result<(), Box<dyn std::error::Error>> {
     let admin_client = client.clone().with_database("");
 
     admin_client
-        .query(
-            "CREATE DATABASE IF NOT EXISTS ship_talkers"
-        )
+        .query("CREATE DATABASE IF NOT EXISTS ship_talkers")
         .execute()
         .await?;
 
@@ -51,7 +41,7 @@ pub async fn init_tables(client: &Client) -> Result<(), Box<dyn std::error::Erro
                 text String,
                 thread_ts Nullable(String)
             ) ENGINE = ReplacingMergeTree()
-            ORDER BY (channel_id, message_ts)"
+            ORDER BY (channel_id, message_ts)",
         )
         .execute()
         .await?;
@@ -69,7 +59,7 @@ pub async fn init_tables(client: &Client) -> Result<(), Box<dyn std::error::Erro
                 channel_id String,
                 name String
             ) ENGINE = ReplacingMergeTree()
-            ORDER BY channel_id"
+            ORDER BY channel_id",
         )
         .execute()
         .await?;
@@ -82,7 +72,7 @@ pub async fn init_tables(client: &Client) -> Result<(), Box<dyn std::error::Erro
                 minutes Int64,
                 language Nullable(String)
             ) ENGINE = MergeTree()
-            ORDER BY (user_id, date)"
+            ORDER BY (user_id, date)",
         )
         .execute()
         .await?;
@@ -93,7 +83,7 @@ pub async fn init_tables(client: &Client) -> Result<(), Box<dyn std::error::Erro
                 channel_id String,
                 fully_scraped UInt8
             ) ENGINE = ReplacingMergeTree()
-            ORDER BY channel_id"
+            ORDER BY channel_id",
         )
         .execute()
         .await?;
@@ -105,7 +95,7 @@ pub async fn init_tables(client: &Client) -> Result<(), Box<dyn std::error::Erro
                 thread_ts String,
                 fully_scraped UInt8
             ) ENGINE = ReplacingMergeTree()
-            ORDER BY (channel_id, thread_ts)"
+            ORDER BY (channel_id, thread_ts)",
         )
         .execute()
         .await?;
@@ -116,7 +106,7 @@ pub async fn init_tables(client: &Client) -> Result<(), Box<dyn std::error::Erro
                 channel_id String,
                 scraped_at DateTime('UTC') DEFAULT now()
             ) ENGINE = ReplacingMergeTree()
-            ORDER BY channel_id"
+            ORDER BY channel_id",
         )
         .execute()
         .await?;
@@ -133,7 +123,9 @@ pub async fn init_tables(client: &Client) -> Result<(), Box<dyn std::error::Erro
 
 async fn migrate_slack_messages(client: &Client) -> Result<(), Box<dyn std::error::Error>> {
     #[derive(Debug, Row, Deserialize)]
-    struct CountRow { count: u64 }
+    struct CountRow {
+        count: u64,
+    }
 
     // Check if table is already ReplacingMergeTree
     let existing: Option<CountRow> = client
@@ -156,17 +148,22 @@ async fn migrate_slack_messages(client: &Client) -> Result<(), Box<dyn std::erro
         return Ok(());
     }
 
-    tracing::info!("Migrating slack_messages to ReplacingMergeTree ({} rows)...", pre_count);
+    tracing::info!(
+        "Migrating slack_messages to ReplacingMergeTree ({} rows)...",
+        pre_count
+    );
 
     client
-        .query("CREATE TABLE IF NOT EXISTS slack_messages_new (
+        .query(
+            "CREATE TABLE IF NOT EXISTS slack_messages_new (
             user_id String,
             channel_id String,
             message_ts String,
             text String,
             thread_ts Nullable(String)
         ) ENGINE = ReplacingMergeTree()
-        ORDER BY (channel_id, message_ts)")
+        ORDER BY (channel_id, message_ts)",
+        )
         .execute()
         .await?;
 
@@ -196,11 +193,18 @@ async fn migrate_slack_messages(client: &Client) -> Result<(), Box<dyn std::erro
         .await
         .unwrap_or(0);
 
-    tracing::info!("Migration complete: {} rows -> {} rows after dedup", pre_count, dedupd);
+    tracing::info!(
+        "Migration complete: {} rows -> {} rows after dedup",
+        pre_count,
+        dedupd
+    );
     Ok(())
 }
 
-pub async fn insert_messages(client: &Client, messages: &[SlackMessageRow]) -> Result<u64, Box<dyn std::error::Error>> {
+pub async fn insert_messages(
+    client: &Client,
+    messages: &[SlackMessageRow],
+) -> Result<u64, Box<dyn std::error::Error>> {
     if messages.is_empty() {
         return Ok(0);
     }
@@ -213,16 +217,9 @@ pub async fn insert_messages(client: &Client, messages: &[SlackMessageRow]) -> R
     Ok(count)
 }
 
-pub async fn insert_coding_activity(client: &Client, activities: &[CodingActivityRow]) -> Result<(), Box<dyn std::error::Error>> {
-    let mut insert = client.insert("coding_activity")?;
-    for act in activities {
-        insert.write(act).await?;
-    }
-    insert.end().await?;
-    Ok(())
-}
-
-pub async fn get_known_channel_ids(client: &Client) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+pub async fn get_known_channel_ids(
+    client: &Client,
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     let rows: Vec<ChannelIdRow> = client
         .query("SELECT channel_id FROM slack_channels")
         .fetch_all()
@@ -231,7 +228,10 @@ pub async fn get_known_channel_ids(client: &Client) -> Result<Vec<String>, Box<d
     Ok(rows.into_iter().map(|r| r.channel_id).collect())
 }
 
-pub async fn insert_new_channels(client: &Client, channels: &[SlackChannelRow]) -> Result<u64, Box<dyn std::error::Error>> {
+pub async fn insert_new_channels(
+    client: &Client,
+    channels: &[SlackChannelRow],
+) -> Result<u64, Box<dyn std::error::Error>> {
     let known = get_known_channel_ids(client).await?;
     let new_channels: Vec<&SlackChannelRow> = channels
         .iter()
@@ -253,7 +253,10 @@ pub async fn insert_new_channels(client: &Client, channels: &[SlackChannelRow]) 
     Ok(count)
 }
 
-pub async fn get_max_message_ts(client: &Client, channel_id: &str) -> Result<Option<String>, Box<dyn std::error::Error>> {
+pub async fn get_max_message_ts(
+    client: &Client,
+    channel_id: &str,
+) -> Result<Option<String>, Box<dyn std::error::Error>> {
     #[derive(Debug, Row, Deserialize)]
     struct MaxTsRow {
         max_ts: String,
@@ -270,7 +273,9 @@ pub async fn get_max_message_ts(client: &Client, channel_id: &str) -> Result<Opt
     Ok(row.map(|r| r.max_ts))
 }
 
-pub async fn get_scraped_channel_ids(client: &Client) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+pub async fn get_scraped_channel_ids(
+    client: &Client,
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     let rows: Vec<ChannelIdRow> = client
         .query("SELECT channel_id FROM scraped_channels")
         .fetch_all()
@@ -279,7 +284,10 @@ pub async fn get_scraped_channel_ids(client: &Client) -> Result<Vec<String>, Box
     Ok(rows.into_iter().map(|r| r.channel_id).collect())
 }
 
-pub async fn mark_channels_scraped(client: &Client, channel_ids: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn mark_channels_scraped(
+    client: &Client,
+    channel_ids: &[String],
+) -> Result<(), Box<dyn std::error::Error>> {
     if channel_ids.is_empty() {
         return Ok(());
     }
@@ -291,7 +299,11 @@ pub async fn mark_channels_scraped(client: &Client, channel_ids: &[String]) -> R
 
     let mut insert = client.insert("scraped_channels")?;
     for id in channel_ids {
-        insert.write(&ScrapedRow { channel_id: id.clone() }).await?;
+        insert
+            .write(&ScrapedRow {
+                channel_id: id.clone(),
+            })
+            .await?;
     }
     insert.end().await?;
 
@@ -299,14 +311,21 @@ pub async fn mark_channels_scraped(client: &Client, channel_ids: &[String]) -> R
     Ok(())
 }
 
-pub async fn mark_channel_scraped(client: &Client, channel_id: &str) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn mark_channel_scraped(
+    client: &Client,
+    channel_id: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
     #[derive(Debug, Row, Serialize)]
     struct ScrapedRow {
         channel_id: String,
     }
 
     let mut insert = client.insert("scraped_channels")?;
-    insert.write(&ScrapedRow { channel_id: channel_id.to_string() }).await?;
+    insert
+        .write(&ScrapedRow {
+            channel_id: channel_id.to_string(),
+        })
+        .await?;
     insert.end().await?;
     Ok(())
 }
@@ -319,7 +338,7 @@ pub async fn backfill_scraped_channels(client: &Client) -> Result<(), Box<dyn st
                 UNION DISTINCT
                 SELECT DISTINCT channel_id FROM slack_messages
             )
-            WHERE channel_id NOT IN (SELECT channel_id FROM scraped_channels)"
+            WHERE channel_id NOT IN (SELECT channel_id FROM scraped_channels)",
         )
         .fetch_all()
         .await?;
@@ -329,12 +348,18 @@ pub async fn backfill_scraped_channels(client: &Client) -> Result<(), Box<dyn st
     }
 
     let ids: Vec<String> = rows.into_iter().map(|r| r.channel_id).collect();
-    tracing::info!("Backfilling {} previously-scraped channels into scraped_channels", ids.len());
+    tracing::info!(
+        "Backfilling {} previously-scraped channels into scraped_channels",
+        ids.len()
+    );
     mark_channels_scraped(client, &ids).await?;
     Ok(())
 }
 
-pub async fn is_fully_scraped(client: &Client, channel_id: &str) -> Result<bool, Box<dyn std::error::Error>> {
+pub async fn is_fully_scraped(
+    client: &Client,
+    channel_id: &str,
+) -> Result<bool, Box<dyn std::error::Error>> {
     let count: u64 = client
         .query(&format!(
             "SELECT count() FROM scrape_checkpoints FINAL WHERE channel_id = '{}' AND fully_scraped = 1",
@@ -346,7 +371,10 @@ pub async fn is_fully_scraped(client: &Client, channel_id: &str) -> Result<bool,
     Ok(count > 0)
 }
 
-pub async fn mark_fully_scraped(client: &Client, channel_id: &str) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn mark_fully_scraped(
+    client: &Client,
+    channel_id: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
     #[derive(Debug, Row, Serialize)]
     struct CheckpointRow {
         channel_id: String,
@@ -354,15 +382,21 @@ pub async fn mark_fully_scraped(client: &Client, channel_id: &str) -> Result<(),
     }
 
     let mut insert = client.insert("scrape_checkpoints")?;
-    insert.write(&CheckpointRow {
-        channel_id: channel_id.to_string(),
-        fully_scraped: 1,
-    }).await?;
+    insert
+        .write(&CheckpointRow {
+            channel_id: channel_id.to_string(),
+            fully_scraped: 1,
+        })
+        .await?;
     insert.end().await?;
     Ok(())
 }
 
-pub async fn is_thread_fully_scraped(client: &Client, channel_id: &str, thread_ts: &str) -> Result<bool, Box<dyn std::error::Error>> {
+pub async fn is_thread_fully_scraped(
+    client: &Client,
+    channel_id: &str,
+    thread_ts: &str,
+) -> Result<bool, Box<dyn std::error::Error>> {
     let count: u64 = client
         .query(&format!(
             "SELECT count() FROM thread_checkpoints FINAL WHERE channel_id = '{}' AND thread_ts = '{}' AND fully_scraped = 1",
@@ -373,7 +407,11 @@ pub async fn is_thread_fully_scraped(client: &Client, channel_id: &str, thread_t
     Ok(count > 0)
 }
 
-pub async fn mark_thread_fully_scraped(client: &Client, channel_id: &str, thread_ts: &str) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn mark_thread_fully_scraped(
+    client: &Client,
+    channel_id: &str,
+    thread_ts: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
     #[derive(Debug, Row, Serialize)]
     struct ThreadCheckpointRow {
         channel_id: String,
@@ -382,16 +420,22 @@ pub async fn mark_thread_fully_scraped(client: &Client, channel_id: &str, thread
     }
 
     let mut insert = client.insert("thread_checkpoints")?;
-    insert.write(&ThreadCheckpointRow {
-        channel_id: channel_id.to_string(),
-        thread_ts: thread_ts.to_string(),
-        fully_scraped: 1,
-    }).await?;
+    insert
+        .write(&ThreadCheckpointRow {
+            channel_id: channel_id.to_string(),
+            thread_ts: thread_ts.to_string(),
+            fully_scraped: 1,
+        })
+        .await?;
     insert.end().await?;
     Ok(())
 }
 
-pub async fn get_max_thread_reply_ts(client: &Client, channel_id: &str, thread_ts: &str) -> Result<Option<String>, Box<dyn std::error::Error>> {
+pub async fn get_max_thread_reply_ts(
+    client: &Client,
+    channel_id: &str,
+    thread_ts: &str,
+) -> Result<Option<String>, Box<dyn std::error::Error>> {
     #[derive(Debug, Row, Deserialize)]
     struct MaxTsRow {
         max_ts: String,
