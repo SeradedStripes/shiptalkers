@@ -111,6 +111,28 @@ pub async fn init_tables(client: &Client) -> Result<(), Box<dyn std::error::Erro
         .execute()
         .await?;
 
+    client
+        .query(
+            "CREATE TABLE IF NOT EXISTS hackatime_connections (
+                slack_id String,
+                access_token String,
+                last_synced_date Nullable(String),
+                connected_at DateTime('UTC') DEFAULT now()
+            ) ENGINE = ReplacingMergeTree()
+            ORDER BY slack_id",
+        )
+        .execute()
+        .await?;
+
+    // Add last_synced_date column if it doesn't exist (migration for existing tables)
+    client
+        .query(
+            "ALTER TABLE hackatime_connections ADD COLUMN IF NOT EXISTS last_synced_date Nullable(String)",
+        )
+        .execute()
+        .await
+        .ok();
+
     // Always deduplicate slack_messages on startup
     client
         .query("OPTIMIZE TABLE slack_messages FINAL")
@@ -450,4 +472,125 @@ pub async fn get_max_thread_reply_ts(
         .await?;
 
     Ok(row.map(|r| r.max_ts))
+}
+
+#[derive(Debug, Row, Serialize)]
+pub struct HackatimeConnectionRow {
+    pub slack_id: String,
+    pub access_token: String,
+    pub last_synced_date: Option<String>,
+}
+
+#[derive(Debug, Row, Deserialize)]
+pub struct HackatimeConnectionReadRow {
+    pub slack_id: String,
+    pub access_token: String,
+    pub last_synced_date: Option<String>,
+}
+
+pub async fn upsert_hackatime_connection(
+    client: &Client,
+    slack_id: &str,
+    access_token: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut insert = client.insert("hackatime_connections")?;
+    insert
+        .write(&HackatimeConnectionRow {
+            slack_id: slack_id.to_string(),
+            access_token: access_token.to_string(),
+            last_synced_date: None,
+        })
+        .await?;
+    insert.end().await?;
+    Ok(())
+}
+
+pub async fn update_hackatime_connection(
+    client: &Client,
+    row: &HackatimeConnectionRow,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut insert = client.insert("hackatime_connections")?;
+    insert.write(row).await?;
+    insert.end().await?;
+    Ok(())
+}
+
+pub async fn get_hackatime_connections(
+    client: &Client,
+) -> Result<Vec<HackatimeConnectionReadRow>, Box<dyn std::error::Error>> {
+    let rows: Vec<HackatimeConnectionReadRow> = client
+        .query("SELECT slack_id, access_token FROM hackatime_connections FINAL")
+        .fetch_all()
+        .await?;
+    Ok(rows)
+}
+
+pub async fn delete_hackatime_connection(
+    client: &Client,
+    slack_id: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    client
+        .query(&format!(
+            "ALTER TABLE hackatime_connections DELETE WHERE slack_id = '{}'",
+            slack_id
+        ))
+        .execute()
+        .await?;
+    Ok(())
+}
+
+pub async fn is_hackatime_connected(
+    client: &Client,
+    slack_id: &str,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    #[derive(Debug, Row, Deserialize)]
+    struct CountRow {
+        count: u64,
+    }
+    let row: Option<CountRow> = client
+        .query(&format!(
+            "SELECT count() as count FROM hackatime_connections FINAL WHERE slack_id = '{}'",
+            slack_id
+        ))
+        .fetch_optional()
+        .await?;
+    Ok(row.map(|r| r.count > 0).unwrap_or(false))
+}
+
+pub async fn clear_coding_activity_from(
+    client: &Client,
+    slack_id: &str,
+    from_date: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    client
+        .query(&format!(
+            "ALTER TABLE coding_activity DELETE WHERE user_id = '{}' AND date >= '{}'",
+            slack_id, from_date
+        ))
+        .execute()
+        .await?;
+    Ok(())
+}
+
+pub async fn insert_coding_activity(
+    client: &Client,
+    rows: &[CodingActivityRow],
+) -> Result<(), Box<dyn std::error::Error>> {
+    if rows.is_empty() {
+        return Ok(());
+    }
+    let mut insert = client.insert("coding_activity")?;
+    for row in rows {
+        insert.write(row).await?;
+    }
+    insert.end().await?;
+    Ok(())
+}
+
+#[derive(Debug, Row, Serialize)]
+pub struct CodingActivityRow {
+    pub user_id: String,
+    pub date: String,
+    pub minutes: i64,
+    pub language: Option<String>,
 }

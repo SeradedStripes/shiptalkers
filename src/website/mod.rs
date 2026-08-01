@@ -4,9 +4,13 @@ use clickhouse::Client;
 use std::collections::HashMap;
 use tower_http::services::ServeDir;
 
+pub mod auth;
+
 #[derive(Clone)]
 pub struct AppState {
     pub clickhouse: Client,
+    pub auth: crate::auth::AuthConfig,
+    pub http: reqwest::Client,
 }
 
 #[derive(Template)]
@@ -28,19 +32,32 @@ pub struct UserStats {
     pub coding_minutes: String,
 }
 
-pub fn router(clickhouse: Client) -> Router {
-    let state = AppState { clickhouse };
+pub fn router(clickhouse: Client, auth_config: crate::auth::AuthConfig) -> Router {
+    let state = AppState {
+        clickhouse,
+        auth: auth_config,
+        http: reqwest::Client::new(),
+    };
 
     Router::new()
         .route(
             "/",
             get(|| async { Html(include_str!("static/index.html")) }),
         )
-        .route(
-            "/link",
-            get(|| async { Html(include_str!("static/link.html")) }),
-        )
+        .route("/link", get(auth::get_link))
         .route("/stats", get(get_stats_page))
+        .route("/auth/hackclub/login", get(auth::auth_hackclub_login))
+        .route("/auth/hackclub/callback", get(auth::auth_hackclub_callback))
+        .route("/auth/hackatime/login", get(auth::auth_hackatime_login))
+        .route(
+            "/auth/hackatime/callback",
+            get(auth::auth_hackatime_callback),
+        )
+        .route("/auth/logout", get(auth::auth_logout))
+        .route(
+            "/auth/hackatime/disconnect",
+            get(auth::auth_hackatime_disconnect),
+        )
         .route(
             "/style.css",
             get(|| async {

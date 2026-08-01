@@ -1,3 +1,4 @@
+mod auth;
 mod db;
 mod slack;
 mod website;
@@ -99,9 +100,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let port = env::var("PORT").unwrap_or_else(|_| "3000".into());
     let addr = format!("{}:{}", host, port);
 
+    let auth_config = auth::AuthConfig {
+        hca_client_id: env::var("HCA_CLIENT_ID")?,
+        hca_client_secret: env::var("HCA_CLIENT_SECRET")?,
+        hackatime_client_id: env::var("HACKATIME_CLIENT_ID")?,
+        hackatime_client_secret: env::var("HACKATIME_CLIENT_SECRET")?,
+        base_url: env::var("BASE_URL").unwrap_or_else(|_| "http://localhost:3000".into()),
+        session_secret: env::var("SESSION_SECRET")?,
+    };
+
+    {
+        let clickhouse_for_resync = database.clickhouse.clone();
+        let http_for_resync = reqwest::Client::new();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+                website::auth::resync_all(&clickhouse_for_resync, &http_for_resync).await;
+            }
+        });
+    }
+
     tracing::info!("Starting web server on {}", addr);
     let listener = TcpListener::bind(&addr).await?;
-    axum::serve(listener, website::router(database.clickhouse)).await?;
+    axum::serve(listener, website::router(database.clickhouse, auth_config)).await?;
 
     Ok(())
 }
