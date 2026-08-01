@@ -28,6 +28,8 @@ pub struct Stats {
     pub active_users: String,
     pub channels_tracked: String,
     pub total_channels: String,
+    pub scraped_channels: String,
+    pub scrape_in_progress: bool,
     pub total_users: String,
     pub coding_minutes: String,
     pub db_size_label: String,
@@ -148,6 +150,12 @@ async fn load_stats(
 
     let total_channels: u64 = ch
         .query("SELECT count() FROM slack_channels FINAL")
+        .fetch_one()
+        .await
+        .unwrap_or(0);
+
+    let scraped_channels: u64 = ch
+        .query("SELECT count() FROM scraped_channels")
         .fetch_one()
         .await
         .unwrap_or(0);
@@ -378,6 +386,8 @@ async fn load_stats(
         active_users: fmt_thousands(active_users),
         channels_tracked: fmt_thousands(channels_tracked),
         total_channels: fmt_thousands(total_channels),
+        scraped_channels: fmt_thousands(scraped_channels),
+        scrape_in_progress: scraped_channels < total_channels,
         total_users: fmt_thousands(total_users),
         coding_minutes: fmt_thousands(coding_minutes),
         db_size_label,
