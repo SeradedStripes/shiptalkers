@@ -1,5 +1,8 @@
 use askama::Template;
-use axum::{Router, extract::State, http::StatusCode, response::Html, routing::get};
+use axum::extract::State;
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::Html;
+use axum::{Router, routing::get};
 use clickhouse::Client;
 use tower_http::services::ServeDir;
 
@@ -10,6 +13,12 @@ pub struct AppState {
     pub clickhouse: Client,
     pub auth: crate::auth::AuthConfig,
     pub http: reqwest::Client,
+}
+
+#[derive(Template)]
+#[template(path = "index.html")]
+pub struct IndexTemplate {
+    pub signed_in: bool,
 }
 
 #[derive(Template)]
@@ -25,6 +34,7 @@ pub struct Stats {
     pub top: Vec<TopUser>,
     pub leaderboard: Vec<UserStats>,
     pub timers: Vec<UserStats>,
+    pub signed_in: bool,
 }
 
 pub struct UserStats {
@@ -50,10 +60,7 @@ pub fn router(clickhouse: Client, auth_config: crate::auth::AuthConfig) -> Route
     };
 
     Router::new()
-        .route(
-            "/",
-            get(|| async { Html(include_str!("static/index.html")) }),
-        )
+        .route("/", get(get_index))
         .route("/link", get(auth::get_link))
         .route("/stats", get(get_stats_page))
         .route("/auth/hackclub/login", get(auth::auth_hackclub_login))
@@ -93,15 +100,34 @@ fn fmt_thousands(n: u64) -> String {
     out
 }
 
-async fn get_stats_page(State(state): State<AppState>) -> Result<Html<String>, StatusCode> {
-    let stats = load_stats(&state.clickhouse).await;
+async fn get_index(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Html<String>, StatusCode> {
+    let signed_in = auth::session_from_request(&headers, &state.auth).is_some();
+    let template = IndexTemplate { signed_in };
+    let html = template
+        .render()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Html(html))
+}
+
+async fn get_stats_page(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Html<String>, StatusCode> {
+    let stats = load_stats(&state.clickhouse, &headers, &state.auth).await;
     let html = stats
         .render()
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Html(html))
 }
 
-async fn load_stats(ch: &Client) -> Stats {
+async fn load_stats(
+    ch: &Client,
+    headers: &HeaderMap,
+    auth_config: &crate::auth::AuthConfig,
+) -> Stats {
     let total_messages: u64 = ch
         .query("SELECT count() FROM slack_messages FINAL")
         .fetch_one()
@@ -358,6 +384,7 @@ async fn load_stats(ch: &Client) -> Stats {
         top,
         leaderboard,
         timers,
+        signed_in: auth::session_from_request(headers, auth_config).is_some(),
     }
 }
 

@@ -41,7 +41,7 @@ fn clear_cookie(key: &str) -> HeaderValue {
     set_cookie(key, "", Some(0))
 }
 
-fn session_from_request(
+pub(crate) fn session_from_request(
     headers: &HeaderMap,
     auth_config: &auth::AuthConfig,
 ) -> Option<auth::Session> {

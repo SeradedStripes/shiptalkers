@@ -5,12 +5,31 @@ body {
     background: #0f0f0f;
     color: #fff;
     min-height: 100vh;
+    display: flex;
+    flex-direction: column;
 }
 
-.container { margin: 0 auto; padding: 2rem; }
+.site-header { background: #161616; border-bottom: 1px solid #262626; }
+.site-header nav {
+    max-width: 1000px;
+    margin: 0 auto;
+    padding: 1rem 2rem;
+    display: flex;
+    align-items: center;
+    gap: 1.5rem;
+}
+.site-header .brand { font-weight: 700; color: #fff; text-decoration: none; font-size: 1.1rem; }
+.site-header a:not(.btn) { color: #aaa; text-decoration: none; }
+.site-header a:not(.btn):hover { color: #fff; }
+.site-header .btn { margin-left: auto; padding: 0.5rem 1rem; font-size: 0.875rem; }
+
+.container { margin: 0 auto; padding: 2rem; width: 100%; flex: 1; }
 body.index .container { max-width: 800px; }
 body.link .container { max-width: 600px; }
 body.stats .container { max-width: 1000px; }
+
+.site-footer { border-top: 1px solid #262626; padding: 1.5rem; text-align: center; }
+.site-footer p { margin: 0; font-size: 0.875rem; }
 
 h1 { font-size: 2.5rem; margin-bottom: 1rem; }
 body.link h1,

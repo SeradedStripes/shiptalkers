@@ -1,0 +1,12 @@
+<header class="site-header">
+    <nav>
+        <a href="/" class="brand">Ship Talkers</a>
+        <a href="/stats">Stats</a>
+        <a href="/link">Link Account</a>
+        {% if signed_in %}
+        <a href="/link" class="btn">Account</a>
+        {% else %}
+        <a href="/auth/hackclub/login" class="btn">Sign in</a>
+        {% endif %}
+    </nav>
+</header>
