@@ -206,9 +206,16 @@ impl SlackClient {
         let mut messages = Vec::new();
         let mut cursor: Option<String> = None;
         let mut page = 0u32;
+        let start = Instant::now();
 
         loop {
             page += 1;
+            if page == 1 {
+                match oldest {
+                    Some(ts) if !ts.is_empty() => tracing::info!("Fetching {} for {} (incremental, oldest={})", method, channel_id, ts),
+                    _ => tracing::info!("Fetching {} for {} (full)", method, channel_id),
+                }
+            }
             let mut params = vec![
                 ("channel".to_string(), channel_id.to_string()),
                 ("limit".to_string(), "100".to_string()),
@@ -220,7 +227,9 @@ impl SlackClient {
                 params.push(("ts".to_string(), ts.to_string()));
             }
             if let Some(o) = oldest {
-                params.push(("oldest".to_string(), o.to_string()));
+                if !o.is_empty() {
+                    params.push(("oldest".to_string(), o.to_string()));
+                }
             }
 
             let resp = self.get(method, &params).await?;
@@ -244,10 +253,14 @@ impl SlackClient {
                 }
             }
 
+            if page % 10 == 0 {
+                tracing::info!("{}: fetched page {} of {} ({} messages so far, {:.0}s)", channel_id, page, if thread_ts.is_some() { format!("thread {}", thread_ts.unwrap()) } else { "channel".to_string() }, messages.len(), start.elapsed().as_secs_f64());
+            }
+
             let has_more = resp.get("has_more").and_then(|v| v.as_bool()).unwrap_or(false);
             if !has_more {
-                if page > 1 && method != "conversations.replies" {
-                    tracing::info!("Scraped {} ({} pages, {} messages)", channel_id, page, messages.len());
+                if page > 1 {
+                    tracing::info!("{}: {} complete ({} pages, {} messages, {:.0}s)", channel_id, if thread_ts.is_some() { format!("thread {}", thread_ts.unwrap()) } else { "channel".to_string() }, page, messages.len(), start.elapsed().as_secs_f64());
                 }
                 break;
             }
