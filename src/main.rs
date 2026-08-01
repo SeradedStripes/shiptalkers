@@ -160,7 +160,26 @@ async fn scrape_all_messages(user_client: &slack::SlackClient, clickhouse: &clic
             messages
         };
 
-        // Collect unique thread parents from replies and fetch full thread replies
+        // Insert main channel messages first, before thread replies
+        let rows: Vec<db::clickhouse_db::SlackMessageRow> = messages.iter().map(|m| {
+            db::clickhouse_db::SlackMessageRow {
+                user_id: m.user.clone(),
+                channel_id: m.channel.clone(),
+                message_ts: m.ts.clone(),
+                text: m.text.clone(),
+                thread_ts: m.thread_ts.clone(),
+            }
+        }).collect();
+
+        if !rows.is_empty() {
+            let count = db::clickhouse_db::insert_messages(clickhouse, &rows).await.unwrap_or(0);
+            total += count;
+            tracing::info!("[{}/{}] Inserted {} messages from {}", i + 1, channels.len(), count, channel_id);
+        } else {
+            tracing::info!("[{}/{}] No new messages from {}", i + 1, channels.len(), channel_id);
+        }
+
+        // Then scrape thread replies
         let mut thread_parents: Vec<String> = Vec::new();
         for msg in &messages {
             if let Some(ref t) = msg.thread_ts {
@@ -218,24 +237,6 @@ async fn scrape_all_messages(user_client: &slack::SlackClient, clickhouse: &clic
                     tracing::warn!("[{}/{}] Failed to scrape thread {} in {}: {}", i + 1, channels.len(), thread_ts, channel_id, e);
                 }
             }
-        }
-
-        let rows: Vec<db::clickhouse_db::SlackMessageRow> = messages.iter().map(|m| {
-            db::clickhouse_db::SlackMessageRow {
-                user_id: m.user.clone(),
-                channel_id: m.channel.clone(),
-                message_ts: m.ts.clone(),
-                text: m.text.clone(),
-                thread_ts: m.thread_ts.clone(),
-            }
-        }).collect();
-
-        if !rows.is_empty() {
-            let count = db::clickhouse_db::insert_messages(clickhouse, &rows).await.unwrap_or(0);
-            total += count;
-            tracing::info!("[{}/{}] Inserted {} messages from {}", i + 1, channels.len(), count, channel_id);
-        } else {
-            tracing::info!("[{}/{}] No new messages from {}", i + 1, channels.len(), channel_id);
         }
 
         if !fully_scraped && oldest.is_none() {
