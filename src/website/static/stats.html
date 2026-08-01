@@ -4,30 +4,9 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Stats - Ship Talkers</title>
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: system-ui, sans-serif; background: #0f0f0f; color: #fff; min-height: 100vh; }
-        .container { max-width: 1000px; margin: 0 auto; padding: 2rem; }
-        h1 { font-size: 2rem; margin-bottom: 1rem; }
-        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; margin-bottom: 2rem; }
-        .stat { background: #1a1a1a; border-radius: 12px; padding: 1.5rem; }
-        .stat h3 { color: #888; font-size: 0.875rem; text-transform: uppercase; margin-bottom: 0.5rem; }
-        .stat .value { font-size: 2rem; font-weight: 700; }
-        .stat .value.purple { color: #7c3aed; }
-        table { width: 100%; border-collapse: collapse; background: #1a1a1a; border-radius: 12px; overflow: hidden; }
-        th, td { padding: 1rem; text-align: left; border-bottom: 1px solid #333; }
-        th { color: #888; font-size: 0.875rem; text-transform: uppercase; }
-        tr:last-child td { border-bottom: none; }
-        .live { display: inline-block; width: 8px; height: 8px; background: #22c55e; border-radius: 50%; margin-right: 0.5rem; animation: pulse 2s infinite; }
-        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
-        .tables-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 1rem; margin-top: 2rem; }
-        @media (max-width: 700px) { .tables-grid { grid-template-columns: 1fr; } }
-        .table-card { background: #1a1a1a; border-radius: 12px; padding: 1rem 1.5rem; }
-        .table-card h2 { font-size: 1.25rem; margin-bottom: 1rem; display: flex; align-items: center; gap: 0.5rem; }
-        .empty { text-align: center; color: #666; }
-    </style>
+    <link rel="stylesheet" href="/style.css">
 </head>
-<body>
+<body class="stats">
     <div class="container">
         <h1><span class="live"></span>Stats</h1>
         

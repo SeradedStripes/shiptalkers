@@ -44,6 +44,12 @@ pub fn router(clickhouse: Client) -> Router {
         .route("/", get(|| async { Html(include_str!("static/index.html")) }))
         .route("/link", get(|| async { Html(include_str!("static/link.html")) }))
         .route("/stats", get(|| async { Html(include_str!("static/stats.html")) }))
+        .route("/style.css", get(|| async {
+            axum::response::Response::builder()
+                .header(axum::http::header::CONTENT_TYPE, "text/css")
+                .body(axum::body::Body::from(include_str!("static/style.css")))
+                .unwrap()
+        }))
         .nest("/api", api_routes)
         .fallback_service(ServeDir::new("static"))
         .with_state(state)
