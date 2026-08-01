@@ -2,31 +2,16 @@
 
 ## Overview
 
-You link your slack and hackatime accounts. The bot can then generate a chart to compare them in the ship-talkers channel of Hack Club slack!
+You link your slack and hackatime accounts. You can message the bot in HC Slack to see a chart comparing your Hackatime coding activity to your Slack activity.
 
-## Why
-
-So the old person maintaing shiptalkers is leaving Hack Club, this is a faster, and more efficient remake.
-
-## Stack
-
-Rust - Idk what to tell you other than that
-
-Clickhouse - For storing the data
-  - Slack Messages
-  - Hackatime Coding Activity
-
-SQLite - The small relation db
-  - Users
-  - oauth tokens
-  - settings (if any)
-  - sync state
+Additionally, it has a full website and many more features will be added in the future!
 
 ## How it works
 
-It gets Slack message count by scraping channels, messages & thread replies through the Slack API.
-It pulls and stores coding activity from Hackatime via OAuth.
-The bot then shows you a chart comparing your Slack activity to your Hackatime activity.
+It gets Slack message count by scraping channels, messages & thread replies through the Slack API.  
+It pulls and stores coding activity from Hackatime via OAuth.  
+It has an algorithm that compares your Slack activity to your Hackatime activity and generates a chart.  
+The bot then shows you a chart comparing your Slack activity to your Hackatime activity.  
 
 ## Needed Scopes
 
