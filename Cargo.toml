@@ -18,5 +18,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 plotters = "0.3"
 axum = "0.7"
 tower-http = { version = "0.5", features = ["fs"] }
+askama = "0.12"
 tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
 futures = "0.3"

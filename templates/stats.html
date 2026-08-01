@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="refresh" content="10">
+    <title>Stats - Ship Talkers</title>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body class="stats">
+    <div class="container">
+        <h1><span class="live"></span>Stats</h1>
+
+        <div class="grid">
+            <div class="stat">
+                <h3>Total Messages</h3>
+                <div class="value purple">{{ total_messages }}</div>
+            </div>
+            <div class="stat">
+                <h3>Active Users</h3>
+                <div class="value purple">{{ active_users }}</div>
+            </div>
+            <div class="stat">
+                <h3>Total Channels</h3>
+                <div class="value purple">{{ total_channels }}</div>
+            </div>
+            <div class="stat">
+                <h3>Channels with Messages</h3>
+                <div class="value purple">{{ channels_tracked }}</div>
+            </div>
+            <div class="stat">
+                <h3>Coding Minutes</h3>
+                <div class="value purple">{{ coding_minutes }}</div>
+            </div>
+            <div class="stat">
+                <h3>Database Size</h3>
+                <div class="value purple">{{ db_size_label }}</div>
+            </div>
+        </div>
+
+        <div class="tables-grid">
+            <div class="table-card">
+                <h2>Top Chatters</h2>
+                <table>
+                    <thead>
+                        <tr><th>User</th><th>Messages</th></tr>
+                    </thead>
+                    <tbody>
+                        {% if leaderboard.is_empty() %}
+                        <tr><td colspan="2" class="empty">Coming soon</td></tr>
+                        {% else %}
+                        {% for u in leaderboard %}
+                        <tr><td>{{ u.user_id }}</td><td>{{ u.messages }}</td></tr>
+                        {% endfor %}
+                        {% endif %}
+                    </tbody>
+                </table>
+            </div>
+            <div class="table-card">
+                <h2>Top Shiptalker</h2>
+                <table>
+                    <thead>
+                        <tr><th>User</th><th>Messages</th><th>Coding Time</th></tr>
+                    </thead>
+                    <tbody>
+                        {% if shiptalkers.is_empty() %}
+                        <tr><td colspan="3" class="empty">Coming soon</td></tr>
+                        {% else %}
+                        {% for u in shiptalkers %}
+                        <tr><td>{{ u.user_id }}</td><td>{{ u.messages }}</td><td>{{ u.coding_minutes }} min</td></tr>
+                        {% endfor %}
+                        {% endif %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</body>
+</html>

@@ -1,12 +1,12 @@
+use askama::Template;
 use axum::{
     Router,
-    routing::get,
-    Json,
     response::Html,
     extract::State,
+    routing::get,
+    http::StatusCode,
 };
 use clickhouse::Client;
-use serde::Serialize;
 use std::collections::HashMap;
 use tower_http::services::ServeDir;
 
@@ -15,49 +15,61 @@ pub struct AppState {
     pub clickhouse: Client,
 }
 
-#[derive(Serialize)]
+#[derive(Template)]
+#[template(path = "stats.html")]
 pub struct Stats {
-    pub total_messages: u64,
-    pub active_users: u64,
-    pub channels_tracked: u64,
-    pub total_channels: u64,
-    pub coding_minutes: u64,
-    pub db_size_gib: f64,
+    pub total_messages: String,
+    pub active_users: String,
+    pub channels_tracked: String,
+    pub total_channels: String,
+    pub coding_minutes: String,
+    pub db_size_label: String,
     pub leaderboard: Vec<UserStats>,
     pub shiptalkers: Vec<UserStats>,
 }
 
-#[derive(Serialize)]
 pub struct UserStats {
     pub user_id: String,
-    pub messages: u64,
-    pub coding_minutes: u64,
+    pub messages: String,
+    pub coding_minutes: String,
 }
 
 pub fn router(clickhouse: Client) -> Router {
     let state = AppState { clickhouse };
 
-    let api_routes = Router::new()
-        .route("/stats", get(get_stats));
-
     Router::new()
         .route("/", get(|| async { Html(include_str!("static/index.html")) }))
         .route("/link", get(|| async { Html(include_str!("static/link.html")) }))
-        .route("/stats", get(|| async { Html(include_str!("static/stats.html")) }))
+        .route("/stats", get(get_stats_page))
         .route("/style.css", get(|| async {
             axum::response::Response::builder()
                 .header(axum::http::header::CONTENT_TYPE, "text/css")
                 .body(axum::body::Body::from(include_str!("static/style.css")))
                 .unwrap()
         }))
-        .nest("/api", api_routes)
         .fallback_service(ServeDir::new("static"))
         .with_state(state)
 }
 
-async fn get_stats(State(state): State<AppState>) -> Json<Stats> {
-    let ch = &state.clickhouse;
+fn fmt_thousands(n: u64) -> String {
+    let s = n.to_string();
+    let mut out = String::with_capacity(s.len() + s.len() / 3);
+    for (i, c) in s.chars().enumerate() {
+        if i > 0 && (s.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
 
+async fn get_stats_page(State(state): State<AppState>) -> Result<Html<String>, StatusCode> {
+    let stats = load_stats(&state.clickhouse).await;
+    let html = stats.render().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Html(html))
+}
+
+async fn load_stats(ch: &Client) -> Stats {
     let total_messages: u64 = ch
         .query("SELECT count() FROM slack_messages FINAL")
         .fetch_one()
@@ -95,6 +107,7 @@ async fn get_stats(State(state): State<AppState>) -> Json<Stats> {
         .unwrap_or(0);
 
     let db_size_gib = db_size_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
+    let db_size_label = format!("{:.prec$} GiB", db_size_gib, prec = if db_size_gib < 1.0 { 5 } else { 2 });
 
     #[derive(clickhouse::Row, serde::Deserialize)]
     struct LeaderboardRow {
@@ -116,8 +129,8 @@ async fn get_stats(State(state): State<AppState>) -> Json<Stats> {
             rows.into_iter()
                 .map(|r| UserStats {
                     user_id: r.user_id,
-                    messages: r.messages,
-                    coding_minutes: 0,
+                    messages: fmt_thousands(r.messages),
+                    coding_minutes: String::new(),
                 })
                 .collect()
         })
@@ -189,19 +202,19 @@ async fn get_stats(State(state): State<AppState>) -> Json<Stats> {
         .take(20)
         .map(|(uid, m, c, _)| UserStats {
             user_id: uid,
-            messages: m,
-            coding_minutes: c,
+            messages: fmt_thousands(m),
+            coding_minutes: fmt_thousands(c),
         })
         .collect();
 
-    Json(Stats {
-        total_messages,
-        active_users,
-        channels_tracked,
-        total_channels,
-        coding_minutes,
-        db_size_gib,
+    Stats {
+        total_messages: fmt_thousands(total_messages),
+        active_users: fmt_thousands(active_users),
+        channels_tracked: fmt_thousands(channels_tracked),
+        total_channels: fmt_thousands(total_channels),
+        coding_minutes: fmt_thousands(coding_minutes),
+        db_size_label,
         leaderboard,
         shiptalkers,
-    })
+    }
 }
