@@ -9,6 +9,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SlackMessage {
@@ -25,48 +26,35 @@ pub struct SlackChannel {
     pub name: String,
 }
 
-pub struct TokenBucket {
-    tokens: f64,
-    last: Instant,
-    rate: f64,
-    burst: f64,
-}
-
 pub struct RateLimiter {
-    bucket: tokio::sync::Mutex<TokenBucket>,
+    sem: Arc<Semaphore>,
 }
 
 impl RateLimiter {
     pub fn new(rate_per_sec: f64, burst: f64) -> Self {
-        Self {
-            bucket: tokio::sync::Mutex::new(TokenBucket {
-                tokens: burst,
-                last: Instant::now(),
-                rate: rate_per_sec,
-                burst,
-            }),
-        }
+        let burst = burst.max(1.0) as usize;
+        let sem = Arc::new(Semaphore::new(burst));
+        let refill = Duration::from_secs_f64(1.0 / rate_per_sec.max(0.001));
+
+        tokio::spawn({
+            let sem = sem.clone();
+            async move {
+                let mut ticker = tokio::time::interval(refill);
+                ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                loop {
+                    ticker.tick().await;
+                    if sem.available_permits() < burst {
+                        sem.add_permits(1);
+                    }
+                }
+            }
+        });
+
+        Self { sem }
     }
 
-    pub async fn acquire(&self) {
-        loop {
-            let wait = {
-                let mut b = self.bucket.lock().await;
-                let now = Instant::now();
-                b.tokens = (b.tokens + now.duration_since(b.last).as_secs_f64() * b.rate).min(b.burst);
-                b.last = now;
-                if b.tokens >= 1.0 {
-                    b.tokens -= 1.0;
-                    None
-                } else {
-                    Some((1.0 - b.tokens) / b.rate)
-                }
-            };
-            match wait {
-                None => return,
-                Some(w) => tokio::time::sleep(Duration::from_secs_f64(w)).await,
-            }
-        }
+    pub async fn acquire(&self) -> OwnedSemaphorePermit {
+        self.sem.clone().acquire_owned().await.unwrap()
     }
 }
 
@@ -108,7 +96,7 @@ impl SlackClient {
         let mut retry_count = 0u32;
 
         loop {
-            self.limiter_for(method).acquire().await;
+            let _permit = self.limiter_for(method).acquire().await;
 
             let response = self.client
                 .get(&url)
