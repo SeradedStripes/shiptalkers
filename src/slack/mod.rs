@@ -7,9 +7,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
+use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio::sync::Notify;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SlackMessage {
@@ -26,35 +27,81 @@ pub struct SlackChannel {
     pub name: String,
 }
 
+struct Inner {
+    tokens: f64,
+    last: Instant,
+    rate: f64,
+    burst: f64,
+    queue: VecDeque<u64>,
+    next_ticket: u64,
+}
+
 pub struct RateLimiter {
-    sem: Arc<Semaphore>,
+    state: tokio::sync::Mutex<Inner>,
+    notify: Notify,
 }
 
 impl RateLimiter {
     pub fn new(rate_per_sec: f64, burst: f64) -> Self {
-        let burst = burst.max(1.0) as usize;
-        let sem = Arc::new(Semaphore::new(burst));
-        let refill = Duration::from_secs_f64(1.0 / rate_per_sec.max(0.001));
-
-        tokio::spawn({
-            let sem = sem.clone();
-            async move {
-                let mut ticker = tokio::time::interval(refill);
-                ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-                loop {
-                    ticker.tick().await;
-                    if sem.available_permits() < burst {
-                        sem.add_permits(1);
-                    }
-                }
-            }
-        });
-
-        Self { sem }
+        Self {
+            state: tokio::sync::Mutex::new(Inner {
+                tokens: burst,
+                last: Instant::now(),
+                rate: rate_per_sec,
+                burst,
+                queue: VecDeque::new(),
+                next_ticket: 0,
+            }),
+            notify: Notify::new(),
+        }
     }
 
-    pub async fn acquire(&self) -> OwnedSemaphorePermit {
-        self.sem.clone().acquire_owned().await.unwrap()
+    pub async fn acquire(&self) {
+        let ticket = {
+            let mut s = self.state.lock().await;
+            let t = s.next_ticket;
+            s.next_ticket += 1;
+            s.queue.push_back(t);
+            t
+        };
+
+        loop {
+            let mut notified = self.notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+
+            let wait = {
+                let mut s = self.state.lock().await;
+                let now = Instant::now();
+                s.tokens = (s.tokens + now.duration_since(s.last).as_secs_f64() * s.rate).min(s.burst);
+                s.last = now;
+
+                if s.queue.front() == Some(&ticket) && s.tokens >= 1.0 {
+                    s.tokens -= 1.0;
+                    s.queue.pop_front();
+                    self.notify.notify_waiters();
+                    return;
+                }
+
+                if s.queue.front() == Some(&ticket) {
+                    Some((1.0 - s.tokens) / s.rate)
+                } else {
+                    None
+                }
+            };
+
+            match wait {
+                Some(w) => {
+                    tokio::select! {
+                        _ = &mut notified => {}
+                        _ = tokio::time::sleep(Duration::from_secs_f64(w)) => {}
+                    }
+                }
+                None => {
+                    &mut notified.await;
+                }
+            }
+        }
     }
 }
 
@@ -96,7 +143,7 @@ impl SlackClient {
         let mut retry_count = 0u32;
 
         loop {
-            let _permit = self.limiter_for(method).acquire().await;
+            self.limiter_for(method).acquire().await;
 
             let response = self.client
                 .get(&url)
