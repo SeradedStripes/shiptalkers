@@ -1,32 +1,38 @@
 services:
   app:
-    build:
-      context: .
-      target: dev
+    # Prebuilt image published to GHCR by .github/workflows/docker.yml
+    image: ghcr.io/seradedstripes/shiptalkers-app:latest
+    restart: unless-stopped
     ports:
       - "3000:3000"
-    volumes:
-      - .:/app
-      - cargo-cache:/usr/local/cargo/registry
     env_file: .env
     environment:
+      - CLICKHOUSE_URL=http://clickhouse:8123
       - CLICKHOUSE_DB=ship_talkers
       - CLICKHOUSE_USER=ship_talkers
       - CLICKHOUSE_PASSWORD=ship_talkers
-      - CLICKHOUSE_URL=http://clickhouse:8123
+      - SQLITE_PATH=/data/ship-talkers.db
+    volumes:
+      - app-data:/data
     depends_on:
       clickhouse:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:3000/stats"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
 
   clickhouse:
-    image: clickhouse/clickhouse-server:latest
+    image: clickhouse/clickhouse-server:24.8
+    restart: unless-stopped
     environment:
       - CLICKHOUSE_DB=ship_talkers
       - CLICKHOUSE_USER=ship_talkers
       - CLICKHOUSE_PASSWORD=ship_talkers
+    # Optional: expose the HTTP port if you want to query it from the host.
     ports:
       - "8123:8123"
-      - "9000:9000"
     volumes:
       - clickhouse-data:/var/lib/clickhouse
     healthcheck:
@@ -36,5 +42,5 @@ services:
       retries: 5
 
 volumes:
-  cargo-cache:
+  app-data:
   clickhouse-data:
