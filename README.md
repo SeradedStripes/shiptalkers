@@ -28,6 +28,32 @@ It gets Slack message count by scraping channels, messages & thread replies thro
 It pulls and stores coding activity from Hackatime via OAuth.
 The bot then shows you a chart comparing your Slack activity to your Hackatime activity.
 
+## Needed Scopes
+
+### Slack
+
+#### Bot Events
+- app_mention
+- message.channels
+- channel_created
+- channel_history_changed
+
+#### Bot Token Scopes
+- app_mentions:read
+- channels:history
+- channels:join
+- channels:read
+- chat:write
+- groups:history
+- groups:read
+- mpim:history
+- users:read
+
+#### User Token Scopes
+- channels:history
+- channels:read
+
+
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE.md](LICENSE.md) file for details.
