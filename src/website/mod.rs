@@ -1,7 +1,6 @@
 use askama::Template;
 use axum::{Router, extract::State, http::StatusCode, response::Html, routing::get};
 use clickhouse::Client;
-use std::collections::HashMap;
 use tower_http::services::ServeDir;
 
 pub mod auth;
@@ -22,14 +21,24 @@ pub struct Stats {
     pub total_channels: String,
     pub coding_minutes: String,
     pub db_size_label: String,
+    pub top: Vec<TopUser>,
     pub leaderboard: Vec<UserStats>,
-    pub shiptalkers: Vec<UserStats>,
+    pub timers: Vec<UserStats>,
 }
 
 pub struct UserStats {
+    pub display_name: String,
     pub user_id: String,
     pub messages: String,
     pub coding_minutes: String,
+}
+
+pub struct TopUser {
+    pub display_name: String,
+    pub user_id: String,
+    pub messages: String,
+    pub coding_minutes: String,
+    pub last_msg: String,
 }
 
 pub fn router(clickhouse: Client, auth_config: crate::auth::AuthConfig) -> Router {
@@ -155,6 +164,7 @@ async fn load_stats(ch: &Client) -> Stats {
             rows.into_iter()
                 .map(|r| UserStats {
                     user_id: r.user_id,
+                    display_name: String::new(),
                     messages: fmt_thousands(r.messages),
                     coding_minutes: String::new(),
                 })
@@ -163,81 +173,170 @@ async fn load_stats(ch: &Client) -> Stats {
         .unwrap_or_default();
 
     #[derive(clickhouse::Row, serde::Deserialize)]
-    struct UserMsgRow {
-        user_id: String,
-        messages: u64,
-    }
-
-    #[derive(clickhouse::Row, serde::Deserialize)]
-    struct UserMinRow {
+    struct TimerRow {
         user_id: String,
         minutes: i64,
     }
 
-    let msg_rows: Vec<UserMsgRow> = ch
-        .query("SELECT user_id, count() as messages FROM slack_messages FINAL GROUP BY user_id")
-        .fetch_all()
+    let timers: Vec<UserStats> = ch
+        .query(
+            "SELECT user_id, sum(minutes) as minutes
+             FROM coding_activity
+             GROUP BY user_id
+             ORDER BY minutes DESC
+             LIMIT 20",
+        )
+        .fetch_all::<TimerRow>()
         .await
+        .map(|rows| {
+            rows.into_iter()
+                .map(|r| UserStats {
+                    user_id: r.user_id,
+                    display_name: String::new(),
+                    messages: String::new(),
+                    coding_minutes: fmt_thousands(r.minutes.max(0) as u64),
+                })
+                .collect()
+        })
         .unwrap_or_default();
 
-    let min_rows: Vec<UserMinRow> = ch
-        .query("SELECT user_id, sum(minutes) as minutes FROM coding_activity GROUP BY user_id")
-        .fetch_all()
+    let mut name_ids: Vec<String> = leaderboard
+        .iter()
+        .chain(timers.iter())
+        .map(|u| u.user_id.clone())
+        .collect();
+    name_ids.sort();
+    name_ids.dedup();
+
+    #[derive(clickhouse::Row, serde::Deserialize)]
+    struct NameRow {
+        user_id: String,
+        display_name: String,
+    }
+
+    let names: std::collections::HashMap<String, String> = if name_ids.is_empty() {
+        std::collections::HashMap::new()
+    } else {
+        let in_list = name_ids.join("', '");
+        ch.query(&format!(
+            "SELECT user_id, display_name FROM users FINAL WHERE user_id IN ('{}')",
+            in_list
+        ))
+        .fetch_all::<NameRow>()
         .await
-        .unwrap_or_default();
-
-    let mut combined: HashMap<String, (u64, u64)> = HashMap::new();
-    for r in msg_rows {
-        combined.entry(r.user_id).or_insert((0, 0)).0 = r.messages;
-    }
-    for r in min_rows {
-        combined.entry(r.user_id).or_insert((0, 0)).1 = r.minutes.max(0) as u64;
-    }
-
-    let n = combined.len().max(1) as f64;
-    let mut sum_m = 0.0;
-    let mut sum_c = 0.0;
-    for &(m, c) in combined.values() {
-        sum_m += m as f64;
-        sum_c += c as f64;
-    }
-    let mean_m = sum_m / n;
-    let mean_c = sum_c / n;
-
-    let mut ss_m = 0.0;
-    let mut ss_c = 0.0;
-    for &(m, c) in combined.values() {
-        ss_m += (m as f64 - mean_m).powi(2);
-        ss_c += (c as f64 - mean_c).powi(2);
-    }
-    let std_m = (ss_m / n).sqrt();
-    let std_c = (ss_c / n).sqrt();
-
-    let mut scored: Vec<(String, u64, u64, f64)> = combined
+        .unwrap_or_default()
         .into_iter()
-        .map(|(uid, (m, c))| {
-            let z_m = if std_m > 0.0 {
-                (m as f64 - mean_m) / std_m
-            } else {
-                0.0
-            };
-            let z_c = if std_c > 0.0 {
-                (c as f64 - mean_c) / std_c
-            } else {
-                0.0
-            };
-            (uid, m, c, z_m + z_c)
+        .map(|r| (r.user_id, r.display_name))
+        .collect()
+    };
+
+    let display_name = |user_id: &str, fallback: String| -> String {
+        match names.get(user_id) {
+            Some(n) if !n.is_empty() => n.clone(),
+            _ => fallback,
+        }
+    };
+
+    let leaderboard: Vec<UserStats> = leaderboard
+        .into_iter()
+        .map(|mut u| {
+            u.display_name = display_name(&u.user_id, u.user_id.clone());
+            u
         })
         .collect();
-    scored.sort_by(|a, b| b.3.partial_cmp(&a.3).unwrap_or(std::cmp::Ordering::Equal));
 
-    let shiptalkers: Vec<UserStats> = scored
+    let timers: Vec<UserStats> = timers
         .into_iter()
-        .take(20)
-        .map(|(uid, m, c, _)| UserStats {
-            user_id: uid,
-            messages: fmt_thousands(m),
-            coding_minutes: fmt_thousands(c),
+        .map(|mut u| {
+            u.display_name = display_name(&u.user_id, u.user_id.clone());
+            u
+        })
+        .collect();
+
+    #[derive(clickhouse::Row, serde::Deserialize)]
+    struct TopUserRow {
+        user_id: String,
+        messages: u64,
+        last_ts: String,
+    }
+
+    let top_rows: Vec<TopUserRow> = ch
+        .query(
+            "SELECT user_id, count() as messages, max(message_ts) as last_ts
+             FROM slack_messages FINAL
+             GROUP BY user_id
+             ORDER BY messages DESC
+             LIMIT 3",
+        )
+        .fetch_all()
+        .await
+        .unwrap_or_default();
+
+    let top_ids: Vec<String> = top_rows.iter().map(|r| r.user_id.clone()).collect();
+
+    #[derive(clickhouse::Row, serde::Deserialize)]
+    struct TopUserNameRow {
+        user_id: String,
+        display_name: String,
+    }
+
+    let top_names: Vec<TopUserNameRow> = if top_ids.is_empty() {
+        Vec::new()
+    } else {
+        let in_list = top_ids.join("', '");
+        ch.query(&format!(
+            "SELECT user_id, display_name FROM users FINAL WHERE user_id IN ('{}')",
+            in_list
+        ))
+        .fetch_all()
+        .await
+        .unwrap_or_default()
+    };
+
+    #[derive(clickhouse::Row, serde::Deserialize)]
+    struct TopUserMinRow {
+        user_id: String,
+        minutes: i64,
+    }
+
+    let top_minutes: Vec<TopUserMinRow> = if top_ids.is_empty() {
+        Vec::new()
+    } else {
+        let in_list = top_ids.join("', '");
+        ch.query(&format!(
+            "SELECT user_id, sum(minutes) as minutes FROM coding_activity
+             WHERE user_id IN ('{}') GROUP BY user_id",
+            in_list
+        ))
+        .fetch_all()
+        .await
+        .unwrap_or_default()
+    };
+
+    let top: Vec<TopUser> = top_rows
+        .into_iter()
+        .map(|r| {
+            let minutes = top_minutes
+                .iter()
+                .find(|m| m.user_id == r.user_id)
+                .map(|m| m.minutes)
+                .unwrap_or(0);
+            let name = top_names
+                .iter()
+                .find(|n| n.user_id == r.user_id)
+                .map(|n| n.display_name.as_str())
+                .unwrap_or("");
+            TopUser {
+                display_name: if name.is_empty() {
+                    r.user_id.clone()
+                } else {
+                    name.to_string()
+                },
+                user_id: r.user_id,
+                messages: fmt_thousands(r.messages),
+                coding_minutes: fmt_thousands(minutes.max(0) as u64),
+                last_msg: fmt_last_ts(&r.last_ts),
+            }
         })
         .collect();
 
@@ -248,7 +347,23 @@ async fn load_stats(ch: &Client) -> Stats {
         total_channels: fmt_thousands(total_channels),
         coding_minutes: fmt_thousands(coding_minutes),
         db_size_label,
+        top,
         leaderboard,
-        shiptalkers,
+        timers,
     }
+}
+
+fn fmt_last_ts(ts: &str) -> String {
+    let secs: i64 = ts
+        .split('.')
+        .next()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    if secs == 0 {
+        return String::new();
+    }
+    let (year, month, day) = crate::auth::civil_from_days(secs / 86400);
+    let hour = (secs % 86400) / 3600;
+    let minute = (secs % 3600) / 60;
+    format!("{year:04}-{month:02}-{day:02} {hour:02}:{minute:02} UTC")
 }

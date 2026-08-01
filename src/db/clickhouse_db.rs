@@ -1,5 +1,6 @@
 use clickhouse::{Client, Row};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 #[derive(Debug, Row, Serialize, Deserialize)]
 pub struct SlackMessageRow {
@@ -63,6 +64,25 @@ pub async fn init_tables(client: &Client) -> Result<(), Box<dyn std::error::Erro
         )
         .execute()
         .await?;
+
+    client
+        .query(
+            "CREATE TABLE IF NOT EXISTS users (
+                user_id String,
+                display_name String,
+                updated UInt64 DEFAULT 0
+            ) ENGINE = ReplacingMergeTree()
+            ORDER BY user_id",
+        )
+        .execute()
+        .await?;
+
+    // Add updated column if it doesn't exist (migration for existing tables)
+    client
+        .query("ALTER TABLE users ADD COLUMN IF NOT EXISTS updated UInt64 DEFAULT 0")
+        .execute()
+        .await
+        .ok();
 
     client
         .query(
@@ -273,6 +293,43 @@ pub async fn insert_new_channels(
 
     tracing::info!("Inserted {} new channels into ClickHouse", count);
     Ok(count)
+}
+
+#[derive(Debug, Row, Serialize)]
+pub struct SlackUserRow {
+    pub user_id: String,
+    pub display_name: String,
+    pub updated: u64,
+}
+
+pub async fn upsert_users(
+    client: &Client,
+    users: &[SlackUserRow],
+) -> Result<(), Box<dyn std::error::Error>> {
+    if users.is_empty() {
+        return Ok(());
+    }
+    let mut insert = client.insert("users")?;
+    for u in users {
+        insert.write(u).await?;
+    }
+    insert.end().await?;
+    Ok(())
+}
+
+pub async fn get_user_updates(
+    client: &Client,
+) -> Result<HashMap<String, u64>, Box<dyn std::error::Error>> {
+    #[derive(Debug, Row, Deserialize)]
+    struct UserUpdateRow {
+        user_id: String,
+        updated: u64,
+    }
+    let rows: Vec<UserUpdateRow> = client
+        .query("SELECT user_id, updated FROM users FINAL")
+        .fetch_all()
+        .await?;
+    Ok(rows.into_iter().map(|r| (r.user_id, r.updated)).collect())
 }
 
 pub async fn get_max_message_ts(

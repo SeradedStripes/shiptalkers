@@ -85,6 +85,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
+    {
+        let clickhouse_for_users = database.clickhouse.clone();
+        let slack_token_for_users = slack_token.clone();
+        let user_sync_delay = env::var("SLACK_USER_SYNC_DELAY_MS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(3000);
+        tokio::spawn(async move {
+            let client = slack::SlackClient::new(
+                slack_token_for_users,
+                Duration::from_millis(user_sync_delay),
+                slack_max_inflight,
+            );
+            sync_users(&client, &clickhouse_for_users).await;
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(86400)).await;
+                sync_users(&client, &clickhouse_for_users).await;
+            }
+        });
+    }
+
     if let Ok(app_token) = env::var("SLACK_APP_TOKEN") {
         let clickhouse_for_socket = database.clickhouse.clone();
         tokio::spawn(async move {
@@ -144,6 +165,40 @@ fn insert_page(
             tracing::error!("Failed to insert channels: {}", e);
         }
     })
+}
+
+async fn sync_users(slack_client: &slack::SlackClient, clickhouse: &clickhouse::Client) {
+    let existing = match db::clickhouse_db::get_user_updates(clickhouse).await {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::warn!("Failed to get stored user updates: {}", e);
+            return;
+        }
+    };
+    let users = match slack_client.fetch_users().await {
+        Ok(u) => u,
+        Err(e) => {
+            tracing::warn!("Failed to fetch users: {}", e);
+            return;
+        }
+    };
+    let changed: Vec<db::clickhouse_db::SlackUserRow> = users
+        .into_iter()
+        .filter(|u| existing.get(&u.id).copied().unwrap_or(0) < u.updated)
+        .map(|u| db::clickhouse_db::SlackUserRow {
+            user_id: u.id,
+            display_name: u.display_name,
+            updated: u.updated,
+        })
+        .collect();
+    if changed.is_empty() {
+        tracing::info!("No user changes since last sync, skipping upsert");
+        return;
+    }
+    match db::clickhouse_db::upsert_users(clickhouse, &changed).await {
+        Ok(()) => tracing::info!("Upserted {} changed users", changed.len()),
+        Err(e) => tracing::warn!("Failed to upsert users: {}", e),
+    }
 }
 
 async fn run_scraper(

@@ -27,6 +27,13 @@ pub struct SlackChannel {
     pub name: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SlackUser {
+    pub id: String,
+    pub display_name: String,
+    pub updated: u64,
+}
+
 struct Inner {
     tokens: f64,
     last: Instant,
@@ -271,6 +278,78 @@ impl SlackClient {
         }
 
         Ok(total)
+    }
+
+    pub async fn fetch_users(
+        &self,
+    ) -> Result<Vec<SlackUser>, Box<dyn std::error::Error + Send + Sync>> {
+        let mut users = Vec::new();
+        let mut cursor: Option<String> = None;
+        let mut page = 0u32;
+
+        loop {
+            page += 1;
+            let mut params = vec![("limit".to_string(), "1000".to_string())];
+            if let Some(ref c) = cursor {
+                params.push(("cursor".to_string(), c.clone()));
+            }
+
+            let resp = self.get("users.list", &params).await?;
+
+            if let Some(members) = resp.get("members").and_then(|v| v.as_array()) {
+                for m in members {
+                    let Some(id) = m.get("id").and_then(|v| v.as_str()) else {
+                        continue;
+                    };
+                    let is_bot = m.get("is_bot").and_then(|v| v.as_bool()).unwrap_or(false);
+                    let deleted = m.get("deleted").and_then(|v| v.as_bool()).unwrap_or(false);
+                    if is_bot || deleted {
+                        continue;
+                    }
+                    let profile = m.get("profile");
+                    let display_name = profile
+                        .and_then(|p| p.get("display_name"))
+                        .and_then(|v| v.as_str())
+                        .filter(|s| !s.is_empty())
+                        .or_else(|| {
+                            profile
+                                .and_then(|p| p.get("real_name"))
+                                .and_then(|v| v.as_str())
+                                .filter(|s| !s.is_empty())
+                        })
+                        .unwrap_or("")
+                        .to_string();
+                    let updated = m.get("updated").and_then(|v| v.as_u64()).unwrap_or(0);
+                    users.push(SlackUser {
+                        id: id.to_string(),
+                        display_name,
+                        updated,
+                    });
+                }
+            }
+
+            if page.is_multiple_of(25) {
+                tracing::info!(
+                    "users.list: fetched {} users so far (page {})",
+                    users.len(),
+                    page
+                );
+            }
+
+            cursor = resp
+                .get("response_metadata")
+                .and_then(|m| m.get("next_cursor"))
+                .and_then(|c| c.as_str())
+                .filter(|c| !c.is_empty())
+                .map(|c| c.to_string());
+
+            if cursor.is_none() {
+                break;
+            }
+        }
+
+        tracing::info!("Fetched {} users from Slack", users.len());
+        Ok(users)
     }
 
     pub async fn get_channel_history(

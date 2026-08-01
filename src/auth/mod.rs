@@ -268,7 +268,7 @@ pub fn today_utc() -> String {
     format!("{year:04}-{month:02}-{day:02}")
 }
 
-fn civil_from_days(z: i64) -> (u32, u32, u32) {
+pub fn civil_from_days(z: i64) -> (u32, u32, u32) {
     let z = z + 719468;
     let era = if z >= 0 { z } else { z - 146096 } / 146097;
     let doe = (z - era * 146097) as u64;
