@@ -7,6 +7,7 @@ use axum::{
 };
 use clickhouse::Client;
 use serde::Serialize;
+use std::collections::HashMap;
 use tower_http::services::ServeDir;
 
 #[derive(Clone)]
@@ -23,6 +24,7 @@ pub struct Stats {
     pub coding_minutes: u64,
     pub db_size_gib: f64,
     pub leaderboard: Vec<UserStats>,
+    pub shiptalkers: Vec<UserStats>,
 }
 
 #[derive(Serialize)]
@@ -115,6 +117,77 @@ async fn get_stats(State(state): State<AppState>) -> Json<Stats> {
         })
         .unwrap_or_default();
 
+    #[derive(clickhouse::Row, serde::Deserialize)]
+    struct UserMsgRow {
+        user_id: String,
+        messages: u64,
+    }
+
+    #[derive(clickhouse::Row, serde::Deserialize)]
+    struct UserMinRow {
+        user_id: String,
+        minutes: i64,
+    }
+
+    let msg_rows: Vec<UserMsgRow> = ch
+        .query("SELECT user_id, count() as messages FROM slack_messages FINAL GROUP BY user_id")
+        .fetch_all()
+        .await
+        .unwrap_or_default();
+
+    let min_rows: Vec<UserMinRow> = ch
+        .query("SELECT user_id, sum(minutes) as minutes FROM coding_activity GROUP BY user_id")
+        .fetch_all()
+        .await
+        .unwrap_or_default();
+
+    let mut combined: HashMap<String, (u64, u64)> = HashMap::new();
+    for r in msg_rows {
+        combined.entry(r.user_id).or_insert((0, 0)).0 = r.messages;
+    }
+    for r in min_rows {
+        combined.entry(r.user_id).or_insert((0, 0)).1 = r.minutes.max(0) as u64;
+    }
+
+    let n = combined.len().max(1) as f64;
+    let mut sum_m = 0.0;
+    let mut sum_c = 0.0;
+    for &(m, c) in combined.values() {
+        sum_m += m as f64;
+        sum_c += c as f64;
+    }
+    let mean_m = sum_m / n;
+    let mean_c = sum_c / n;
+
+    let mut ss_m = 0.0;
+    let mut ss_c = 0.0;
+    for &(m, c) in combined.values() {
+        ss_m += (m as f64 - mean_m).powi(2);
+        ss_c += (c as f64 - mean_c).powi(2);
+    }
+    let std_m = (ss_m / n).sqrt();
+    let std_c = (ss_c / n).sqrt();
+
+    let mut scored: Vec<(String, u64, u64, f64)> = combined
+        .into_iter()
+        .map(|(uid, (m, c))| {
+            let z_m = if std_m > 0.0 { (m as f64 - mean_m) / std_m } else { 0.0 };
+            let z_c = if std_c > 0.0 { (c as f64 - mean_c) / std_c } else { 0.0 };
+            (uid, m, c, z_m + z_c)
+        })
+        .collect();
+    scored.sort_by(|a, b| b.3.partial_cmp(&a.3).unwrap_or(std::cmp::Ordering::Equal));
+
+    let shiptalkers: Vec<UserStats> = scored
+        .into_iter()
+        .take(20)
+        .map(|(uid, m, c, _)| UserStats {
+            user_id: uid,
+            messages: m,
+            coding_minutes: c,
+        })
+        .collect();
+
     Json(Stats {
         total_messages,
         active_users,
@@ -123,5 +196,6 @@ async fn get_stats(State(state): State<AppState>) -> Json<Stats> {
         coding_minutes,
         db_size_gib,
         leaderboard,
+        shiptalkers,
     })
 }
