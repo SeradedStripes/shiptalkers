@@ -1,0 +1,67 @@
+# Agent Instructions
+
+Use this file as the default guide for AI agents working in the repository.
+
+## Human in the Loop
+
+- Always keep a human in the loop. Present your work for review, and do not deploy, push, or run anything that changes shared state without explicit approval.
+- Do not test with Docker. Building images, starting the dev server, and running containers is the user's job.
+
+## Quick Rules
+
+- Run `just lint` and `just fmt` before marking code as ready for review.
+- Do not use emdashes in anything.
+- Use proper markdown syntax.
+- Follow existing code style and conventions.
+- Stay minimalistic in your code and documentation.
+- Do not divert from your active task unless explicitly instructed to do so.
+
+## Commands
+
+- `just check` - cargo check for all targets and features
+- `just lint` - clippy with `-D warnings`
+- `just fmt` - rustfmt
+- `just test` - cargo test
+
+## Overview
+
+Scrapes every public channel and thread reply from Hack Club Slack into ClickHouse and serves a stats website with live leaderboards.
+
+## Architecture
+
+- `src/main.rs` - entry point, env parsing, scraper orchestration
+- `src/slack/mod.rs` - SlackClient, per-method FIFO token-bucket rate limiter, 429 backoff
+- `src/slack/socket.rs` - Slack Socket Mode (app events) via tokio-tungstenite
+- `src/db/clickhouse_db.rs` - ClickHouse schema, inserts, checkpoint queries
+- `src/website/mod.rs` - axum router, server-rendered `/stats` via askama
+- `templates/stats.html` - askama template for the stats page
+- `src/website/static/` - index.html, link.html, style.css
+
+## Conventions
+
+- ClickHouse is the only datastore. The stats page reads `slack_messages`, `slack_channels`, and `coding_activity`.
+- Insert data before marking any checkpoint complete. Main channel messages are inserted before thread replies.
+- Progress tracking uses `max(message_ts)` per channel and `max(thread reply ts)` per thread.
+- Logging is `tracing` only. Per-channel, per-thread, and per-fetch work logs at debug; inserts, page progress, and 15s `Progress:` lines log at info.
+- Multi-token scraping round-robins channel shards across tokens and prefixes log lines with `[token k]`.
+- The website has zero JavaScript. Dynamic pages render server side with askama and auto refresh via `<meta http-equiv="refresh">`. Number formatting lives in Rust (`fmt_thousands`).
+- ClickHouse row structs use `#[derive(clickhouse::Row, serde::Deserialize)]`, plus `Serialize` when inserting.
+- Queries that must survive transient DB issues fall back with `unwrap_or` / `unwrap_or_default`, never panic.
+- Errors use `Box<dyn std::error::Error>` (plus `Send + Sync` across await points) or `String` in scraper tasks.
+
+## Environment Variables
+
+- `SLACK_BOT_TOKEN` - required, bot token for channel listing
+- `SLACK_USER_TOKENS` - comma-separated user tokens, sharded round-robin per channel; falls back to `SLACK_USER_TOKEN`
+- `SLACK_APP_TOKEN` - optional, enables Socket Mode
+- `SLACK_REQUEST_DELAY_MS` - request pacing per method per token, default 1200 (tier 3, 50 req/min)
+- `SLACK_MAX_INFLIGHT` - burst per method per token, default 8
+- `SLACK_CHANNEL_CONCURRENCY` - channels scraped concurrently per token, default 64
+- `CLICKHOUSE_URL`, `CLICKHOUSE_USER`, `CLICKHOUSE_PASSWORD`, `CLICKHOUSE_DB`
+- `HOST`, `PORT` - web server bind, default 0.0.0.0:3000
+
+## Gotchas
+
+- Slack rate limits are per (token, method). `conversations.history` and `conversations.replies` have separate budgets, so the rate limiter stays per method.
+- The rate limiter is a FIFO ticket queue that paces at exactly 1 request per delay, so one huge channel cannot stall the pass.
+- Scrape passes split into full-scrape (new channels) and incremental check (already-scraped channels) using `scraped_channels`.
