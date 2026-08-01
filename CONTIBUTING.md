@@ -13,3 +13,9 @@ Thanks for wanting to contribute! :3
 7. Create a pull request to the main repository
 
 Easy as that :thumbs-up:
+
+## Expected Environment
+
+- Docker compose installed
+- Rust installed (developed on 1.89)
+- justfile installed
