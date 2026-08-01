@@ -47,6 +47,10 @@
                 <h3>Coding Minutes</h3>
                 <div class="value purple" id="coding-minutes">-</div>
             </div>
+            <div class="stat">
+                <h3>Database Size</h3>
+                <div class="value purple" id="db-size">-</div>
+            </div>
         </div>
 
         <h2 style="margin-bottom: 1rem;">Top Chatters</h2>
@@ -75,6 +79,8 @@
                 document.getElementById('total-channels').textContent = data.total_channels.toLocaleString();
                 document.getElementById('channels-tracked').textContent = data.channels_tracked.toLocaleString();
                 document.getElementById('coding-minutes').textContent = data.coding_minutes.toLocaleString();
+                const gib = data.db_size_gib;
+                document.getElementById('db-size').textContent = gib.toFixed(gib < 1 ? 5 : 2) + ' GiB';
                 
                 const tbody = document.getElementById('leaderboard');
                 if (data.leaderboard && data.leaderboard.length > 0) {

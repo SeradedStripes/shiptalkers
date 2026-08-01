@@ -21,6 +21,7 @@ pub struct Stats {
     pub channels_tracked: u64,
     pub total_channels: u64,
     pub coding_minutes: u64,
+    pub db_size_gib: f64,
     pub leaderboard: Vec<UserStats>,
 }
 
@@ -79,6 +80,14 @@ async fn get_stats(State(state): State<AppState>) -> Json<Stats> {
         .await
         .unwrap_or(0);
 
+    let db_size_bytes: u64 = ch
+        .query("SELECT sum(bytes_on_disk) as bytes FROM system.parts WHERE database = currentDatabase() AND active")
+        .fetch_one()
+        .await
+        .unwrap_or(0);
+
+    let db_size_gib = db_size_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
+
     #[derive(clickhouse::Row, serde::Deserialize)]
     struct LeaderboardRow {
         user_id: String,
@@ -112,6 +121,7 @@ async fn get_stats(State(state): State<AppState>) -> Json<Stats> {
         channels_tracked,
         total_channels,
         coding_minutes,
+        db_size_gib,
         leaderboard,
     })
 }
