@@ -53,6 +53,14 @@ The bot then shows you a chart comparing your Slack activity to your Hackatime a
 - channels:history
 - channels:read
 
+### Hackatime
+- user
+- profile
+
+### HCA (Hack Club Auth)
+- slack_id
+- email (optional)
+- name
 
 ## License
 
