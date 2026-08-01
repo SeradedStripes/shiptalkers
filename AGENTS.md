@@ -15,6 +15,7 @@ Use this file as the default guide for AI agents working in the repository.
 - Follow existing code style and conventions.
 - Stay minimalistic in your code and documentation.
 - Do not divert from your active task unless explicitly instructed to do so.
+- If you change something that affects anything in the "Overview" section of this file, update it accordingly.
 
 ## Commands
 
@@ -65,3 +66,7 @@ Scrapes every public channel and thread reply from Hack Club Slack into ClickHou
 - Slack rate limits are per (token, method). `conversations.history` and `conversations.replies` have separate budgets, so the rate limiter stays per method.
 - The rate limiter is a FIFO ticket queue that paces at exactly 1 request per delay, so one huge channel cannot stall the pass.
 - Scrape passes split into full-scrape (new channels) and incremental check (already-scraped channels) using `scraped_channels`.
+
+## Finally
+
+Thanks for your help! (To you the AI agent reading this or a human looking at this file) <3
