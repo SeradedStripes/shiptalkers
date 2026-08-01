@@ -154,6 +154,10 @@ async fn scrape_all_messages(
         }
     };
 
+    if let Err(e) = db::clickhouse_db::backfill_scraped_channels(clickhouse).await {
+        tracing::warn!("Failed to backfill scraped channels: {}", e);
+    }
+
     let scraped = match db::clickhouse_db::get_scraped_channel_ids(clickhouse).await {
         Ok(s) => s,
         Err(e) => {
@@ -322,10 +326,6 @@ async fn scrape_shard(
         let _ = handle.await;
     }
     let _ = reporter.await;
-
-    if let Err(e) = db::clickhouse_db::mark_channels_scraped(clickhouse, channels).await {
-        tracing::warn!("[token {}] Failed to record {} channels as scraped: {}", token_idx, channels.len(), e);
-    }
 }
 
 async fn scrape_one_channel(
@@ -441,6 +441,10 @@ async fn scrape_one_channel(
 
     processed.fetch_add(1, Ordering::Relaxed);
     let _ = tx.send(idx).await;
+
+    if let Err(e) = db::clickhouse_db::mark_channel_scraped(clickhouse, &channel_id).await {
+        tracing::warn!("[token {}][{}/{}] Failed to record {} as scraped: {}", token_idx, idx, total_channels, channel_id, e);
+    }
 
     let elapsed = start.elapsed().as_secs_f64();
     let mut summary = Vec::new();

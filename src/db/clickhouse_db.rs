@@ -299,6 +299,41 @@ pub async fn mark_channels_scraped(client: &Client, channel_ids: &[String]) -> R
     Ok(())
 }
 
+pub async fn mark_channel_scraped(client: &Client, channel_id: &str) -> Result<(), Box<dyn std::error::Error>> {
+    #[derive(Debug, Row, Serialize)]
+    struct ScrapedRow {
+        channel_id: String,
+    }
+
+    let mut insert = client.insert("scraped_channels")?;
+    insert.write(&ScrapedRow { channel_id: channel_id.to_string() }).await?;
+    insert.end().await?;
+    Ok(())
+}
+
+pub async fn backfill_scraped_channels(client: &Client) -> Result<(), Box<dyn std::error::Error>> {
+    let rows: Vec<ChannelIdRow> = client
+        .query(
+            "SELECT channel_id FROM (
+                SELECT channel_id FROM scrape_checkpoints FINAL WHERE fully_scraped = 1
+                UNION DISTINCT
+                SELECT DISTINCT channel_id FROM slack_messages
+            )
+            WHERE channel_id NOT IN (SELECT channel_id FROM scraped_channels)"
+        )
+        .fetch_all()
+        .await?;
+
+    if rows.is_empty() {
+        return Ok(());
+    }
+
+    let ids: Vec<String> = rows.into_iter().map(|r| r.channel_id).collect();
+    tracing::info!("Backfilling {} previously-scraped channels into scraped_channels", ids.len());
+    mark_channels_scraped(client, &ids).await?;
+    Ok(())
+}
+
 pub async fn is_fully_scraped(client: &Client, channel_id: &str) -> Result<bool, Box<dyn std::error::Error>> {
     let count: u64 = client
         .query(&format!(
