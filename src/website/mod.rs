@@ -1,9 +1,10 @@
 use askama::Template;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Html;
 use axum::{Router, routing::get};
 use clickhouse::Client;
+use std::collections::HashMap;
 use tower_http::services::ServeDir;
 
 pub mod auth;
@@ -58,6 +59,19 @@ pub struct ChannelStats {
     pub messages: String,
 }
 
+#[derive(Template)]
+#[template(path = "search.html")]
+pub struct SearchTemplate {
+    pub query: String,
+    pub results: Vec<SearchResult>,
+    pub signed_in: bool,
+}
+
+pub struct SearchResult {
+    pub display_name: String,
+    pub user_id: String,
+}
+
 pub struct UserStats {
     pub display_name: String,
     pub user_id: String,
@@ -85,6 +99,7 @@ pub fn router(clickhouse: Client, auth_config: crate::auth::AuthConfig) -> Route
         .route("/link", get(auth::get_link))
         .route("/stats", get(get_stats_page))
         .route("/stats/:slack_id", get(get_user_stats))
+        .route("/search", get(get_search))
         .route("/auth/hackclub/login", get(auth::auth_hackclub_login))
         .route("/auth/hackclub/callback", get(auth::auth_hackclub_callback))
         .route("/auth/hackatime/login", get(auth::auth_hackatime_login))
@@ -140,6 +155,56 @@ async fn get_stats_page(
 ) -> Result<Html<String>, StatusCode> {
     let stats = load_stats(&state.clickhouse, &headers, &state.auth).await;
     let html = stats
+        .render()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Html(html))
+}
+
+async fn get_search(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<HashMap<String, String>>,
+) -> Result<Html<String>, StatusCode> {
+    let signed_in = auth::session_from_request(&headers, &state.auth).is_some();
+    let query = params.get("q").cloned().unwrap_or_default();
+
+    let results = if query.trim().is_empty() {
+        Vec::new()
+    } else {
+        #[derive(clickhouse::Row, serde::Deserialize)]
+        struct SearchRow {
+            user_id: String,
+            display_name: String,
+        }
+        let pattern = format!("%{}%", query.trim());
+        state
+            .clickhouse
+            .query(
+                "SELECT user_id, display_name FROM users FINAL
+                 WHERE display_name ILIKE ? OR user_id ILIKE ?
+                 ORDER BY (display_name ILIKE ?) DESC, display_name
+                 LIMIT 25",
+            )
+            .bind(&pattern)
+            .bind(&pattern)
+            .bind(&pattern)
+            .fetch_all::<SearchRow>()
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|r| SearchResult {
+                display_name: r.display_name,
+                user_id: r.user_id,
+            })
+            .collect()
+    };
+
+    let template = SearchTemplate {
+        query,
+        results,
+        signed_in,
+    };
+    let html = template
         .render()
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Html(html))

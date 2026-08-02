@@ -36,6 +36,29 @@ body.index .container { max-width: 800px; }
 body.link .container { max-width: 600px; }
 body.stats .container { max-width: 1000px; }
 body.user .container { max-width: 1000px; }
+body.search .container { max-width: 700px; }
+
+.search { display: flex; gap: 0.5rem; }
+.search input {
+    flex: 1;
+    padding: 0.6rem 1rem;
+    background: #1a1a1a;
+    border: 1px solid #333;
+    border-radius: 8px;
+    color: #fff;
+    font-size: 1rem;
+}
+.search input:focus { outline: none; border-color: #f472b6; }
+.search button {
+    padding: 0.5rem 1rem;
+    background: #f472b6;
+    color: #1a1a1a;
+    border: none;
+    border-radius: 8px;
+    font-weight: 600;
+    cursor: pointer;
+}
+.search button:hover { background: #ec4899; }
 
 .site-footer { border-top: 1px solid #262626; padding: 1.5rem; text-align: center; }
 .site-footer p { margin: 0; font-size: 0.875rem; }

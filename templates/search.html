@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Search - Ship Talkers</title>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body class="search">
+    {% include "header.html" %}
+    <div class="container">
+        <h1>Search</h1>
+        {% include "search_form.html" %}
+        {% if query.is_empty() %}
+        <p>Type a display name or Slack ID to find someone.</p>
+        {% else if results.is_empty() %}
+        <p>No users found for "{{ query }}".</p>
+        {% else %}
+        <div class="table-card">
+            <table>
+                <thead>
+                    <tr><th>User</th><th>Slack ID</th></tr>
+                </thead>
+                <tbody>
+                    {% for r in results %}
+                    <tr><td><a href="/stats/{{ r.user_id }}">{{ r.display_name }}</a></td><td>{{ r.user_id }}</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% endif %}
+    </div>
+    {% include "footer.html" %}
+</body>
+</html>

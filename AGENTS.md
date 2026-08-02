@@ -37,6 +37,8 @@ Scrapes every public channel and thread reply from Hack Club Slack into ClickHou
 - `src/website/mod.rs` - axum router, server-rendered `/stats` and `/stats/:slack_id` via askama
 - `templates/stats.html` - askama template for the stats page
 - `templates/user.html` - askama template for the per-user stats page
+- `templates/search.html` - askama template for user search results
+- `templates/search_form.html` - shared inline search form partial
 - `src/website/static/` - index.html, link.html, style.css
 
 ## Conventions
