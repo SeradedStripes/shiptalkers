@@ -101,7 +101,7 @@ pub async fn start_socket_mode(
     auth_db: std::sync::Arc<AuthDb>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     if config.app_tokens.is_empty() {
-        return Err("No SLACK_APP_TOKEN(s) set, Socket Mode disabled".into());
+        return Err("No SLACK_APP_TOKENS set, Socket Mode disabled".into());
     }
 
     if let Some(channel) = &config.main_channel {

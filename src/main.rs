@@ -24,12 +24,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .init();
 
-    let slack_bot_tokens = parse_token_list("SLACK_BOT_TOKENS", "SLACK_BOT_TOKEN");
+    let slack_bot_tokens = parse_token_list("SLACK_BOT_TOKENS");
     if slack_bot_tokens.is_empty() {
-        return Err("SLACK_BOT_TOKEN or SLACK_BOT_TOKENS must be set".into());
+        return Err("SLACK_BOT_TOKENS must be set".into());
     }
-    let slack_user_tokens = parse_token_list("SLACK_USER_TOKENS", "SLACK_USER_TOKEN");
-    let slack_app_tokens = parse_token_list("SLACK_APP_TOKENS", "SLACK_APP_TOKEN");
+    let slack_user_tokens = parse_token_list("SLACK_USER_TOKENS");
+    let slack_app_tokens = parse_token_list("SLACK_APP_TOKENS");
     let slack_request_delay_ms = env::var("SLACK_REQUEST_DELAY_MS")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -130,7 +130,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         });
     } else {
-        tracing::warn!("SLACK_APP_TOKEN / SLACK_APP_TOKENS not set, Socket Mode disabled");
+        tracing::warn!("SLACK_APP_TOKENS not set, Socket Mode disabled");
     }
 
     let host = env::var("HOST").unwrap_or_else(|_| "0.0.0.0".into());
@@ -169,7 +169,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn parse_token_list(var: &str, fallback_var: &str) -> Vec<String> {
+fn parse_token_list(var: &str) -> Vec<String> {
     env::var(var)
         .ok()
         .filter(|v| !v.trim().is_empty())
@@ -179,12 +179,7 @@ fn parse_token_list(var: &str, fallback_var: &str) -> Vec<String> {
                 .filter(|t| !t.is_empty())
                 .collect()
         })
-        .unwrap_or_else(|| {
-            env::var(fallback_var)
-                .ok()
-                .map(|t| vec![t])
-                .unwrap_or_default()
-        })
+        .unwrap_or_default()
 }
 
 async fn shutdown_signal() {
@@ -321,7 +316,7 @@ async fn run_scraper(
     }
 
     if slack_user_tokens.is_empty() {
-        tracing::warn!("No SLACK_USER_TOKEN / SLACK_USER_TOKENS set, message scraping disabled");
+        tracing::warn!("No SLACK_USER_TOKENS set, message scraping disabled");
     } else {
         tracing::info!(
             "Starting message scraper with {} user token(s)...",

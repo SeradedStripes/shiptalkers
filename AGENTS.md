@@ -65,9 +65,9 @@ Scrapes every public channel and thread reply from Hack Club Slack into ClickHou
 
 ## Environment Variables
 
-- `SLACK_BOT_TOKENS` - required, comma-separated bot tokens (one per Slack app); `conversations.list` / `users.list` pages and stats bot replies round-robin across them. Falls back to `SLACK_BOT_TOKEN`
-- `SLACK_USER_TOKENS` - comma-separated user tokens, sharded round-robin per channel; falls back to `SLACK_USER_TOKEN`
-- `SLACK_APP_TOKENS` - optional, comma-separated app tokens; each opens its own Socket Mode connection and message events are sharded across them so only one bot replies. Falls back to `SLACK_APP_TOKEN`
+- `SLACK_BOT_TOKENS` - required, comma-separated bot tokens (one per Slack app); `conversations.list` / `users.list` pages and stats bot replies round-robin across them
+- `SLACK_USER_TOKENS` - comma-separated user tokens, sharded round-robin per channel
+- `SLACK_APP_TOKENS` - optional, comma-separated app tokens; each opens its own Socket Mode connection and message events are sharded across them so only one bot replies
 - `SLACK_MAIN_CHANNEL` - channel ID the stats bot watches; users posting a time range there get a threaded reply. Optional, disables the bot when unset
 - `SQLITE_DB_PATH` - SQLite auth DB path (linked users), default `data/auth.db`
 - `SLACK_REQUEST_DELAY_MS` - request pacing per method per token, default 1200 (tier 3, 50 req/min)
