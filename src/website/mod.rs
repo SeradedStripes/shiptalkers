@@ -175,6 +175,15 @@ pub fn router(
                     .unwrap()
             }),
         )
+        .route(
+            "/time.js",
+            get(|| async {
+                axum::response::Response::builder()
+                    .header(axum::http::header::CONTENT_TYPE, "application/javascript")
+                    .body(axum::body::Body::from(include_str!("static/time.js")))
+                    .unwrap()
+            }),
+        )
         .fallback_service(ServeDir::new("static"))
         .with_state(state)
 }
@@ -1198,7 +1207,10 @@ fn fmt_last_ts(ts: &str) -> String {
     let (year, month, day) = crate::auth::civil_from_days(secs / 86400);
     let hour = (secs % 86400) / 3600;
     let minute = (secs % 3600) / 60;
-    format!("{year:04}-{month:02}-{day:02} {hour:02}:{minute:02} UTC")
+    format!(
+        "<time datetime=\"{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:00Z\">\
+         {year:04}-{month:02}-{day:02} {hour:02}:{minute:02} UTC</time>"
+    )
 }
 
 #[cfg(test)]

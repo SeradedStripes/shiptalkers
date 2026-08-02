@@ -57,7 +57,7 @@
                     <tr><td colspan="5" class="empty">Coming soon</td></tr>
                     {% else %}
                     {% for u in top %}
-                    <tr><td><a href="/stats/{{ u.user_id }}">{{ u.display_name }}</a></td><td>{{ u.user_id }}</td><td>{{ u.messages }}</td><td>{{ u.coding_minutes }} min</td><td>{{ u.last_msg }}</td></tr>
+                    <tr><td><a href="/stats/{{ u.user_id }}">{{ u.display_name }}</a></td><td>{{ u.user_id }}</td><td>{{ u.messages }}</td><td>{{ u.coding_minutes }} min</td><td>{{ u.last_msg|safe }}</td></tr>
                     {% endfor %}
                     {% endif %}
                 </tbody>

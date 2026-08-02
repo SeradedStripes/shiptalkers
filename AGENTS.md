@@ -55,7 +55,7 @@ Scrapes every public channel and thread reply from Hack Club Slack into ClickHou
 - Progress tracking uses `max(message_ts)` per channel and `max(thread reply ts)` per thread.
 - Logging is `tracing` only. Per-channel, per-thread, and per-fetch work logs at debug; inserts, page progress, and 15s `Progress:` lines log at info.
 - Multi-token scraping round-robins channel shards across tokens and prefixes log lines with `[token k]`.
-- The website has zero JavaScript. Dynamic pages render server side with askama and auto refresh via `<meta http-equiv="refresh">`. Number formatting lives in Rust (`fmt_thousands`).
+- The website has exactly one JavaScript file (`src/website/static/time.js`, loaded via `header.html`), which converts UTC `<time>` elements to the visitor's local timezone. Everything else renders server side with askama and auto refreshes via `<meta http-equiv="refresh">`. Number formatting lives in Rust (`fmt_thousands`).
 - ClickHouse row structs use `#[derive(clickhouse::Row, serde::Deserialize)]`, plus `Serialize` when inserting.
 - Queries that must survive transient DB issues fall back with `unwrap_or` / `unwrap_or_default`, never panic.
 - Errors use `Box<dyn std::error::Error>` (plus `Send + Sync` across await points) or `String` in scraper tasks.
