@@ -45,61 +45,6 @@
                 <div class="value pink">{{ db_size_label }}</div>
             </div>
         </div>
-
-        <div class="table-card top-table">
-            <h2>Top 3</h2>
-            <table>
-                <thead>
-                    <tr><th>Display Name</th><th>Slack ID</th><th>Messages</th><th>Coding Time</th><th>Last Message</th></tr>
-                </thead>
-                <tbody>
-                    {% if top.is_empty() %}
-                    <tr><td colspan="5" class="empty">Coming soon</td></tr>
-                    {% else %}
-                    {% for u in top %}
-                    <tr><td><a href="/stats/{{ u.user_id }}">{{ u.display_name }}</a></td><td>{{ u.user_id }}</td><td>{{ u.messages }}</td><td>{{ u.coding_minutes }} min</td><td>{{ u.last_msg|safe }}</td></tr>
-                    {% endfor %}
-                    {% endif %}
-                </tbody>
-            </table>
-        </div>
-
-        <div class="tables-grid">
-            <div class="table-card">
-                <h2>Top Chatters</h2>
-                <table>
-                    <thead>
-                        <tr><th>User</th><th>Messages</th></tr>
-                    </thead>
-                    <tbody>
-                        {% if leaderboard.is_empty() %}
-                        <tr><td colspan="2" class="empty">Coming soon</td></tr>
-                        {% else %}
-                        {% for u in leaderboard %}
-                        <tr><td><a href="/stats/{{ u.user_id }}">{{ u.display_name }}</a></td><td>{{ u.messages }}</td></tr>
-                        {% endfor %}
-                        {% endif %}
-                    </tbody>
-                </table>
-            </div>
-            <div class="table-card">
-                <h2>Top Timers</h2>
-                <table>
-                    <thead>
-                        <tr><th>User</th><th>Coding Time</th></tr>
-                    </thead>
-                    <tbody>
-                        {% if timers.is_empty() %}
-                        <tr><td colspan="2" class="empty">Coming soon</td></tr>
-                        {% else %}
-                        {% for u in timers %}
-                        <tr><td><a href="/stats/{{ u.user_id }}">{{ u.display_name }}</a></td><td>{{ u.coding_minutes }} min</td></tr>
-                        {% endfor %}
-                        {% endif %}
-                    </tbody>
-                </table>
-            </div>
-        </div>
     </div>
     {% include "footer.html" %}
 </body>
