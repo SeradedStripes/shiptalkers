@@ -49,6 +49,7 @@ pub struct UserTemplate {
     pub total_messages: String,
     pub coding_minutes: String,
     pub channels: String,
+    pub first_msg: String,
     pub last_msg: String,
     pub slack_time_total: String,
     pub slack_time_avg: String,
@@ -73,6 +74,7 @@ pub struct ChannelTemplate {
     pub channel_id: String,
     pub total_messages: String,
     pub active_users: String,
+    pub first_msg: String,
     pub last_msg: String,
     pub top_posters: Vec<UserStats>,
     pub signed_in: bool,
@@ -593,6 +595,13 @@ async fn get_user_stats(
         .await
         .unwrap_or_default();
 
+    let first_ts: String = ch
+        .query("SELECT min(message_ts) FROM slack_messages FINAL WHERE user_id = ?")
+        .bind(slack_id)
+        .fetch_one()
+        .await
+        .unwrap_or_default();
+
     #[derive(clickhouse::Row, serde::Deserialize)]
     struct ChannelCount {
         channel_id: String,
@@ -763,6 +772,7 @@ async fn get_user_stats(
         total_messages: fmt_thousands(total_messages),
         coding_minutes: fmt_thousands(coding_minutes.max(0) as u64),
         channels: fmt_thousands(channels),
+        first_msg: fmt_last_ts(&first_ts),
         last_msg: fmt_last_ts(&last_ts),
         slack_time_total,
         slack_time_avg,
@@ -810,6 +820,13 @@ async fn get_channel_stats(
 
     let last_ts: String = ch
         .query("SELECT max(message_ts) FROM slack_messages FINAL WHERE channel_id = ?")
+        .bind(channel_id)
+        .fetch_one()
+        .await
+        .unwrap_or_default();
+
+    let first_ts: String = ch
+        .query("SELECT min(message_ts) FROM slack_messages FINAL WHERE channel_id = ?")
         .bind(channel_id)
         .fetch_one()
         .await
@@ -884,6 +901,7 @@ async fn get_channel_stats(
         channel_id: channel_id.to_string(),
         total_messages: fmt_thousands(total_messages),
         active_users: fmt_thousands(active_users),
+        first_msg: fmt_last_ts(&first_ts),
         last_msg: fmt_last_ts(&last_ts),
         top_posters,
         signed_in,
