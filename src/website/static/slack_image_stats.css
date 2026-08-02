@@ -1,0 +1,9 @@
+.bg { fill: #0f0f0f; }
+.user { fill: #ffffff; font-family: "DejaVu Sans"; font-size: 40px; font-weight: bold; }
+.headline { fill: #ffffff; font-family: "DejaVu Sans"; font-size: 24px; }
+.pct { fill: #f472b6; font-weight: bold; }
+.card { fill: #1c1c1c; }
+.card-label { fill: #a1a1aa; font-family: "DejaVu Sans"; font-size: 20px; }
+.slack { fill: #f472b6; font-family: "DejaVu Sans"; font-size: 34px; font-weight: bold; }
+.coding { fill: #34d399; font-family: "DejaVu Sans"; font-size: 34px; font-weight: bold; }
+.vs { fill: #71717a; font-family: "DejaVu Sans"; font-size: 18px; }

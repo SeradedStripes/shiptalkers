@@ -1,4 +1,5 @@
 mod auth;
+mod bot_image;
 mod db;
 mod formula;
 mod slack;

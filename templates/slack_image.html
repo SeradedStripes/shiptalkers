@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="420" viewBox="0 0 640 420">
+  <style type="text/css">
+  {{ css }}
+  </style>
+  <rect class="bg" x="0" y="0" width="640" height="420" rx="28"/>
+  <text class="user" x="320" y="80" text-anchor="middle" style="font-size: {{ user_font_size }}px">{{ user }}</text>
+  <text class="headline" x="320" y="142" text-anchor="middle">Spends <tspan class="pct">{{ percent }}%</tspan> more time</text>
+  <text class="headline" x="320" y="180" text-anchor="middle">on {{ more }} than {{ other }}</text>
+  <rect class="card" x="40" y="220" width="260" height="150" rx="20"/>
+  <text class="card-label" x="170" y="268" text-anchor="middle">Time spent on Slack</text>
+  <text class="slack" x="170" y="336" text-anchor="middle">{{ slack_time }}</text>
+  <text class="vs" x="320" y="300" text-anchor="middle">vs</text>
+  <rect class="card" x="340" y="220" width="260" height="150" rx="20"/>
+  <text class="card-label" x="470" y="268" text-anchor="middle">Time spent on Coding</text>
+  <text class="coding" x="470" y="336" text-anchor="middle">{{ coding_time }}</text>
+</svg>

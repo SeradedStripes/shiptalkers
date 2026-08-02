@@ -33,6 +33,8 @@ The bot then shows you a chart comparing your Slack activity to your Hackatime a
 - groups:read
 - mpim:history
 - users:read
+- files:read
+- files:write
 
 #### User Token Scopes
 - channels:history

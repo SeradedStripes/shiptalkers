@@ -32,7 +32,8 @@ Scrapes every public channel and thread reply from Hack Club Slack into ClickHou
 
 - `src/main.rs` - entry point, env parsing, scraper orchestration
 - `src/slack/mod.rs` - SlackClient, per-method FIFO token-bucket rate limiter, 429 backoff
-- `src/slack/socket.rs` - Slack Socket Mode (app events) via tokio-tungstenite; stats bot replies to top-level messages in `SLACK_MAIN_CHANNEL` in a thread, via `chat.postMessage`
+- `src/slack/socket.rs` - Slack Socket Mode (app events) via tokio-tungstenite; stats bot replies to top-level messages in `SLACK_MAIN_CHANNEL` in a thread, via `chat.postMessage`, with a PNG card uploaded via `files.getUploadURLExternal` + `files.completeUploadExternal`
+- `src/bot_image.rs` - renders the stats card SVG (`templates/slack_image.html` + `src/website/static/slack_image_stats.css`) to PNG via resvg/usvg, with bundled DejaVu fonts
 - `src/db/clickhouse_db.rs` - ClickHouse schema, inserts, checkpoint queries
 - `src/db/sqlite.rs` - SQLite auth DB (`linked_users`), the only non-ClickHouse datastore
 - `src/website/mod.rs` - axum router, server-rendered `/stats`, `/stats/:id` (user or channel, dispatched by `U`/`C` prefix), `/leaderboard` and `/search` via askama
@@ -42,7 +43,8 @@ Scrapes every public channel and thread reply from Hack Club Slack into ClickHou
 - `templates/leaderboard.html` - askama template for the leaderboard page
 - `templates/search.html` - askama template for user and channel search results
 - `templates/search_form.html` - shared inline search form partial
-- `src/website/static/` - index.html, link.html, style.css
+- `templates/slack_image.html` - askama SVG template for the stats bot card (CSS inlined from `slack_image_stats.css`)
+- `src/website/static/` - style.css, time.js, slack_image_stats.css
 - `src/formula.rs` - Slack Time formula evaluator and the `SLACK_TIME_CALCULATION_FORMULA` code constant (edit here to change the algorithm)
 
 ## Slack Time Formula
