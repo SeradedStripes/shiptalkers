@@ -2,6 +2,7 @@ services:
   app:
     # Prebuilt image published to GHCR by .github/workflows/docker.yml
     image: ghcr.io/seradedstripes/shiptalkers-app:latest
+    pull_policy: always
     restart: unless-stopped
     ports:
       - "3000:3000"
