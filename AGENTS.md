@@ -81,6 +81,7 @@ Scrapes every public channel and thread reply from Hack Club Slack into ClickHou
 - Slack rate limits are per (token, method). `conversations.history` and `conversations.replies` have separate budgets, so the rate limiter stays per method.
 - The rate limiter is a FIFO ticket queue that paces at exactly 1 request per delay, so one huge channel cannot stall the pass.
 - Scrape passes split into full-scrape (new channels) and incremental check (already-scraped channels) using `scraped_channels`.
+- `coding_activity` is `ReplacingMergeTree` and all reads use `FINAL`. Coding syncs are serialized per user (`CODING_SYNC_LOCKS` in `auth.rs`) and the clear-then-insert uses `SETTINGS mutations_sync = 2`, because concurrent syncs used to insert duplicate day rows that inflated coding time sums.
 
 ## Finally
 

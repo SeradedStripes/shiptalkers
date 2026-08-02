@@ -7,12 +7,28 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{Html, IntoResponse, Redirect};
 use serde::Deserialize;
 use std::collections::HashMap;
+use std::sync::{Arc, OnceLock};
 
 use super::AppState;
 
 const SESSION_COOKIE: &str = "st_session";
 const STATE_COOKIE: &str = "st_state";
 const START_DATE: &str = "2024-01-01";
+
+/// Per-user lock so a link-time full sync and the hourly resync_all never run
+/// clear+insert for the same user at the same time. Concurrent syncs were
+/// inserting duplicate rows into coding_activity.
+static CODING_SYNC_LOCKS: OnceLock<std::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>> =
+    OnceLock::new();
+
+fn coding_sync_lock(slack_id: &str) -> Arc<tokio::sync::Mutex<()>> {
+    let locks = CODING_SYNC_LOCKS.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
+    let mut guard = locks.lock().unwrap_or_else(|p| p.into_inner());
+    guard
+        .entry(slack_id.to_string())
+        .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+        .clone()
+}
 
 fn cookies(headers: &HeaderMap) -> HashMap<String, String> {
     headers
@@ -305,6 +321,8 @@ pub async fn sync_coding_activity(
     access_token: &str,
     start_date: &str,
 ) -> Result<(), String> {
+    let lock = coding_sync_lock(slack_id);
+    let _guard = lock.lock().await;
     let today = auth::today_utc();
     clickhouse_db::clear_coding_activity_from(clickhouse, slack_id, start_date)
         .await

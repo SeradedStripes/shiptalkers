@@ -91,7 +91,7 @@ pub async fn init_tables(client: &Client) -> Result<(), Box<dyn std::error::Erro
                 date String,
                 minutes Int64,
                 language Nullable(String)
-            ) ENGINE = MergeTree()
+            ) ENGINE = ReplacingMergeTree()
             ORDER BY (user_id, date)",
         )
         .execute()
@@ -625,7 +625,7 @@ pub async fn clear_coding_activity_from(
 ) -> Result<(), Box<dyn std::error::Error>> {
     client
         .query(&format!(
-            "ALTER TABLE coding_activity DELETE WHERE user_id = '{}' AND date >= '{}'",
+            "ALTER TABLE coding_activity DELETE WHERE user_id = '{}' AND date >= '{}' SETTINGS mutations_sync = 2",
             slack_id, from_date
         ))
         .execute()
