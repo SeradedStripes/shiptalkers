@@ -32,6 +32,9 @@ pub struct Stats {
     pub total_channels: String,
     pub scraped_channels: String,
     pub scrape_in_progress: bool,
+    pub scrape_pct_left: u64,
+    pub scrape_pct_done: u64,
+    pub messages_estimate: String,
     pub total_users: String,
     pub coding_minutes: String,
     pub db_size_label: String,
@@ -969,6 +972,25 @@ async fn load_stats(
         prec = if db_size_gib < 1.0 { 5 } else { 2 }
     );
 
+    let channel_frac = if total_channels > 0 {
+        scraped_channels as f64 / total_channels as f64
+    } else {
+        1.0
+    };
+    let user_frac = if total_users > 0 {
+        active_users as f64 / total_users as f64
+    } else {
+        1.0
+    };
+    let coverage = (channel_frac + user_frac) / 2.0;
+    let scrape_pct_done = (coverage * 100.0).round().clamp(0.0, 100.0) as u64;
+    let scrape_pct_left = 100 - scrape_pct_done;
+    let messages_estimate = if coverage > 0.0 {
+        (total_messages as f64 / coverage).round() as u64
+    } else {
+        total_messages
+    };
+
     Stats {
         total_messages: fmt_thousands(total_messages),
         active_users: fmt_thousands(active_users),
@@ -976,6 +998,9 @@ async fn load_stats(
         total_channels: fmt_thousands(total_channels),
         scraped_channels: fmt_thousands(scraped_channels),
         scrape_in_progress: scraped_channels < total_channels,
+        scrape_pct_left,
+        scrape_pct_done,
+        messages_estimate: fmt_thousands(messages_estimate),
         total_users: fmt_thousands(total_users),
         coding_minutes: fmt_thousands(coding_minutes),
         db_size_label,
