@@ -21,14 +21,28 @@
         <div class="table-card">
             <table>
                 <thead>
-                    <tr><th>#</th><th>User</th><th>{{ unit }}</th></tr>
+                    <tr>
+                        <th>#</th>
+                        <th>User</th>
+                        <th>{{ unit }}</th>
+                        {% if extra_unit.is_some() %}
+                        <th>{{ extra_unit.as_deref().unwrap_or("") }}</th>
+                        {% endif %}
+                    </tr>
                 </thead>
                 <tbody>
                     {% if rows.is_empty() %}
-                    <tr><td colspan="3" class="empty">Coming soon</td></tr>
+                    <tr><td colspan="4" class="empty">Coming soon</td></tr>
                     {% else %}
                     {% for e in rows %}
-                    <tr><td>{{ loop.index }}</td><td><a href="/stats/{{ e.user_id }}">{{ e.display_name }}</a></td><td>{{ e.value }}</td></tr>
+                    <tr>
+                        <td>{{ loop.index }}</td>
+                        <td><a href="/stats/{{ e.user_id }}">{{ e.display_name }}</a></td>
+                        <td>{{ e.value }}</td>
+                        {% if extra_unit.is_some() %}
+                        <td>{{ e.extra }}</td>
+                        {% endif %}
+                    </tr>
                     {% endfor %}
                     {% endif %}
                 </tbody>

@@ -42,6 +42,11 @@ Scrapes every public channel and thread reply from Hack Club Slack into ClickHou
 - `templates/search.html` - askama template for user and channel search results
 - `templates/search_form.html` - shared inline search form partial
 - `src/website/static/` - index.html, link.html, style.css
+- `src/formula.rs` - Slack Time formula evaluator and the `SLACK_TIME_CALCULATION_FORMULA` code constant (edit here to change the algorithm)
+
+## Slack Time Formula
+
+`SLACK_TIME_CALCULATION_FORMULA` in `src/formula.rs` drives Top Talkers ranking and the per-user Slack Time report. Variables: `SESSION_SECONDS` (sessionizer output, 5 min windows split after 30 min inactivity, capped at 4 h), `MESSAGE_COUNT`, `SESSION_COUNT`, `TOTAL_CHARS`, `AVG_MESSAGE_LENGTH`. Functions: `log10`, `ln`, `sqrt`, `exp`, `abs`, `pow`. Supports `+ - * / ()` and implicit multiplication like `2MESSAGE_COUNT`. Invalid formulas fail at startup. Comments above the constant document each variable's source.
 
 ## Conventions
 

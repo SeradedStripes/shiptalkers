@@ -14,6 +14,7 @@ pub struct AppState {
     pub clickhouse: Client,
     pub auth: crate::auth::AuthConfig,
     pub http: reqwest::Client,
+    pub slack_time: crate::formula::Formula,
 }
 
 #[derive(Template)]
@@ -49,6 +50,11 @@ pub struct UserTemplate {
     pub coding_minutes: String,
     pub channels: String,
     pub last_msg: String,
+    pub slack_time_total: String,
+    pub slack_time_avg: String,
+    pub slack_time_longest: String,
+    pub slack_time_per_day: String,
+    pub active_hour: String,
     pub top_channels: Vec<ChannelStats>,
     pub signed_in: bool,
     pub found: bool,
@@ -93,6 +99,7 @@ pub struct LeaderboardTemplate {
 pub struct LeaderboardCategoryTemplate {
     pub title: String,
     pub unit: String,
+    pub extra_unit: Option<String>,
     pub rows: Vec<LeaderboardEntry>,
     pub coming_soon: bool,
     pub signed_in: bool,
@@ -102,6 +109,7 @@ pub struct LeaderboardEntry {
     pub user_id: String,
     pub display_name: String,
     pub value: String,
+    pub extra: String,
 }
 
 pub struct SearchResult {
@@ -124,11 +132,16 @@ pub struct TopUser {
     pub last_msg: String,
 }
 
-pub fn router(clickhouse: Client, auth_config: crate::auth::AuthConfig) -> Router {
+pub fn router(
+    clickhouse: Client,
+    auth_config: crate::auth::AuthConfig,
+    slack_time: crate::formula::Formula,
+) -> Router {
     let state = AppState {
         clickhouse,
         auth: auth_config,
         http: reqwest::Client::new(),
+        slack_time,
     };
 
     Router::new()
@@ -317,61 +330,138 @@ async fn get_leaderboard_category(
         value: i64,
     }
 
-    let (title, unit, coming_soon, rows): (String, String, bool, Vec<LeaderboardEntry>) =
-        match category.as_str() {
-            "talkers" => {
-                let rows: Vec<(String, i64)> = ch
-                    .query(
-                        "SELECT user_id, count() as value
+    let (title, unit, extra_unit, coming_soon, rows): (
+        String,
+        String,
+        Option<String>,
+        bool,
+        Vec<LeaderboardEntry>,
+    ) = match category.as_str() {
+        "talkers" => {
+            #[derive(clickhouse::Row, serde::Deserialize)]
+            struct TalkerRow {
+                user_id: String,
+                total_time: u64,
+                messages: u64,
+                sessions: u64,
+            }
+
+            #[derive(clickhouse::Row, serde::Deserialize)]
+            struct CharRow {
+                user_id: String,
+                total_chars: u64,
+            }
+
+            let rows: Vec<TalkerRow> = ch
+                .query(
+                    "WITH
+                     msg AS (
+                         SELECT user_id, toInt64(splitByChar('.', message_ts)[1]) AS ts
                          FROM slack_messages FINAL
-                         GROUP BY user_id
-                         ORDER BY value DESC
-                         LIMIT 100",
-                    )
-                    .fetch_all::<LeaderboardRow>()
-                    .await
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|r| (r.user_id, r.value))
-                    .collect();
-                (
-                    "Top Talkers".into(),
-                    "Messages".into(),
-                    false,
-                    leaderboard_entries(ch, rows, fmt_thousands).await,
+                     ),
+                     flagged AS (
+                         SELECT user_id, ts,
+                             if(ts - lag(ts) OVER (PARTITION BY user_id ORDER BY ts) > 2100, 1, 0) AS boundary
+                         FROM msg
+                     ),
+                     sess AS (
+                         SELECT user_id, ts,
+                             sum(boundary) OVER (PARTITION BY user_id ORDER BY ts) AS sid
+                         FROM flagged
+                     ),
+                     sessions AS (
+                         SELECT user_id, sid, min(ts) AS start_ts, max(ts) AS end_ts, count() AS msg_count
+                         FROM sess
+                         GROUP BY user_id, sid
+                     )
+                     SELECT user_id,
+                            sum(least(end_ts + 300 - start_ts, 14400)) AS total_time,
+                            sum(msg_count) AS messages,
+                            count() AS sessions
+                     FROM sessions
+                     GROUP BY user_id",
                 )
-            }
-            "coders" => {
-                let rows: Vec<(String, i64)> = ch
-                    .query(
-                        "SELECT user_id, sum(minutes) as value
-                         FROM coding_activity
-                         GROUP BY user_id
-                         ORDER BY value DESC
-                         LIMIT 100",
-                    )
-                    .fetch_all::<LeaderboardRow>()
-                    .await
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|r| (r.user_id, r.value))
-                    .collect();
-                (
-                    "Top Coders".into(),
-                    "Coding Time".into(),
-                    false,
-                    leaderboard_entries(ch, rows, |v| format!("{} min", fmt_thousands(v))).await,
+                .fetch_all()
+                .await
+                .unwrap_or_default();
+            let chars: Vec<CharRow> = ch
+                .query(
+                    "SELECT user_id, sum(char_length(text)) AS total_chars
+                     FROM slack_messages FINAL
+                     GROUP BY user_id",
                 )
-            }
-            "combined" => ("Top Combined".into(), String::new(), true, Vec::new()),
-            _ => {
-                return Err(StatusCode::NOT_FOUND);
-            }
-        };
+                .fetch_all()
+                .await
+                .unwrap_or_default();
+            let char_map: std::collections::HashMap<String, u64> = chars
+                .into_iter()
+                .map(|r| (r.user_id, r.total_chars))
+                .collect();
+
+            let mut ranked: Vec<(String, i64, Option<i64>)> = rows
+                .into_iter()
+                .map(|r| {
+                    let total_chars = char_map.get(&r.user_id).copied().unwrap_or(0);
+                    let avg_length = if r.messages > 0 {
+                        total_chars as f64 / r.messages as f64
+                    } else {
+                        0.0
+                    };
+                    let score = state.slack_time.eval(&crate::formula::Metrics {
+                        message_count: r.messages,
+                        session_seconds: r.total_time,
+                        session_count: r.sessions,
+                        avg_message_length: avg_length,
+                        total_chars,
+                    });
+                    (r.user_id, score.max(0.0) as i64, Some(r.messages as i64))
+                })
+                .collect();
+            ranked.sort_by_key(|r| std::cmp::Reverse(r.1));
+            ranked.truncate(100);
+            (
+                "Top Talkers".into(),
+                "Slack Time".into(),
+                Some("Messages".into()),
+                false,
+                leaderboard_entries(ch, ranked, fmt_duration, Some(fmt_thousands)).await,
+            )
+        }
+        "coders" => {
+            let rows: Vec<(String, i64)> = ch
+                .query(
+                    "SELECT user_id, sum(minutes) as value
+                     FROM coding_activity
+                     GROUP BY user_id
+                     ORDER BY value DESC
+                     LIMIT 100",
+                )
+                .fetch_all::<LeaderboardRow>()
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .map(|r| (r.user_id, r.value))
+                .collect();
+            let rows: Vec<(String, i64, Option<i64>)> =
+                rows.into_iter().map(|(id, v)| (id, v, None)).collect();
+            (
+                "Top Coders".into(),
+                "Coding Time".into(),
+                None,
+                false,
+                leaderboard_entries(ch, rows, |v| format!("{} min", fmt_thousands(v)), None).await,
+            )
+        }
+        "combined" => ("Top Combined".into(), String::new(), None, true, Vec::new()),
+        _ => {
+            return Err(StatusCode::NOT_FOUND);
+        }
+    };
 
     let template = LeaderboardCategoryTemplate {
         title,
         unit,
+        extra_unit,
         rows,
         coming_soon,
         signed_in,
@@ -384,10 +474,11 @@ async fn get_leaderboard_category(
 
 async fn leaderboard_entries(
     ch: &Client,
-    rows: Vec<(String, i64)>,
+    rows: Vec<(String, i64, Option<i64>)>,
     format_value: impl Fn(u64) -> String,
+    format_extra: Option<fn(u64) -> String>,
 ) -> Vec<LeaderboardEntry> {
-    let mut name_ids: Vec<String> = rows.iter().map(|(user_id, _)| user_id.clone()).collect();
+    let mut name_ids: Vec<String> = rows.iter().map(|(user_id, _, _)| user_id.clone()).collect();
     name_ids.sort();
     name_ids.dedup();
 
@@ -414,7 +505,7 @@ async fn leaderboard_entries(
     };
 
     rows.into_iter()
-        .map(|(user_id, value)| {
+        .map(|(user_id, value, extra)| {
             let value = value.max(0) as u64;
             LeaderboardEntry {
                 user_id: user_id.clone(),
@@ -424,9 +515,32 @@ async fn leaderboard_entries(
                     .cloned()
                     .unwrap_or(user_id),
                 value: format_value(value),
+                extra: extra
+                    .map(|v| v.max(0) as u64)
+                    .and_then(|v| format_extra.map(|f| f(v)))
+                    .unwrap_or_default(),
             }
         })
         .collect()
+}
+
+fn fmt_duration(secs: u64) -> String {
+    let hours = secs / 3600;
+    let mins = (secs % 3600) / 60;
+    if hours > 0 {
+        format!("{}h {}m", hours, mins)
+    } else {
+        format!("{}m", mins)
+    }
+}
+
+fn fmt_hour(hour: u8) -> String {
+    let ampm = if hour < 12 { "AM" } else { "PM" };
+    let mut hour = hour % 12;
+    if hour == 0 {
+        hour = 12;
+    }
+    format!("{} {}", hour, ampm)
 }
 
 async fn get_user_stats(
@@ -460,6 +574,13 @@ async fn get_user_stats(
 
     let channels: u64 = ch
         .query("SELECT uniqExact(channel_id) FROM slack_messages FINAL WHERE user_id = ?")
+        .bind(slack_id)
+        .fetch_one()
+        .await
+        .unwrap_or(0);
+
+    let total_chars: u64 = ch
+        .query("SELECT sum(char_length(text)) FROM slack_messages FINAL WHERE user_id = ?")
         .bind(slack_id)
         .fetch_one()
         .await
@@ -531,6 +652,107 @@ async fn get_user_stats(
 
     let found = total_messages > 0 || coding_minutes > 0 || !display_name.is_empty();
 
+    let (slack_time_total, slack_time_avg, slack_time_longest, slack_time_per_day, active_hour) =
+        if total_messages > 0 {
+            #[derive(clickhouse::Row, serde::Deserialize)]
+            struct SlackTimeRow {
+                total_time: u64,
+                longest: u64,
+                sessions: u64,
+                days: u64,
+            }
+
+            #[derive(clickhouse::Row, serde::Deserialize)]
+            struct HourRow {
+                hour: u8,
+            }
+
+            let report: SlackTimeRow = ch
+                .query(
+                    "WITH
+                     msg AS (
+                         SELECT toInt64(splitByChar('.', message_ts)[1]) AS ts
+                         FROM slack_messages FINAL
+                         WHERE user_id = ?
+                     ),
+                     flagged AS (
+                         SELECT ts,
+                             if(ts - lag(ts) OVER (ORDER BY ts) > 2100, 1, 0) AS boundary
+                         FROM msg
+                     ),
+                     sess AS (
+                         SELECT ts, sum(boundary) OVER (ORDER BY ts) AS sid
+                         FROM flagged
+                     ),
+                     sessions AS (
+                         SELECT min(ts) AS start_ts, max(ts) AS end_ts
+                         FROM sess
+                         GROUP BY sid
+                     )
+                     SELECT sum(least(end_ts + 300 - start_ts, 14400)) AS total_time,
+                            max(least(end_ts + 300 - start_ts, 14400)) AS longest,
+                            count() AS sessions,
+                            greatest(dateDiff('day', toDateTime(min(start_ts)), toDateTime(max(start_ts))) + 1, 1) AS days
+                     FROM sessions",
+                )
+                .bind(slack_id)
+                .fetch_one()
+                .await
+                .unwrap_or(SlackTimeRow {
+                    total_time: 0,
+                    longest: 0,
+                    sessions: 0,
+                    days: 1,
+                });
+
+            let total = state
+                .slack_time
+                .eval(&crate::formula::Metrics {
+                    message_count: total_messages,
+                    session_seconds: report.total_time,
+                    session_count: report.sessions,
+                    avg_message_length: if total_messages > 0 {
+                        total_chars as f64 / total_messages as f64
+                    } else {
+                        0.0
+                    },
+                    total_chars,
+                })
+                .max(0.0) as u64;
+            let avg_session = total.checked_div(report.sessions).unwrap_or(0);
+            let per_day = report.sessions as f64 / report.days as f64;
+
+            let hour: HourRow = ch
+                .query(
+                    "SELECT toHour(toDateTime(toInt64(splitByChar('.', message_ts)[1]))) AS hour
+                     FROM slack_messages FINAL
+                     WHERE user_id = ?
+                     GROUP BY hour
+                     ORDER BY count() DESC
+                     LIMIT 1",
+                )
+                .bind(slack_id)
+                .fetch_one()
+                .await
+                .unwrap_or(HourRow { hour: 0 });
+
+            (
+                fmt_duration(total),
+                fmt_duration(avg_session),
+                fmt_duration(report.longest),
+                format!("{:.1} / day", per_day),
+                fmt_hour(hour.hour),
+            )
+        } else {
+            (
+                "0m".into(),
+                "0m".into(),
+                "0m".into(),
+                "0 / day".into(),
+                String::new(),
+            )
+        };
+
     let template = UserTemplate {
         display_name: if display_name.is_empty() {
             slack_id.to_string()
@@ -542,6 +764,11 @@ async fn get_user_stats(
         coding_minutes: fmt_thousands(coding_minutes.max(0) as u64),
         channels: fmt_thousands(channels),
         last_msg: fmt_last_ts(&last_ts),
+        slack_time_total,
+        slack_time_avg,
+        slack_time_longest,
+        slack_time_per_day,
+        active_hour,
         top_channels,
         signed_in,
         found,
@@ -978,7 +1205,11 @@ mod tests {
             base_url: "http://localhost:3000".into(),
             session_secret: String::new(),
         };
-        let app = router(ch, auth_config);
+        let app = router(
+            ch,
+            auth_config,
+            crate::formula::Formula::parse(crate::formula::SLACK_TIME_CALCULATION_FORMULA).unwrap(),
+        );
         for uri in ["/stats/U01MPHKFZ7S", "/stats/C0123456789"] {
             let res = app
                 .clone()

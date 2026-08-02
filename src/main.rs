@@ -1,5 +1,6 @@
 mod auth;
 mod db;
+mod formula;
 mod slack;
 mod website;
 
@@ -55,6 +56,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let clickhouse_user = env::var("CLICKHOUSE_USER").unwrap_or_else(|_| "default".into());
     let clickhouse_password = env::var("CLICKHOUSE_PASSWORD").unwrap_or_default();
     let clickhouse_db = env::var("CLICKHOUSE_DB").unwrap_or_else(|_| "default".into());
+
+    let slack_time = formula::Formula::parse(formula::SLACK_TIME_CALCULATION_FORMULA)
+        .expect("SLACK_TIME_CALCULATION_FORMULA must be a valid formula");
+    tracing::info!("Slack time formula: {}", slack_time.source());
 
     let database = db::Database::new(
         &clickhouse_url,
@@ -143,7 +148,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     tracing::info!("Starting web server on {}", addr);
     let listener = TcpListener::bind(&addr).await?;
-    axum::serve(listener, website::router(database.clickhouse, auth_config)).await?;
+    axum::serve(
+        listener,
+        website::router(database.clickhouse, auth_config, slack_time),
+    )
+    .await?;
 
     Ok(())
 }

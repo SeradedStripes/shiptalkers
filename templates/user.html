@@ -34,6 +34,19 @@
         </div>
 
         <div class="table-card">
+            <h2>Slack Time</h2>
+            <table>
+                <tbody>
+                    <tr><td>Total estimated Slack time</td><td>{{ slack_time_total }}</td></tr>
+                    <tr><td>Average session length</td><td>{{ slack_time_avg }}</td></tr>
+                    <tr><td>Longest session</td><td>{{ slack_time_longest }}</td></tr>
+                    <tr><td>Sessions per day</td><td>{{ slack_time_per_day }}</td></tr>
+                    <tr><td>Most active hour of the day</td><td>{{ active_hour }}</td></tr>
+                </tbody>
+            </table>
+        </div>
+
+        <div class="table-card">
             <h2>Top Channels</h2>
             <table>
                 <thead>
