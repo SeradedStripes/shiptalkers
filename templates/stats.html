@@ -8,13 +8,6 @@
     <link rel="stylesheet" href="/style.css">
 </head>
 <body class="stats">
-    {% if scrape_in_progress %}
-    <div class="scrape-banner">
-        <div>Scraping in progress, about {{ scrape_pct_left }}% left ({{ scraped_channels }}/{{ total_channels }} channels, {{ active_users }}/{{ total_users }} users)</div>
-        <div class="scrape-progress"><div class="scrape-progress-fill" style="width: {{ scrape_pct_done }}%"></div></div>
-        <div>{{ total_messages }} of ~{{ messages_estimate }} estimated messages</div>
-    </div>
-    {% endif %}
     {% include "header.html" %}
     <div class="container">
         <h1><span class="live"></span>Stats</h1>

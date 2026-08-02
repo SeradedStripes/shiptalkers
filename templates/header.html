@@ -11,5 +11,8 @@
         <a href="/auth/hackclub/login" class="btn">Sign in</a>
         {% endif %}
     </nav>
+    {% if !scrape_banner.is_empty() %}
+    <div class="header-scrape">{{ scrape_banner|safe }}</div>
+    {% endif %}
 </header>
 <script src="/time.js" defer></script>
