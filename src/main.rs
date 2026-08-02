@@ -24,22 +24,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .init();
 
-    let slack_token = env::var("SLACK_BOT_TOKEN")?;
-    let slack_user_tokens: Vec<String> = env::var("SLACK_USER_TOKENS")
-        .ok()
-        .filter(|v| !v.trim().is_empty())
-        .map(|v| {
-            v.split(',')
-                .map(|t| t.trim().to_string())
-                .filter(|t| !t.is_empty())
-                .collect()
-        })
-        .unwrap_or_else(|| {
-            env::var("SLACK_USER_TOKEN")
-                .ok()
-                .map(|t| vec![t])
-                .unwrap_or_default()
-        });
+    let slack_bot_tokens = parse_token_list("SLACK_BOT_TOKENS", "SLACK_BOT_TOKEN");
+    if slack_bot_tokens.is_empty() {
+        return Err("SLACK_BOT_TOKEN or SLACK_BOT_TOKENS must be set".into());
+    }
+    let slack_user_tokens = parse_token_list("SLACK_USER_TOKENS", "SLACK_USER_TOKEN");
+    let slack_app_tokens = parse_token_list("SLACK_APP_TOKENS", "SLACK_APP_TOKEN");
     let slack_request_delay_ms = env::var("SLACK_REQUEST_DELAY_MS")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -80,13 +70,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     db::clickhouse_db::init_tables(&database.clickhouse).await?;
 
     let clickhouse_for_scraper = database.clickhouse.clone();
-    let slack_token_clone = slack_token.clone();
+    let slack_bot_tokens_for_scraper = slack_bot_tokens.clone();
     let slack_user_tokens_for_scraper = slack_user_tokens.clone();
 
     tokio::spawn(async move {
         if let Err(e) = run_scraper(
             clickhouse_for_scraper,
-            slack_token_clone,
+            slack_bot_tokens_for_scraper,
             slack_user_tokens_for_scraper,
             Duration::from_millis(slack_request_delay_ms),
             slack_max_inflight,
@@ -100,35 +90,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     {
         let clickhouse_for_users = database.clickhouse.clone();
-        let slack_token_for_users = slack_token.clone();
+        let slack_bot_tokens_for_users = slack_bot_tokens.clone();
         let user_sync_delay = env::var("SLACK_USER_SYNC_DELAY_MS")
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(3000);
         tokio::spawn(async move {
-            let client = slack::SlackClient::new(
-                slack_token_for_users,
+            let pool = slack::SlackClientPool::new(
+                slack_bot_tokens_for_users,
                 Duration::from_millis(user_sync_delay),
                 slack_max_inflight,
             );
             loop {
-                let ok = sync_users(&client, &clickhouse_for_users).await;
+                let ok = sync_users(&pool, &clickhouse_for_users).await;
                 let wait = if ok { 86400 } else { 300 };
                 tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
             }
         });
     }
 
-    if let Ok(app_token) = env::var("SLACK_APP_TOKEN") {
+    if !slack_app_tokens.is_empty() {
         let base_url = env::var("BASE_URL").unwrap_or_else(|_| "http://localhost:3000".into());
-        let socket_config = slack::SocketConfig {
-            app_token,
-            bot_token: slack_token.clone(),
-            main_channel: env::var("SLACK_MAIN_CHANNEL")
+        let socket_config = slack::SocketConfig::new(
+            slack_app_tokens,
+            slack_bot_tokens.clone(),
+            env::var("SLACK_MAIN_CHANNEL")
                 .ok()
                 .filter(|v| !v.trim().is_empty()),
             base_url,
-        };
+        );
         let clickhouse_for_socket = database.clickhouse.clone();
         let auth_db_for_socket = auth_db.clone();
         tokio::spawn(async move {
@@ -140,7 +130,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         });
     } else {
-        tracing::warn!("SLACK_APP_TOKEN not set, Socket Mode disabled");
+        tracing::warn!("SLACK_APP_TOKEN / SLACK_APP_TOKENS not set, Socket Mode disabled");
     }
 
     let host = env::var("HOST").unwrap_or_else(|_| "0.0.0.0".into());
@@ -177,6 +167,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     .await?;
 
     Ok(())
+}
+
+fn parse_token_list(var: &str, fallback_var: &str) -> Vec<String> {
+    env::var(var)
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .map(|v| {
+            v.split(',')
+                .map(|t| t.trim().to_string())
+                .filter(|t| !t.is_empty())
+                .collect()
+        })
+        .unwrap_or_else(|| {
+            env::var(fallback_var)
+                .ok()
+                .map(|t| vec![t])
+                .unwrap_or_default()
+        })
 }
 
 async fn shutdown_signal() {
@@ -224,7 +232,7 @@ fn insert_page(
     })
 }
 
-async fn sync_users(slack_client: &slack::SlackClient, clickhouse: &clickhouse::Client) -> bool {
+async fn sync_users(slack_pool: &slack::SlackClientPool, clickhouse: &clickhouse::Client) -> bool {
     let existing = match db::clickhouse_db::get_user_updates(clickhouse).await {
         Ok(m) => m,
         Err(e) => {
@@ -238,7 +246,7 @@ async fn sync_users(slack_client: &slack::SlackClient, clickhouse: &clickhouse::
     );
     let existing = Arc::new(existing);
     let changed_total = Arc::new(AtomicU64::new(0));
-    let result = slack_client
+    let result = slack_pool
         .fetch_users(|page| {
             let clickhouse = clickhouse.clone();
             let existing = existing.clone();
@@ -290,13 +298,13 @@ async fn sync_users(slack_client: &slack::SlackClient, clickhouse: &clickhouse::
 
 async fn run_scraper(
     clickhouse: clickhouse::Client,
-    slack_token: String,
+    bot_tokens: Vec<String>,
     slack_user_tokens: Vec<String>,
     request_delay: Duration,
     max_inflight: usize,
     channel_concurrency: usize,
 ) -> Result<(), String> {
-    let slack_client = slack::SlackClient::new(slack_token, request_delay, max_inflight);
+    let bot_pool = slack::SlackClientPool::new(bot_tokens, request_delay, max_inflight);
 
     let existing = db::clickhouse_db::get_known_channel_ids(&clickhouse)
         .await
@@ -304,7 +312,7 @@ async fn run_scraper(
 
     if existing.is_empty() {
         tracing::info!("No channels in ClickHouse, fetching all from Slack...");
-        full_fetch(&slack_client, &clickhouse).await?;
+        full_fetch(&bot_pool, &clickhouse).await?;
     } else {
         tracing::info!(
             "{} channels already in ClickHouse, skipping initial fetch",
@@ -333,7 +341,7 @@ async fn run_scraper(
     loop {
         tokio::time::sleep(std::time::Duration::from_secs(86400)).await;
         tracing::info!("24hr rescan starting...");
-        full_fetch(&slack_client, &clickhouse).await?;
+        full_fetch(&bot_pool, &clickhouse).await?;
         if !slack_user_tokens.is_empty() {
             scrape_all_messages(
                 &slack_user_tokens,
@@ -938,11 +946,11 @@ async fn scrape_thread(
 }
 
 async fn full_fetch(
-    slack_client: &slack::SlackClient,
+    slack_pool: &slack::SlackClientPool,
     clickhouse: &clickhouse::Client,
 ) -> Result<(), String> {
     let ch = clickhouse.clone();
-    let total = slack_client
+    let total = slack_pool
         .fetch_channels_paginated(move |page| insert_page(ch.clone(), page), None)
         .await
         .map_err(|e| e.to_string())?;

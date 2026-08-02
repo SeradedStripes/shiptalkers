@@ -216,150 +216,6 @@ impl SlackClient {
         }
     }
 
-    pub async fn fetch_channels_paginated<F>(
-        &self,
-        mut on_page: F,
-        max_pages: Option<usize>,
-    ) -> Result<usize, Box<dyn std::error::Error + Send + Sync>>
-    where
-        F: FnMut(Vec<SlackChannel>) -> Pin<Box<dyn Future<Output = ()> + Send>>,
-    {
-        let mut total = 0;
-        let mut cursor: Option<String> = None;
-        let mut page_count = 0;
-
-        loop {
-            if max_pages.is_some_and(|max| page_count >= max) {
-                break;
-            }
-
-            let mut params = vec![
-                ("types".to_string(), "public_channel".to_string()),
-                ("limit".to_string(), "200".to_string()),
-            ];
-            if let Some(ref c) = cursor {
-                params.push(("cursor".to_string(), c.clone()));
-            }
-
-            let resp = self.get("conversations.list", &params).await?;
-
-            let mut page_channels = Vec::new();
-            if let Some(channels_arr) = resp.get("channels").and_then(|v| v.as_array()) {
-                for ch in channels_arr {
-                    if let (Some(id), Some(name)) = (ch.get("id"), ch.get("name")) {
-                        page_channels.push(SlackChannel {
-                            id: id.as_str().unwrap_or_default().to_string(),
-                            name: name.as_str().unwrap_or_default().to_string(),
-                        });
-                    }
-                }
-            }
-
-            total += page_channels.len();
-            page_count += 1;
-            tracing::info!("Fetched {} channels ({} total)", page_channels.len(), total);
-
-            if total > 0 && page_channels.is_empty() {
-                break;
-            }
-
-            on_page(page_channels).await;
-
-            cursor = resp
-                .get("response_metadata")
-                .and_then(|m| m.get("next_cursor"))
-                .and_then(|c| c.as_str())
-                .filter(|c| !c.is_empty())
-                .map(|c| c.to_string());
-
-            match &cursor {
-                Some(c) if !c.is_empty() => {}
-                _ => break,
-            }
-        }
-
-        Ok(total)
-    }
-
-    pub async fn fetch_users<F>(
-        &self,
-        mut on_page: F,
-    ) -> Result<usize, Box<dyn std::error::Error + Send + Sync>>
-    where
-        F: FnMut(Vec<SlackUser>) -> Pin<Box<dyn Future<Output = ()> + Send>>,
-    {
-        let mut total = 0;
-        let mut cursor: Option<String> = None;
-        let mut page = 0u32;
-
-        loop {
-            page += 1;
-            let mut params = vec![("limit".to_string(), "1000".to_string())];
-            if let Some(ref c) = cursor {
-                params.push(("cursor".to_string(), c.clone()));
-            }
-
-            let resp = self.get("users.list", &params).await?;
-
-            let mut page_users = Vec::new();
-            if let Some(members) = resp.get("members").and_then(|v| v.as_array()) {
-                for m in members {
-                    let Some(id) = m.get("id").and_then(|v| v.as_str()) else {
-                        continue;
-                    };
-                    let is_bot = m.get("is_bot").and_then(|v| v.as_bool()).unwrap_or(false);
-                    let deleted = m.get("deleted").and_then(|v| v.as_bool()).unwrap_or(false);
-                    if is_bot || deleted {
-                        continue;
-                    }
-                    let profile = m.get("profile");
-                    let display_name = profile
-                        .and_then(|p| p.get("display_name"))
-                        .and_then(|v| v.as_str())
-                        .filter(|s| !s.is_empty())
-                        .or_else(|| {
-                            profile
-                                .and_then(|p| p.get("real_name"))
-                                .and_then(|v| v.as_str())
-                                .filter(|s| !s.is_empty())
-                        })
-                        .unwrap_or("")
-                        .to_string();
-                    let updated = m
-                        .get("updated")
-                        .and_then(|v| v.as_u64().or_else(|| v.as_f64().map(|f| f as u64)))
-                        .unwrap_or(0);
-                    page_users.push(SlackUser {
-                        id: id.to_string(),
-                        display_name,
-                        updated,
-                    });
-                }
-            }
-
-            total += page_users.len();
-            if page.is_multiple_of(25) {
-                tracing::info!("users.list: fetched {} users so far (page {})", total, page);
-            }
-
-            on_page(page_users).await;
-
-            cursor = resp
-                .get("response_metadata")
-                .and_then(|m| m.get("next_cursor"))
-                .and_then(|c| c.as_str())
-                .filter(|c| !c.is_empty())
-                .map(|c| c.to_string());
-
-            if cursor.is_none() {
-                break;
-            }
-        }
-
-        tracing::info!("Fetched {} users from Slack", total);
-        Ok(total)
-    }
-
     pub async fn get_channel_history(
         &self,
         channel_id: &str,
@@ -484,5 +340,180 @@ impl SlackClient {
         }
 
         Ok(messages)
+    }
+}
+
+#[derive(Clone)]
+pub struct SlackClientPool {
+    clients: Vec<SlackClient>,
+}
+
+impl SlackClientPool {
+    pub fn new(tokens: Vec<String>, delay_between_requests: Duration, max_inflight: usize) -> Self {
+        Self {
+            clients: tokens
+                .into_iter()
+                .map(|token| SlackClient::new(token, delay_between_requests, max_inflight))
+                .collect(),
+        }
+    }
+
+    fn client_for_page(&self, page: usize) -> &SlackClient {
+        &self.clients[page % self.clients.len()]
+    }
+
+    pub async fn fetch_channels_paginated<F>(
+        &self,
+        mut on_page: F,
+        max_pages: Option<usize>,
+    ) -> Result<usize, Box<dyn std::error::Error + Send + Sync>>
+    where
+        F: FnMut(Vec<SlackChannel>) -> Pin<Box<dyn Future<Output = ()> + Send>>,
+    {
+        if self.clients.is_empty() {
+            return Err("no bot tokens configured".into());
+        }
+
+        let mut total = 0;
+        let mut cursor: Option<String> = None;
+        let mut page_count = 0;
+
+        loop {
+            if max_pages.is_some_and(|max| page_count >= max) {
+                break;
+            }
+
+            let client = self.client_for_page(page_count);
+
+            let mut params = vec![
+                ("types".to_string(), "public_channel".to_string()),
+                ("limit".to_string(), "200".to_string()),
+            ];
+            if let Some(ref c) = cursor {
+                params.push(("cursor".to_string(), c.clone()));
+            }
+
+            let resp = client.get("conversations.list", &params).await?;
+
+            let mut page_channels = Vec::new();
+            if let Some(channels_arr) = resp.get("channels").and_then(|v| v.as_array()) {
+                for ch in channels_arr {
+                    if let (Some(id), Some(name)) = (ch.get("id"), ch.get("name")) {
+                        page_channels.push(SlackChannel {
+                            id: id.as_str().unwrap_or_default().to_string(),
+                            name: name.as_str().unwrap_or_default().to_string(),
+                        });
+                    }
+                }
+            }
+
+            total += page_channels.len();
+            page_count += 1;
+            tracing::info!("Fetched {} channels ({} total)", page_channels.len(), total);
+
+            if total > 0 && page_channels.is_empty() {
+                break;
+            }
+
+            on_page(page_channels).await;
+
+            cursor = resp
+                .get("response_metadata")
+                .and_then(|m| m.get("next_cursor"))
+                .and_then(|c| c.as_str())
+                .filter(|c| !c.is_empty())
+                .map(|c| c.to_string());
+
+            match &cursor {
+                Some(c) if !c.is_empty() => {}
+                _ => break,
+            }
+        }
+
+        Ok(total)
+    }
+
+    pub async fn fetch_users<F>(
+        &self,
+        mut on_page: F,
+    ) -> Result<usize, Box<dyn std::error::Error + Send + Sync>>
+    where
+        F: FnMut(Vec<SlackUser>) -> Pin<Box<dyn Future<Output = ()> + Send>>,
+    {
+        if self.clients.is_empty() {
+            return Err("no bot tokens configured".into());
+        }
+
+        let mut total = 0;
+        let mut cursor: Option<String> = None;
+        let mut page = 0u32;
+
+        loop {
+            page += 1;
+            let client = self.client_for_page((page - 1) as usize);
+            let mut params = vec![("limit".to_string(), "1000".to_string())];
+            if let Some(ref c) = cursor {
+                params.push(("cursor".to_string(), c.clone()));
+            }
+
+            let resp = client.get("users.list", &params).await?;
+
+            let mut page_users = Vec::new();
+            if let Some(members) = resp.get("members").and_then(|v| v.as_array()) {
+                for m in members {
+                    let Some(id) = m.get("id").and_then(|v| v.as_str()) else {
+                        continue;
+                    };
+                    let is_bot = m.get("is_bot").and_then(|v| v.as_bool()).unwrap_or(false);
+                    let deleted = m.get("deleted").and_then(|v| v.as_bool()).unwrap_or(false);
+                    if is_bot || deleted {
+                        continue;
+                    }
+                    let profile = m.get("profile");
+                    let display_name = profile
+                        .and_then(|p| p.get("display_name"))
+                        .and_then(|v| v.as_str())
+                        .filter(|s| !s.is_empty())
+                        .or_else(|| {
+                            profile
+                                .and_then(|p| p.get("real_name"))
+                                .and_then(|v| v.as_str())
+                                .filter(|s| !s.is_empty())
+                        })
+                        .unwrap_or("")
+                        .to_string();
+                    let updated = m
+                        .get("updated")
+                        .and_then(|v| v.as_u64().or_else(|| v.as_f64().map(|f| f as u64)))
+                        .unwrap_or(0);
+                    page_users.push(SlackUser {
+                        id: id.to_string(),
+                        display_name,
+                        updated,
+                    });
+                }
+            }
+
+            total += page_users.len();
+            if page.is_multiple_of(25) {
+                tracing::info!("users.list: fetched {} users so far (page {})", total, page);
+            }
+
+            on_page(page_users).await;
+
+            cursor = resp
+                .get("response_metadata")
+                .and_then(|m| m.get("next_cursor"))
+                .and_then(|c| c.as_str())
+                .filter(|c| !c.is_empty())
+                .map(|c| c.to_string());
+
+            if cursor.is_none() {
+                break;
+            }
+        }
+
+        tracing::info!("Fetched {} users from Slack", total);
+        Ok(total)
     }
 }

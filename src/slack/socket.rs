@@ -1,6 +1,8 @@
 use futures::{SinkExt, StreamExt};
 use reqwest::Client;
 use serde::Deserialize;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 use crate::bot_image;
@@ -59,14 +61,89 @@ struct GetUploadUrlResponse {
     file_id: Option<String>,
 }
 
+#[derive(Clone)]
 pub struct SocketConfig {
-    pub app_token: String,
-    pub bot_token: String,
+    pub app_tokens: Vec<String>,
+    pub bot_tokens: Vec<String>,
     pub main_channel: Option<String>,
     pub base_url: String,
+    bot_token_rotor: Arc<AtomicUsize>,
+}
+
+impl SocketConfig {
+    pub fn new(
+        app_tokens: Vec<String>,
+        bot_tokens: Vec<String>,
+        main_channel: Option<String>,
+        base_url: String,
+    ) -> Self {
+        Self {
+            app_tokens,
+            bot_tokens,
+            main_channel,
+            base_url,
+            bot_token_rotor: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+
+    fn next_bot_token(&self) -> String {
+        if self.bot_tokens.is_empty() {
+            return String::new();
+        }
+        let idx = self.bot_token_rotor.fetch_add(1, Ordering::Relaxed) % self.bot_tokens.len();
+        self.bot_tokens[idx].clone()
+    }
 }
 
 pub async fn start_socket_mode(
+    config: SocketConfig,
+    clickhouse: clickhouse::Client,
+    auth_db: std::sync::Arc<AuthDb>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    if config.app_tokens.is_empty() {
+        return Err("No SLACK_APP_TOKEN(s) set, Socket Mode disabled".into());
+    }
+
+    if let Some(channel) = &config.main_channel {
+        tracing::info!("Stats bot watching channel {}", channel);
+    } else {
+        tracing::warn!("SLACK_MAIN_CHANNEL not set, stats bot disabled");
+    }
+
+    let num_sockets = config.app_tokens.len();
+    let mut sockets = Vec::with_capacity(num_sockets);
+    for (socket_idx, app_token) in config.app_tokens.iter().enumerate() {
+        let config = config.clone();
+        let clickhouse = clickhouse.clone();
+        let auth_db = auth_db.clone();
+        sockets.push(run_socket(
+            socket_idx,
+            num_sockets,
+            app_token.clone(),
+            config,
+            clickhouse,
+            auth_db,
+        ));
+    }
+
+    let results = futures::future::join_all(sockets).await;
+    let errors: Vec<String> = results
+        .into_iter()
+        .filter_map(|r| r.err())
+        .map(|e| e.to_string())
+        .collect();
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("; ").into())
+    }
+}
+
+async fn run_socket(
+    socket_idx: usize,
+    num_sockets: usize,
+    app_token: String,
     config: SocketConfig,
     clickhouse: clickhouse::Client,
     auth_db: std::sync::Arc<AuthDb>,
@@ -75,7 +152,7 @@ pub async fn start_socket_mode(
 
     let resp: ConnectionsOpenResponse = client
         .post("https://slack.com/api/apps.connections.open")
-        .header("Authorization", format!("Bearer {}", config.app_token))
+        .header("Authorization", format!("Bearer {}", app_token))
         .send()
         .await?
         .json()
@@ -86,16 +163,18 @@ pub async fn start_socket_mode(
     }
 
     let ws_url = resp.url.ok_or("No WebSocket URL returned")?;
-    tracing::info!("Connecting to Socket Mode...");
+    tracing::info!(
+        "Connecting to Socket Mode (app {}/{})...",
+        socket_idx + 1,
+        num_sockets
+    );
 
     let (mut ws_stream, _) = connect_async(&ws_url).await?;
-    tracing::info!("Connected to Slack Socket Mode");
-
-    if let Some(channel) = &config.main_channel {
-        tracing::info!("Stats bot watching channel {}", channel);
-    } else {
-        tracing::warn!("SLACK_MAIN_CHANNEL not set, stats bot disabled");
-    }
+    tracing::info!(
+        "Connected to Slack Socket Mode (app {}/{})",
+        socket_idx + 1,
+        num_sockets
+    );
 
     while let Some(msg) = ws_stream.next().await {
         match msg {
@@ -125,6 +204,8 @@ pub async fn start_socket_mode(
                                         handle_message(
                                             &client,
                                             &config,
+                                            socket_idx,
+                                            num_sockets,
                                             &auth_db,
                                             &clickhouse,
                                             event,
@@ -154,7 +235,25 @@ pub async fn start_socket_mode(
         }
     }
 
+    tracing::warn!(
+        "Socket Mode connection ended (app {}/{})",
+        socket_idx + 1,
+        num_sockets
+    );
+
     Ok(())
+}
+
+fn shard_for_ts(ts: &str, num_sockets: usize) -> usize {
+    if num_sockets <= 1 {
+        return 0;
+    }
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for byte in ts.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    (hash % num_sockets as u64) as usize
 }
 
 async fn handle_channel_created(
@@ -185,6 +284,8 @@ async fn handle_channel_created(
 async fn handle_message(
     client: &Client,
     config: &SocketConfig,
+    socket_idx: usize,
+    num_sockets: usize,
     auth_db: &std::sync::Arc<AuthDb>,
     clickhouse: &clickhouse::Client,
     event: &serde_json::Value,
@@ -198,6 +299,9 @@ async fn handle_message(
     };
 
     if msg.channel != *main_channel {
+        return;
+    }
+    if shard_for_ts(&msg.ts, num_sockets) != socket_idx {
         return;
     }
     if msg.channel_type.as_deref() != Some("channel") {
@@ -228,13 +332,19 @@ async fn handle_message(
         text
     );
 
+    let bot_token = config.next_bot_token();
+    if bot_token.is_empty() {
+        tracing::warn!("Stats bot: no bot tokens configured, skipping reply");
+        return;
+    }
+
     if !auth_db.is_linked(&user).await {
         tracing::info!("Stats bot: {} is not linked, sending link prompt", user);
         let reply = format!(
             "You aren't linked yet. Link your account here to get your stats: {}/link",
             config.base_url.trim_end_matches('/')
         );
-        if let Err(e) = post_reply(client, &config.bot_token, &msg.channel, &msg.ts, &reply).await {
+        if let Err(e) = post_reply(client, &bot_token, &msg.channel, &msg.ts, &reply).await {
             tracing::error!("Stats bot: failed to post reply: {}", e);
         }
         return;
@@ -292,7 +402,7 @@ async fn handle_message(
         }
     };
 
-    if let Err(e) = upload_image(client, &config.bot_token, &msg.channel, &msg.ts, png).await {
+    if let Err(e) = upload_image(client, &bot_token, &msg.channel, &msg.ts, png).await {
         tracing::error!("Stats bot: failed to upload stats image: {}", e);
     }
 }
