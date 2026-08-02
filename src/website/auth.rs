@@ -63,9 +63,26 @@ pub async fn get_link(
             .unwrap_or(false),
         None => false,
     };
+    let name = match &session {
+        Some(s) => {
+            let display_name: String = state
+                .clickhouse
+                .query("SELECT display_name FROM users FINAL WHERE user_id = ?")
+                .bind(&s.slack_id)
+                .fetch_one()
+                .await
+                .unwrap_or_default();
+            if display_name.is_empty() {
+                s.name.clone()
+            } else {
+                display_name
+            }
+        }
+        None => String::new(),
+    };
     let template = LinkTemplate {
         signed_in: session.is_some(),
-        name: session.as_ref().map(|s| s.name.clone()).unwrap_or_default(),
+        name,
         slack_id: session
             .as_ref()
             .map(|s| s.slack_id.clone())
