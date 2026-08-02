@@ -5,7 +5,7 @@ services:
     pull_policy: always
     restart: unless-stopped
     ports:
-      - "3000:3000"
+      - "3002:3002"
     env_file: .env
     environment:
       - CLICKHOUSE_URL=http://clickhouse:8123
@@ -18,7 +18,7 @@ services:
       clickhouse:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:3000/stats"]
+      test: ["CMD", "curl", "-fsS", "http://localhost:3002/stats"]
       interval: 30s
       timeout: 5s
       retries: 3
