@@ -55,8 +55,22 @@ pub struct UserTemplate {
 }
 
 pub struct ChannelStats {
+    pub user_id: String,
     pub channel_name: String,
     pub messages: String,
+}
+
+#[derive(Template)]
+#[template(path = "channel.html")]
+pub struct ChannelTemplate {
+    pub channel_name: String,
+    pub channel_id: String,
+    pub total_messages: String,
+    pub active_users: String,
+    pub last_msg: String,
+    pub top_posters: Vec<UserStats>,
+    pub signed_in: bool,
+    pub found: bool,
 }
 
 #[derive(Template)]
@@ -64,6 +78,7 @@ pub struct ChannelStats {
 pub struct SearchTemplate {
     pub query: String,
     pub results: Vec<SearchResult>,
+    pub channels: Vec<SearchResult>,
     pub signed_in: bool,
 }
 
@@ -98,7 +113,7 @@ pub fn router(clickhouse: Client, auth_config: crate::auth::AuthConfig) -> Route
         .route("/", get(get_index))
         .route("/link", get(auth::get_link))
         .route("/stats", get(get_stats_page))
-        .route("/stats/:slack_id", get(get_user_stats))
+        .route("/stats/:id", get(get_stats_for_id))
         .route("/search", get(get_search))
         .route("/auth/hackclub/login", get(auth::auth_hackclub_login))
         .route("/auth/hackclub/callback", get(auth::auth_hackclub_callback))
@@ -199,9 +214,39 @@ async fn get_search(
             .collect()
     };
 
+    let channels = if query.trim().is_empty() {
+        Vec::new()
+    } else {
+        #[derive(clickhouse::Row, serde::Deserialize)]
+        struct ChannelRow {
+            channel_id: String,
+            name: String,
+        }
+        let pattern = format!("%{}%", query.trim());
+        state
+            .clickhouse
+            .query(
+                "SELECT channel_id, name FROM slack_channels FINAL
+                 WHERE name ILIKE ?
+                 ORDER BY name
+                 LIMIT 25",
+            )
+            .bind(&pattern)
+            .fetch_all::<ChannelRow>()
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|r| SearchResult {
+                display_name: r.name,
+                user_id: r.channel_id,
+            })
+            .collect()
+    };
+
     let template = SearchTemplate {
         query,
         results,
+        channels,
         signed_in,
     };
     let html = template
@@ -210,45 +255,57 @@ async fn get_search(
     Ok(Html(html))
 }
 
-async fn get_user_stats(
+async fn get_stats_for_id(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Path(slack_id): Path<String>,
+    Path(id): Path<String>,
+) -> Result<Html<String>, StatusCode> {
+    if id.starts_with('C') {
+        get_channel_stats(&state, &headers, &id).await
+    } else {
+        get_user_stats(&state, &headers, &id).await
+    }
+}
+
+async fn get_user_stats(
+    state: &AppState,
+    headers: &HeaderMap,
+    slack_id: &str,
 ) -> Result<Html<String>, StatusCode> {
     let ch = &state.clickhouse;
-    let signed_in = auth::session_from_request(&headers, &state.auth).is_some();
+    let signed_in = auth::session_from_request(headers, &state.auth).is_some();
 
     let display_name: String = ch
         .query("SELECT display_name FROM users FINAL WHERE user_id = ?")
-        .bind(&slack_id)
+        .bind(slack_id)
         .fetch_one()
         .await
         .unwrap_or_default();
 
     let total_messages: u64 = ch
         .query("SELECT count() FROM slack_messages FINAL WHERE user_id = ?")
-        .bind(&slack_id)
+        .bind(slack_id)
         .fetch_one()
         .await
         .unwrap_or(0);
 
     let coding_minutes: i64 = ch
         .query("SELECT sum(minutes) FROM coding_activity WHERE user_id = ?")
-        .bind(&slack_id)
+        .bind(slack_id)
         .fetch_one()
         .await
         .unwrap_or(0);
 
     let channels: u64 = ch
         .query("SELECT uniqExact(channel_id) FROM slack_messages FINAL WHERE user_id = ?")
-        .bind(&slack_id)
+        .bind(slack_id)
         .fetch_one()
         .await
         .unwrap_or(0);
 
     let last_ts: String = ch
         .query("SELECT max(message_ts) FROM slack_messages FINAL WHERE user_id = ?")
-        .bind(&slack_id)
+        .bind(slack_id)
         .fetch_one()
         .await
         .unwrap_or_default();
@@ -268,7 +325,7 @@ async fn get_user_stats(
              ORDER BY messages DESC
              LIMIT 10",
         )
-        .bind(&slack_id)
+        .bind(slack_id)
         .fetch_all()
         .await
         .unwrap_or_default();
@@ -301,6 +358,7 @@ async fn get_user_stats(
     let top_channels: Vec<ChannelStats> = counts
         .into_iter()
         .map(|c| ChannelStats {
+            user_id: c.channel_id.clone(),
             channel_name: channel_names
                 .get(&c.channel_id)
                 .cloned()
@@ -313,16 +371,132 @@ async fn get_user_stats(
 
     let template = UserTemplate {
         display_name: if display_name.is_empty() {
-            slack_id.clone()
+            slack_id.to_string()
         } else {
             display_name
         },
-        slack_id,
+        slack_id: slack_id.to_string(),
         total_messages: fmt_thousands(total_messages),
         coding_minutes: fmt_thousands(coding_minutes.max(0) as u64),
         channels: fmt_thousands(channels),
         last_msg: fmt_last_ts(&last_ts),
         top_channels,
+        signed_in,
+        found,
+    };
+    let html = template
+        .render()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Html(html))
+}
+
+async fn get_channel_stats(
+    state: &AppState,
+    headers: &HeaderMap,
+    channel_id: &str,
+) -> Result<Html<String>, StatusCode> {
+    let ch = &state.clickhouse;
+    let signed_in = auth::session_from_request(headers, &state.auth).is_some();
+
+    let channel_name: String = ch
+        .query("SELECT name FROM slack_channels FINAL WHERE channel_id = ?")
+        .bind(channel_id)
+        .fetch_one()
+        .await
+        .unwrap_or_default();
+
+    let total_messages: u64 = ch
+        .query("SELECT count() FROM slack_messages FINAL WHERE channel_id = ?")
+        .bind(channel_id)
+        .fetch_one()
+        .await
+        .unwrap_or(0);
+
+    let active_users: u64 = ch
+        .query("SELECT uniqExact(user_id) FROM slack_messages FINAL WHERE channel_id = ?")
+        .bind(channel_id)
+        .fetch_one()
+        .await
+        .unwrap_or(0);
+
+    let last_ts: String = ch
+        .query("SELECT max(message_ts) FROM slack_messages FINAL WHERE channel_id = ?")
+        .bind(channel_id)
+        .fetch_one()
+        .await
+        .unwrap_or_default();
+
+    #[derive(clickhouse::Row, serde::Deserialize)]
+    struct PosterRow {
+        user_id: String,
+        messages: u64,
+    }
+
+    let posters: Vec<PosterRow> = ch
+        .query(
+            "SELECT user_id, count() as messages
+             FROM slack_messages FINAL
+             WHERE channel_id = ?
+             GROUP BY user_id
+             ORDER BY messages DESC
+             LIMIT 10",
+        )
+        .bind(channel_id)
+        .fetch_all()
+        .await
+        .unwrap_or_default();
+
+    let name_ids: Vec<String> = posters.iter().map(|p| p.user_id.clone()).collect();
+
+    #[derive(clickhouse::Row, serde::Deserialize)]
+    struct PosterNameRow {
+        user_id: String,
+        display_name: String,
+    }
+
+    let poster_names: std::collections::HashMap<String, String> = if name_ids.is_empty() {
+        std::collections::HashMap::new()
+    } else {
+        let in_list = name_ids.join("', '");
+        ch.query(&format!(
+            "SELECT user_id, display_name FROM users FINAL WHERE user_id IN ('{}')",
+            in_list
+        ))
+        .fetch_all::<PosterNameRow>()
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|r| (r.user_id, r.display_name))
+        .collect()
+    };
+
+    let top_posters: Vec<UserStats> = posters
+        .into_iter()
+        .map(|p| UserStats {
+            user_id: p.user_id.clone(),
+            display_name: poster_names
+                .get(&p.user_id)
+                .filter(|n| !n.is_empty())
+                .cloned()
+                .unwrap_or(p.user_id),
+            messages: fmt_thousands(p.messages),
+            coding_minutes: String::new(),
+        })
+        .collect();
+
+    let found = total_messages > 0 || !channel_name.is_empty();
+
+    let template = ChannelTemplate {
+        channel_name: if channel_name.is_empty() {
+            channel_id.to_string()
+        } else {
+            channel_name
+        },
+        channel_id: channel_id.to_string(),
+        total_messages: fmt_thousands(total_messages),
+        active_users: fmt_thousands(active_users),
+        last_msg: fmt_last_ts(&last_ts),
+        top_posters,
         signed_in,
         found,
     };
@@ -643,21 +817,21 @@ mod tests {
             session_secret: String::new(),
         };
         let app = router(ch, auth_config);
-        let res = app
-            .oneshot(
-                Request::builder()
-                    .uri("/stats/U01MPHKFZ7S")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let status = res.status();
-        eprintln!("status for /stats/U01MPHKFZ7S: {}", status);
-        assert_ne!(
-            status,
-            axum::http::StatusCode::NOT_FOUND,
-            "route must match"
-        );
+        for uri in ["/stats/U01MPHKFZ7S", "/stats/C0123456789"] {
+            let res = app
+                .clone()
+                .oneshot(
+                    Request::builder().uri(uri).body(Body::empty()).unwrap(),
+                )
+                .await
+                .unwrap();
+            let status = res.status();
+            eprintln!("status for {}: {}", uri, status);
+            assert_ne!(
+                status,
+                axum::http::StatusCode::NOT_FOUND,
+                "route must match"
+            );
+        }
     }
 }

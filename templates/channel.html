@@ -4,15 +4,15 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta http-equiv="refresh" content="10">
-    <title>{{ display_name }} - Ship Talkers</title>
+    <title># {{ channel_name }} - Ship Talkers</title>
     <link rel="stylesheet" href="/style.css">
 </head>
-<body class="user">
+<body class="channel">
     {% include "header.html" %}
     <div class="container">
         {% if found %}
-        <h1>{{ display_name }}</h1>
-        <p>{{ slack_id }}</p>
+        <h1># {{ channel_name }}</h1>
+        <p>{{ channel_id }}</p>
 
         <div class="grid">
             <div class="stat">
@@ -20,12 +20,8 @@
                 <div class="value pink">{{ total_messages }}</div>
             </div>
             <div class="stat">
-                <h3>Coding Minutes</h3>
-                <div class="value pink">{{ coding_minutes }}</div>
-            </div>
-            <div class="stat">
-                <h3>Channels Active In</h3>
-                <div class="value pink">{{ channels }}</div>
+                <h3>Active Users</h3>
+                <div class="value pink">{{ active_users }}</div>
             </div>
             <div class="stat">
                 <h3>Last Message</h3>
@@ -34,25 +30,25 @@
         </div>
 
         <div class="table-card">
-            <h2>Top Channels</h2>
+            <h2>Top Posters</h2>
             <table>
                 <thead>
-                    <tr><th>Channel</th><th>Messages</th></tr>
+                    <tr><th>User</th><th>Messages</th></tr>
                 </thead>
                 <tbody>
-                    {% if top_channels.is_empty() %}
+                    {% if top_posters.is_empty() %}
                     <tr><td colspan="2" class="empty">No activity</td></tr>
                     {% else %}
-                    {% for c in top_channels %}
-                    <tr><td><a href="/stats/{{ c.user_id }}">{{ c.channel_name }}</a></td><td>{{ c.messages }}</td></tr>
+                    {% for u in top_posters %}
+                    <tr><td><a href="/stats/{{ u.user_id }}">{{ u.display_name }}</a></td><td>{{ u.messages }}</td></tr>
                     {% endfor %}
                     {% endif %}
                 </tbody>
             </table>
         </div>
         {% else %}
-        <h1>User not found</h1>
-        <p>No stats for {{ slack_id }}</p>
+        <h1>Channel not found</h1>
+        <p>No stats for {{ channel_id }}</p>
         {% endif %}
     </div>
     {% include "footer.html" %}
