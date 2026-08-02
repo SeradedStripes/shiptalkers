@@ -48,15 +48,15 @@ p { color: #888; line-height: 1.6; margin-bottom: 1.5rem; }
 .btn {
     display: inline-block;
     padding: 0.75rem 1.5rem;
-    background: #7c3aed;
-    color: #fff;
+    background: #f472b6;
+    color: #1a1a1a;
     text-decoration: none;
     border-radius: 8px;
     font-weight: 600;
     border: none;
     cursor: pointer;
 }
-.btn:hover { background: #6d28d9; }
+.btn:hover { background: #ec4899; }
 .btn:disabled { background: #444; cursor: not-allowed; }
 
 .links { display: flex; gap: 1rem; margin-top: 2rem; }
@@ -70,7 +70,7 @@ p { color: #888; line-height: 1.6; margin-bottom: 1.5rem; }
 .stat { background: #1a1a1a; border-radius: 12px; padding: 1.5rem; }
 .stat h3 { color: #888; font-size: 0.875rem; text-transform: uppercase; margin-bottom: 0.5rem; }
 .stat .value { font-size: 2rem; font-weight: 700; }
-.stat .value.purple { color: #7c3aed; }
+.stat .value.pink { color: #f472b6; }
 
 table { width: 100%; border-collapse: collapse; background: #1a1a1a; border-radius: 12px; overflow: hidden; }
 th, td { padding: 1rem; text-align: left; border-bottom: 1px solid #333; }
