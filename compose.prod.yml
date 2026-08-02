@@ -24,7 +24,7 @@ services:
       retries: 3
 
   clickhouse:
-    image: clickhouse/clickhouse-server:24.8
+    image: clickhouse/clickhouse-server:latest
     restart: unless-stopped
     environment:
       - CLICKHOUSE_DB=ship_talkers
