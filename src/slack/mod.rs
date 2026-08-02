@@ -1,5 +1,6 @@
 mod socket;
 
+pub use socket::SocketConfig;
 pub use socket::start_socket_mode;
 
 use reqwest::Client;

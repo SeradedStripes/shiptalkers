@@ -132,6 +132,10 @@ pub async fn auth_hackclub_callback(
         .or(identity.last_name)
         .unwrap_or_else(|| "Hacker".to_string());
 
+    if let Err(e) = state.auth_db.mark_linked(&slack_id, &name).await {
+        tracing::warn!("Failed to record linked user {}: {}", slack_id, e);
+    }
+
     let session = auth::Session { slack_id, name };
     let cookie = auth::issue_session(&session, &state.auth.session_secret);
 

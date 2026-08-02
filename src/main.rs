@@ -68,6 +68,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         &clickhouse_db,
     );
 
+    let auth_db_path = env::var("SQLITE_DB_PATH").unwrap_or_else(|_| "data/auth.db".into());
+    let auth_db = std::sync::Arc::new(
+        db::sqlite::AuthDb::open(&auth_db_path)
+            .map_err(|e| format!("Failed to open auth DB {}: {}", auth_db_path, e))?,
+    );
+    tracing::info!("Auth DB at {}", auth_db_path);
+
     tracing::info!("Initializing ClickHouse tables...");
     db::clickhouse_db::init_tables(&database.clickhouse).await?;
 
@@ -112,9 +119,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     if let Ok(app_token) = env::var("SLACK_APP_TOKEN") {
+        let base_url = env::var("BASE_URL").unwrap_or_else(|_| "http://localhost:3000".into());
+        let socket_config = slack::SocketConfig {
+            app_token,
+            bot_token: slack_token.clone(),
+            main_channel: env::var("SLACK_MAIN_CHANNEL")
+                .ok()
+                .filter(|v| !v.trim().is_empty()),
+            base_url,
+        };
         let clickhouse_for_socket = database.clickhouse.clone();
+        let auth_db_for_socket = auth_db.clone();
         tokio::spawn(async move {
-            if let Err(e) = slack::start_socket_mode(app_token, clickhouse_for_socket).await {
+            if let Err(e) =
+                slack::start_socket_mode(socket_config, clickhouse_for_socket, auth_db_for_socket)
+                    .await
+            {
                 tracing::error!("Socket Mode error: {}", e);
             }
         });
@@ -150,7 +170,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let listener = TcpListener::bind(&addr).await?;
     axum::serve(
         listener,
-        website::router(database.clickhouse, auth_config, slack_time),
+        website::router(database.clickhouse, auth_config, slack_time, auth_db),
     )
     .await?;
 

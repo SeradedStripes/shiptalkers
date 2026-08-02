@@ -11,6 +11,8 @@ services:
       - CLICKHOUSE_DB=ship_talkers
       - CLICKHOUSE_USER=ship_talkers
       - CLICKHOUSE_PASSWORD=ship_talkers
+    volumes:
+      - auth-data:/app/data
     depends_on:
       clickhouse:
         condition: service_healthy
@@ -40,3 +42,4 @@ services:
 
 volumes:
   clickhouse-data:
+  auth-data:

@@ -1,6 +1,7 @@
 use clickhouse::Client;
 
 pub mod clickhouse_db;
+pub mod sqlite;
 
 pub struct Database {
     pub clickhouse: Client,

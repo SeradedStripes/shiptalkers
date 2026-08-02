@@ -32,8 +32,9 @@ Scrapes every public channel and thread reply from Hack Club Slack into ClickHou
 
 - `src/main.rs` - entry point, env parsing, scraper orchestration
 - `src/slack/mod.rs` - SlackClient, per-method FIFO token-bucket rate limiter, 429 backoff
-- `src/slack/socket.rs` - Slack Socket Mode (app events) via tokio-tungstenite
+- `src/slack/socket.rs` - Slack Socket Mode (app events) via tokio-tungstenite; stats bot replies to top-level messages in `SLACK_MAIN_CHANNEL` in a thread, via `chat.postMessage`
 - `src/db/clickhouse_db.rs` - ClickHouse schema, inserts, checkpoint queries
+- `src/db/sqlite.rs` - SQLite auth DB (`linked_users`), the only non-ClickHouse datastore
 - `src/website/mod.rs` - axum router, server-rendered `/stats`, `/stats/:id` (user or channel, dispatched by `U`/`C` prefix), `/leaderboard` and `/search` via askama
 - `templates/stats.html` - askama template for the stats page
 - `templates/user.html` - askama template for the per-user stats page
@@ -50,7 +51,7 @@ Scrapes every public channel and thread reply from Hack Club Slack into ClickHou
 
 ## Conventions
 
-- ClickHouse is the only datastore. The stats page reads `slack_messages`, `slack_channels`, and `coding_activity`.
+- ClickHouse is the only analytics datastore. The stats page reads `slack_messages`, `slack_channels`, and `coding_activity`. SQLite (`src/db/sqlite.rs`) holds auth/linked-user state only.
 - Insert data before marking any checkpoint complete. Main channel messages are inserted before thread replies.
 - Progress tracking uses `max(message_ts)` per channel and `max(thread reply ts)` per thread.
 - Logging is `tracing` only. Per-channel, per-thread, and per-fetch work logs at debug; inserts, page progress, and 15s `Progress:` lines log at info.
@@ -62,9 +63,11 @@ Scrapes every public channel and thread reply from Hack Club Slack into ClickHou
 
 ## Environment Variables
 
-- `SLACK_BOT_TOKEN` - required, bot token for channel listing
+- `SLACK_BOT_TOKEN` - required, bot token for channel listing and `chat.postMessage` replies
 - `SLACK_USER_TOKENS` - comma-separated user tokens, sharded round-robin per channel; falls back to `SLACK_USER_TOKEN`
 - `SLACK_APP_TOKEN` - optional, enables Socket Mode
+- `SLACK_MAIN_CHANNEL` - channel ID the stats bot watches; users posting a time range there get a threaded reply. Optional, disables the bot when unset
+- `SQLITE_DB_PATH` - SQLite auth DB path (linked users), default `data/auth.db`
 - `SLACK_REQUEST_DELAY_MS` - request pacing per method per token, default 1200 (tier 3, 50 req/min)
 - `SLACK_MAX_INFLIGHT` - burst per method per token, default 8
 - `SLACK_CHANNEL_CONCURRENCY` - channels scraped concurrently per token, default 64

@@ -15,6 +15,7 @@ pub struct AppState {
     pub auth: crate::auth::AuthConfig,
     pub http: reqwest::Client,
     pub slack_time: crate::formula::Formula,
+    pub auth_db: std::sync::Arc<crate::db::sqlite::AuthDb>,
 }
 
 #[derive(Template)]
@@ -129,12 +130,14 @@ pub fn router(
     clickhouse: Client,
     auth_config: crate::auth::AuthConfig,
     slack_time: crate::formula::Formula,
+    auth_db: std::sync::Arc<crate::db::sqlite::AuthDb>,
 ) -> Router {
     let state = AppState {
         clickhouse,
         auth: auth_config,
         http: reqwest::Client::new(),
         slack_time,
+        auth_db,
     };
 
     Router::new()
@@ -1055,6 +1058,9 @@ mod tests {
             ch,
             auth_config,
             crate::formula::Formula::parse(crate::formula::SLACK_TIME_CALCULATION_FORMULA).unwrap(),
+            std::sync::Arc::new(
+                crate::db::sqlite::AuthDb::open(":memory:").expect("open in-memory auth db"),
+            ),
         );
         for uri in ["/stats/U01MPHKFZ7S", "/stats/C0123456789"] {
             let res = app
