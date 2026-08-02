@@ -451,12 +451,9 @@ async fn upload_image(
 }
 
 fn fmt_span(secs: u64) -> String {
-    let days = secs / 86400;
-    let hours = (secs % 86400) / 3600;
+    let hours = secs / 3600;
     let mins = (secs % 3600) / 60;
-    if days > 0 {
-        format!("{}d {}h", days, hours)
-    } else if hours > 0 {
+    if hours > 0 {
         format!("{}h {}m", hours, mins)
     } else if mins > 0 {
         format!("{}m", mins)
