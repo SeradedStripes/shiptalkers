@@ -63,7 +63,5 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Call Coolify API to deploy
-        uses: coolify-io/coolify-action@v1
-        with:
-          api-url: ${{ secrets.COOLIFY_WEBHOOK }}
-          api-key: ${{ secrets.COOLIFY_TOKEN }}
+        run: |
+          curl --request GET '${{ secrets.COOLIFY_WEBHOOK }}' --header 'Authorization: Bearer ${{ secrets.COOLIFY_TOKEN }}': 
