@@ -12,8 +12,9 @@ services:
       - CLICKHOUSE_DB=ship_talkers
       - CLICKHOUSE_USER=ship_talkers
       - CLICKHOUSE_PASSWORD=ship_talkers
+      - SQLITE_DB_PATH=/data/auth.db
     volumes:
-      - auth-data:/app/data
+      - auth-data:/data
     depends_on:
       clickhouse:
         condition: service_healthy
