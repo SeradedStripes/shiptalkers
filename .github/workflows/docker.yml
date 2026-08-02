@@ -54,3 +54,16 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Call Coolify API to deploy
+        uses: coolify-io/coolify-action@v1
+        with:
+          api-url: ${{ secrets.COOLIFY_WEBHOOK }}
+          api-key: ${{ secrets.COOLIFY_TOKEN }}
