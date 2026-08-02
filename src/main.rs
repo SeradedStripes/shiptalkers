@@ -51,7 +51,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let slack_channel_concurrency = env::var("SLACK_CHANNEL_CONCURRENCY")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(64);
+        .unwrap_or(8);
     let clickhouse_url =
         env::var("CLICKHOUSE_URL").unwrap_or_else(|_| "http://localhost:8123".into());
     let clickhouse_user = env::var("CLICKHOUSE_USER").unwrap_or_else(|_| "default".into());

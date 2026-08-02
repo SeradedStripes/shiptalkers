@@ -72,7 +72,7 @@ Scrapes every public channel and thread reply from Hack Club Slack into ClickHou
 - `SQLITE_DB_PATH` - SQLite auth DB path (linked users), default `data/auth.db`
 - `SLACK_REQUEST_DELAY_MS` - request pacing per method per token, default 1200 (tier 3, 50 req/min)
 - `SLACK_MAX_INFLIGHT` - burst per method per token, default 8
-- `SLACK_CHANNEL_CONCURRENCY` - channels scraped concurrently per token, default 64
+- `SLACK_CHANNEL_CONCURRENCY` - channels scraped concurrently per token, default 8
 - `CLICKHOUSE_URL`, `CLICKHOUSE_USER`, `CLICKHOUSE_PASSWORD`, `CLICKHOUSE_DB`
 - `HOST`, `PORT` - web server bind, default 0.0.0.0:3000
 

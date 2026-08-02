@@ -291,20 +291,37 @@ pub async fn sync_coding_activity(
         .await
         .map_err(|e| e.to_string())?;
 
+    let mut dates = Vec::new();
     let mut date = start_date.to_string();
-    let mut rows = Vec::new();
     while date <= today {
-        if let Some(minutes) = auth::fetch_hours_for_day(http, access_token, &date).await?
-            && minutes > 0
-        {
+        dates.push(date.clone());
+        date = auth::next_date(&date);
+    }
+
+    let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(24));
+    let fetches: Vec<_> = dates
+        .into_iter()
+        .map(|date| {
+            let sem = sem.clone();
+            async move {
+                let _permit = sem.acquire().await.expect("semaphore");
+                let minutes = auth::fetch_hours_for_day(http, access_token, &date).await;
+                (date, minutes)
+            }
+        })
+        .collect();
+
+    let mut rows = Vec::new();
+    for (date, minutes) in futures::future::join_all(fetches).await {
+        let minutes = minutes.map_err(|e| format!("fetch hours for {}: {}", date, e))?;
+        if let Some(minutes) = minutes.filter(|&m| m > 0) {
             rows.push(clickhouse_db::CodingActivityRow {
                 user_id: slack_id.to_string(),
-                date: date.clone(),
+                date,
                 minutes: minutes as i64,
                 language: None,
             });
         }
-        date = auth::next_date(&date);
     }
 
     clickhouse_db::insert_coding_activity(clickhouse, &rows)
