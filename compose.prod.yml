@@ -26,6 +26,7 @@ services:
 
   clickhouse:
     image: clickhouse/clickhouse-server:26.4
+    pull_policy: if_not_present
     restart: unless-stopped
     environment:
       - CLICKHOUSE_DB=ship_talkers
