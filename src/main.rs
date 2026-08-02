@@ -344,6 +344,9 @@ async fn run_scraper(
             )
             .await;
         }
+        if let Err(e) = db::clickhouse_db::optimize_slack_messages(&clickhouse).await {
+            tracing::warn!("Failed to optimize slack_messages: {}", e);
+        }
     }
 }
 

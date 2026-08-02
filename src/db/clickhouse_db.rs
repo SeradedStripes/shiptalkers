@@ -154,12 +154,16 @@ pub async fn init_tables(client: &Client) -> Result<(), Box<dyn std::error::Erro
         .ok();
 
     // Always deduplicate slack_messages on startup
+    optimize_slack_messages(client).await.ok();
+
+    Ok(())
+}
+
+pub async fn optimize_slack_messages(client: &Client) -> Result<(), Box<dyn std::error::Error>> {
     client
         .query("OPTIMIZE TABLE slack_messages FINAL")
         .execute()
-        .await
-        .ok();
-
+        .await?;
     Ok(())
 }
 

@@ -34,7 +34,7 @@ Scrapes every public channel and thread reply from Hack Club Slack into ClickHou
 - `src/slack/mod.rs` - SlackClient, per-method FIFO token-bucket rate limiter, 429 backoff
 - `src/slack/socket.rs` - Slack Socket Mode (app events) via tokio-tungstenite; stats bot replies to top-level messages in `SLACK_MAIN_CHANNEL` in a thread, via `chat.postMessage`, with a PNG card uploaded via `files.getUploadURLExternal` + `files.completeUploadExternal`
 - `src/bot_image.rs` - renders the stats card SVG (`templates/slack_image.html` + `src/website/static/slack_image_stats.css`) to PNG via resvg/usvg, with bundled DejaVu fonts
-- `src/db/clickhouse_db.rs` - ClickHouse schema, inserts, checkpoint queries
+- `src/db/clickhouse_db.rs` - ClickHouse schema, inserts, checkpoint queries, daily `OPTIMIZE TABLE slack_messages FINAL`
 - `src/db/sqlite.rs` - SQLite auth DB (`linked_users`), the only non-ClickHouse datastore
 - `src/website/mod.rs` - axum router, server-rendered `/stats`, `/stats/:id` (user or channel, dispatched by `U`/`C` prefix), `/leaderboard` and `/search` via askama
 - `templates/stats.html` - askama template for the stats page
