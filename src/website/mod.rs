@@ -5,34 +5,9 @@ use axum::response::Html;
 use axum::{Router, routing::get};
 use clickhouse::Client;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
 use tower_http::services::ServeDir;
 
 pub mod auth;
-
-#[derive(Default)]
-pub struct ScrapeProgress {
-    pub in_progress: AtomicBool,
-    pub processed: AtomicU64,
-    pub total: AtomicU64,
-    pub inserted: AtomicU64,
-    pub phase: Mutex<String>,
-}
-
-impl ScrapeProgress {
-    pub fn set_phase(&self, phase: impl Into<String>) {
-        if let Ok(mut g) = self.phase.lock() {
-            *g = phase.into();
-        }
-    }
-
-    pub fn reset(&self) {
-        self.processed.store(0, Ordering::Relaxed);
-        self.total.store(0, Ordering::Relaxed);
-        self.inserted.store(0, Ordering::Relaxed);
-    }
-}
 
 #[derive(Clone)]
 pub struct AppState {
@@ -41,7 +16,6 @@ pub struct AppState {
     pub http: reqwest::Client,
     pub slack_time: crate::formula::Formula,
     pub auth_db: std::sync::Arc<crate::db::sqlite::AuthDb>,
-    pub scrape_progress: Arc<ScrapeProgress>,
 }
 
 #[derive(Template)]
@@ -159,7 +133,6 @@ pub fn router(
     auth_config: crate::auth::AuthConfig,
     slack_time: crate::formula::Formula,
     auth_db: std::sync::Arc<crate::db::sqlite::AuthDb>,
-    scrape_progress: Arc<ScrapeProgress>,
 ) -> Router {
     let state = AppState {
         clickhouse,
@@ -167,7 +140,6 @@ pub fn router(
         http: reqwest::Client::new(),
         slack_time,
         auth_db,
-        scrape_progress,
     };
 
     Router::new()
@@ -224,25 +196,64 @@ fn fmt_thousands(n: u64) -> String {
     out
 }
 
-fn scrape_banner_html(state: &AppState) -> String {
-    let p = &state.scrape_progress;
-    if !p.in_progress.load(Ordering::Relaxed) {
+async fn scrape_banner_html(state: &AppState) -> String {
+    let ch = &state.clickhouse;
+    let total_channels: u64 = ch
+        .query("SELECT count() FROM slack_channels FINAL")
+        .fetch_one()
+        .await
+        .unwrap_or(0);
+    let scraped_channels: u64 = ch
+        .query("SELECT count() FROM scraped_channels")
+        .fetch_one()
+        .await
+        .unwrap_or(0);
+    if total_channels == 0 || scraped_channels >= total_channels {
         return String::new();
     }
-    let phase = p.phase.lock().map(|g| g.clone()).unwrap_or_default();
-    let processed = p.processed.load(Ordering::Relaxed);
-    let total = p.total.load(Ordering::Relaxed);
-    let inserted = p.inserted.load(Ordering::Relaxed);
-    if total > 0 {
-        let pct = (processed as f64 / total as f64 * 100.0).round() as u64;
-        format!(
-            r#"<span>{phase} - {processed}/{total} channels ({pct}%), {inserted} new messages</span><div class="scrape-progress"><div class="scrape-progress-fill" style="width:{pct}%"></div></div>"#
-        )
+    let total_messages: u64 = ch
+        .query("SELECT count() FROM slack_messages FINAL")
+        .fetch_one()
+        .await
+        .unwrap_or(0);
+    let active_users: u64 = ch
+        .query("SELECT uniqExact(user_id) FROM slack_messages")
+        .fetch_one()
+        .await
+        .unwrap_or(0);
+    let total_users: u64 = ch
+        .query("SELECT count() FROM users FINAL")
+        .fetch_one()
+        .await
+        .unwrap_or(0);
+
+    let channel_frac = scraped_channels as f64 / total_channels as f64;
+    let user_frac = if total_users > 0 {
+        active_users as f64 / total_users as f64
     } else {
-        format!(
-            r#"<span>{phase}</span><div class="scrape-progress"><div class="scrape-progress-fill scrape-progress-active"></div></div>"#
-        )
-    }
+        1.0
+    };
+    let coverage = (channel_frac + user_frac) / 2.0;
+    let scrape_pct_done = (coverage * 100.0).round().clamp(0.0, 100.0) as u64;
+    let scrape_pct_left = 100 - scrape_pct_done;
+    let messages_estimate = if coverage > 0.0 {
+        (total_messages as f64 / coverage).round() as u64
+    } else {
+        total_messages
+    };
+
+    format!(
+        r#"<div class="scrape-banner"><div>Scraping in progress: {}/{} channels ({}% complete, about {}% left, {}/{} users)</div><div class="scrape-progress"><div class="scrape-progress-fill" style="width: {}%"></div></div><div>{} of ~{} estimated messages</div></div>"#,
+        fmt_thousands(scraped_channels),
+        fmt_thousands(total_channels),
+        scrape_pct_done,
+        scrape_pct_left,
+        fmt_thousands(active_users),
+        fmt_thousands(total_users),
+        scrape_pct_done,
+        fmt_thousands(total_messages),
+        fmt_thousands(messages_estimate),
+    )
 }
 
 async fn get_index(
@@ -252,7 +263,7 @@ async fn get_index(
     let signed_in = auth::session_from_request(&headers, &state.auth).is_some();
     let template = IndexTemplate {
         signed_in,
-        scrape_banner: scrape_banner_html(&state),
+        scrape_banner: scrape_banner_html(&state).await,
     };
     let html = template
         .render()
@@ -344,7 +355,7 @@ async fn get_search(
         results,
         channels,
         signed_in,
-        scrape_banner: scrape_banner_html(&state),
+        scrape_banner: scrape_banner_html(&state).await,
     };
     let html = template
         .render()
@@ -371,7 +382,7 @@ async fn get_leaderboard(
     let signed_in = auth::session_from_request(&headers, &state.auth).is_some();
     let template = LeaderboardTemplate {
         signed_in,
-        scrape_banner: scrape_banner_html(&state),
+        scrape_banner: scrape_banner_html(&state).await,
     };
     let html = template
         .render()
@@ -528,7 +539,7 @@ async fn get_leaderboard_category(
         rows,
         coming_soon,
         signed_in,
-        scrape_banner: scrape_banner_html(&state),
+        scrape_banner: scrape_banner_html(&state).await,
     };
     let html = template
         .render()
@@ -843,7 +854,7 @@ async fn get_user_stats(
         active_hour,
         top_channels,
         signed_in,
-        scrape_banner: scrape_banner_html(state),
+        scrape_banner: scrape_banner_html(state).await,
         found,
     };
     let html = template
@@ -967,7 +978,7 @@ async fn get_channel_stats(
         last_msg: fmt_ts_local(&last_ts),
         top_posters,
         signed_in,
-        scrape_banner: scrape_banner_html(state),
+        scrape_banner: scrape_banner_html(state).await,
         found,
     };
     let html = template
@@ -1035,7 +1046,7 @@ async fn load_stats(state: &AppState, headers: &HeaderMap) -> Stats {
         total_users: fmt_thousands(total_users),
         coding_minutes: fmt_thousands(coding_minutes),
         db_size_label,
-        scrape_banner: scrape_banner_html(state),
+        scrape_banner: scrape_banner_html(state).await,
         signed_in: auth::session_from_request(headers, &state.auth).is_some(),
     }
 }
@@ -1090,7 +1101,6 @@ mod tests {
             std::sync::Arc::new(
                 crate::db::sqlite::AuthDb::open(":memory:").expect("open in-memory auth db"),
             ),
-            Arc::new(ScrapeProgress::default()),
         );
         for uri in ["/stats/U01MPHKFZ7S", "/stats/C0123456789"] {
             let res = app

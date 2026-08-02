@@ -88,7 +88,7 @@ pub async fn get_link(
             .map(|s| s.slack_id.clone())
             .unwrap_or_default(),
         hackatime_connected,
-        scrape_banner: super::scrape_banner_html(&state),
+        scrape_banner: super::scrape_banner_html(&state).await,
     };
     let html = template
         .render()

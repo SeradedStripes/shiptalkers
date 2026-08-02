@@ -82,8 +82,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let clickhouse_for_scraper = database.clickhouse.clone();
     let slack_token_clone = slack_token.clone();
     let slack_user_tokens_for_scraper = slack_user_tokens.clone();
-    let scrape_progress = std::sync::Arc::new(website::ScrapeProgress::default());
-    let scrape_progress_for_scraper = scrape_progress.clone();
 
     tokio::spawn(async move {
         if let Err(e) = run_scraper(
@@ -93,7 +91,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Duration::from_millis(slack_request_delay_ms),
             slack_max_inflight,
             slack_channel_concurrency,
-            scrape_progress_for_scraper,
         )
         .await
         {
@@ -174,13 +171,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let listener = TcpListener::bind(&addr).await?;
     axum::serve(
         listener,
-        website::router(
-            database.clickhouse,
-            auth_config,
-            slack_time,
-            auth_db,
-            scrape_progress,
-        ),
+        website::router(database.clickhouse, auth_config, slack_time, auth_db),
     )
     .with_graceful_shutdown(shutdown_signal())
     .await?;
@@ -304,13 +295,8 @@ async fn run_scraper(
     request_delay: Duration,
     max_inflight: usize,
     channel_concurrency: usize,
-    scrape_progress: std::sync::Arc<website::ScrapeProgress>,
 ) -> Result<(), String> {
     let slack_client = slack::SlackClient::new(slack_token, request_delay, max_inflight);
-
-    scrape_progress.in_progress.store(true, Ordering::Relaxed);
-    scrape_progress.reset();
-    scrape_progress.set_phase("Fetching channels");
 
     let existing = db::clickhouse_db::get_known_channel_ids(&clickhouse)
         .await
@@ -329,7 +315,6 @@ async fn run_scraper(
     if slack_user_tokens.is_empty() {
         tracing::warn!("No SLACK_USER_TOKEN / SLACK_USER_TOKENS set, message scraping disabled");
     } else {
-        scrape_progress.set_phase("Scraping messages");
         tracing::info!(
             "Starting message scraper with {} user token(s)...",
             slack_user_tokens.len()
@@ -340,33 +325,25 @@ async fn run_scraper(
             request_delay,
             max_inflight,
             channel_concurrency,
-            scrape_progress.clone(),
         )
         .await;
     }
-    scrape_progress.in_progress.store(false, Ordering::Relaxed);
 
     tracing::info!("Will do a full rescan and rescrape every 24 hours");
     loop {
         tokio::time::sleep(std::time::Duration::from_secs(86400)).await;
         tracing::info!("24hr rescan starting...");
-        scrape_progress.in_progress.store(true, Ordering::Relaxed);
-        scrape_progress.reset();
-        scrape_progress.set_phase("Fetching channels");
         full_fetch(&slack_client, &clickhouse).await?;
         if !slack_user_tokens.is_empty() {
-            scrape_progress.set_phase("Scraping messages");
             scrape_all_messages(
                 &slack_user_tokens,
                 &clickhouse,
                 request_delay,
                 max_inflight,
                 channel_concurrency,
-                scrape_progress.clone(),
             )
             .await;
         }
-        scrape_progress.in_progress.store(false, Ordering::Relaxed);
         if let Err(e) = db::clickhouse_db::optimize_slack_messages(&clickhouse).await {
             tracing::warn!("Failed to optimize slack_messages: {}", e);
         }
@@ -379,7 +356,6 @@ async fn scrape_all_messages(
     request_delay: Duration,
     max_inflight: usize,
     channel_concurrency: usize,
-    scrape_progress: std::sync::Arc<website::ScrapeProgress>,
 ) {
     let channels = match db::clickhouse_db::get_known_channel_ids(clickhouse).await {
         Ok(c) => c,
@@ -429,7 +405,6 @@ async fn scrape_all_messages(
             request_delay,
             max_inflight,
             channel_concurrency,
-            scrape_progress.clone(),
         )
         .await;
     }
@@ -446,7 +421,6 @@ async fn scrape_all_messages(
             request_delay,
             max_inflight,
             channel_concurrency,
-            scrape_progress.clone(),
         )
         .await;
     }
@@ -461,23 +435,20 @@ async fn scrape_channel_list(
     request_delay: Duration,
     max_inflight: usize,
     channel_concurrency: usize,
-    scrape_progress: std::sync::Arc<website::ScrapeProgress>,
 ) {
     tracing::info!(
         "Scraping {} channels with {} token(s)...",
         channels.len(),
         user_tokens.len()
     );
-    let num_channels = channels.len();
-    scrape_progress.processed.store(0, Ordering::Relaxed);
-    scrape_progress.inserted.store(0, Ordering::Relaxed);
-    scrape_progress
-        .total
-        .store(num_channels as u64, Ordering::Relaxed);
+    let total = Arc::new(AtomicU64::new(0));
+    let processed = Arc::new(AtomicU64::new(0));
     let done = Arc::new(AtomicBool::new(false));
+    let num_channels = channels.len();
 
     {
-        let progress = scrape_progress.clone();
+        let total = total.clone();
+        let processed = processed.clone();
         let done = done.clone();
         tokio::spawn(async move {
             let mut last_msgs = 0u64;
@@ -487,8 +458,8 @@ async fn scrape_channel_list(
                 if done.load(Ordering::Relaxed) {
                     break;
                 }
-                let p = progress.processed.load(Ordering::Relaxed);
-                let m = progress.inserted.load(Ordering::Relaxed);
+                let p = processed.load(Ordering::Relaxed);
+                let m = total.load(Ordering::Relaxed);
                 let dt = last_report.elapsed().as_secs_f64().max(0.001);
                 let rate = (m - last_msgs) as f64 / dt;
                 let pct = p as f64 / num_channels as f64 * 100.0;
@@ -517,7 +488,8 @@ async fn scrape_channel_list(
             .collect();
 
         let clickhouse = clickhouse.clone();
-        let progress = scrape_progress.clone();
+        let total = total.clone();
+        let processed = processed.clone();
         workers.push(tokio::spawn(async move {
             scrape_shard(
                 &client,
@@ -526,7 +498,8 @@ async fn scrape_channel_list(
                 token_idx,
                 max_inflight,
                 channel_concurrency,
-                progress,
+                total,
+                processed,
             )
             .await;
         }));
@@ -539,7 +512,7 @@ async fn scrape_channel_list(
     done.store(true, Ordering::Relaxed);
     tracing::info!(
         "Pass complete! {} new messages inserted",
-        scrape_progress.inserted.load(Ordering::Relaxed)
+        total.load(Ordering::Relaxed)
     );
 }
 
@@ -548,7 +521,8 @@ struct ShardCtx {
     token_idx: usize,
     total_channels: usize,
     max_inflight: usize,
-    progress: std::sync::Arc<website::ScrapeProgress>,
+    total: Arc<AtomicU64>,
+    processed: Arc<AtomicU64>,
     tx: tokio::sync::mpsc::Sender<usize>,
 }
 
@@ -559,7 +533,8 @@ async fn scrape_shard(
     token_idx: usize,
     max_inflight: usize,
     channel_concurrency: usize,
-    progress: std::sync::Arc<website::ScrapeProgress>,
+    total: Arc<AtomicU64>,
+    processed: Arc<AtomicU64>,
 ) {
     if channels.is_empty() {
         tracing::info!("[token {}] No channels assigned", token_idx);
@@ -576,7 +551,8 @@ async fn scrape_shard(
         token_idx,
         total_channels,
         max_inflight,
-        progress: progress.clone(),
+        total: total.clone(),
+        processed: processed.clone(),
         tx: tx.clone(),
     };
     let reporter = tokio::spawn(async move {
@@ -637,7 +613,8 @@ async fn scrape_one_channel(
     let token_idx = ctx.token_idx;
     let total_channels = ctx.total_channels;
     let max_inflight = ctx.max_inflight;
-    let progress = ctx.progress.clone();
+    let total = ctx.total;
+    let processed = ctx.processed;
     let tx = ctx.tx;
     let start = std::time::Instant::now();
     let fully_scraped = db::clickhouse_db::is_fully_scraped(clickhouse, &channel_id)
@@ -731,7 +708,7 @@ async fn scrape_one_channel(
         inserted = db::clickhouse_db::insert_messages(clickhouse, &rows)
             .await
             .unwrap_or(0);
-        progress.inserted.fetch_add(inserted, Ordering::Relaxed);
+        total.fetch_add(inserted, Ordering::Relaxed);
         tracing::info!(
             "[token {}][{}/{}] Inserted {} new messages from {} (fetched {}, dupes filtered {})",
             token_idx,
@@ -768,7 +745,7 @@ async fn scrape_one_channel(
             let clickhouse = clickhouse.clone();
             let channel_id = channel_id.clone();
             let thread_ts = thread_ts.clone();
-            let progress = progress.clone();
+            let total = total.clone();
             handles.push(tokio::spawn(async move {
                 let _permit = permit.acquire().await;
                 scrape_thread(
@@ -779,7 +756,7 @@ async fn scrape_one_channel(
                     token_idx,
                     idx,
                     total_channels,
-                    progress,
+                    total,
                 )
                 .await
             }));
@@ -808,7 +785,7 @@ async fn scrape_one_channel(
         );
     }
 
-    progress.processed.fetch_add(1, Ordering::Relaxed);
+    processed.fetch_add(1, Ordering::Relaxed);
     let _ = tx.send(idx).await;
 
     if let Err(e) = db::clickhouse_db::mark_channel_scraped(clickhouse, &channel_id).await {
@@ -867,7 +844,7 @@ async fn scrape_thread(
     token_idx: usize,
     idx: usize,
     total_channels: usize,
-    progress: std::sync::Arc<website::ScrapeProgress>,
+    total: Arc<AtomicU64>,
 ) -> (usize, u64) {
     let thread_fully =
         db::clickhouse_db::is_thread_fully_scraped(clickhouse, &channel_id, &thread_ts)
@@ -913,7 +890,7 @@ async fn scrape_thread(
                 inserted = db::clickhouse_db::insert_messages(clickhouse, &rows)
                     .await
                     .unwrap_or(0);
-                progress.inserted.fetch_add(inserted, Ordering::Relaxed);
+                total.fetch_add(inserted, Ordering::Relaxed);
                 tracing::debug!(
                     "[token {}][{}/{}] Inserted {} thread replies from thread {} in {}",
                     token_idx,
