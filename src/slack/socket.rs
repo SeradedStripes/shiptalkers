@@ -106,35 +106,32 @@ pub async fn start_socket_mode(
                             tracing::info!("Socket Mode handshake complete");
                         }
                         "events_api" => {
-                            if let Some(payload) = &socket_msg.payload {
-                                if let Some(event) = payload.get("event")
-                                    && let Some(event_type) =
-                                        event.get("type").and_then(|v| v.as_str())
-                                {
-                                    match event_type {
-                                        "channel_created" => {
-                                            handle_channel_created(&client, event, &clickhouse)
-                                                .await;
-                                        }
-                                        "message" => {
-                                            handle_message(
-                                                &client,
-                                                &config,
-                                                &auth_db,
-                                                &clickhouse,
-                                                event,
-                                            )
-                                            .await;
-                                        }
-                                        _ => {}
-                                    }
-                                }
+                            if let Some(envelope_id) = &socket_msg.envelope_id {
+                                let ack = serde_json::json!({
+                                    "envelope_id": envelope_id
+                                });
+                                let _ = ws_stream.send(Message::Text(ack.to_string())).await;
+                            }
 
-                                if let Some(envelope_id) = &socket_msg.envelope_id {
-                                    let ack = serde_json::json!({
-                                        "envelope_id": envelope_id
-                                    });
-                                    let _ = ws_stream.send(Message::Text(ack.to_string())).await;
+                            if let Some(payload) = &socket_msg.payload
+                                && let Some(event) = payload.get("event")
+                                && let Some(event_type) = event.get("type").and_then(|v| v.as_str())
+                            {
+                                match event_type {
+                                    "channel_created" => {
+                                        handle_channel_created(&client, event, &clickhouse).await;
+                                    }
+                                    "message" => {
+                                        handle_message(
+                                            &client,
+                                            &config,
+                                            &auth_db,
+                                            &clickhouse,
+                                            event,
+                                        )
+                                        .await;
+                                    }
+                                    _ => {}
                                 }
                             }
                         }
