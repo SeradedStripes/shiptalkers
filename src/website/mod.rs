@@ -504,8 +504,11 @@ async fn get_leaderboard_category(
         "coders" => {
             let rows: Vec<(String, i64)> = ch
                 .query(
-                    "SELECT user_id, sum(minutes) as value
-                     FROM coding_activity FINAL
+                    "SELECT user_id, sum(m) as value FROM (
+                         SELECT user_id, date, max(minutes) AS m
+                         FROM coding_activity
+                         GROUP BY user_id, date
+                     )
                      GROUP BY user_id
                      ORDER BY value DESC
                      LIMIT 100",
@@ -641,7 +644,14 @@ async fn get_user_stats(
         .unwrap_or(0);
 
     let coding_minutes: i64 = ch
-        .query("SELECT sum(minutes) FROM coding_activity FINAL WHERE user_id = ?")
+        .query(
+            "SELECT sum(minutes) FROM (
+                 SELECT max(minutes) AS minutes
+                 FROM coding_activity
+                 WHERE user_id = ?
+                 GROUP BY date
+             )",
+        )
         .bind(slack_id)
         .fetch_one()
         .await
@@ -1020,7 +1030,13 @@ async fn load_stats(state: &AppState, headers: &HeaderMap) -> Stats {
         .unwrap_or(0);
 
     let coding_minutes: u64 = ch
-        .query("SELECT sum(minutes) FROM coding_activity FINAL")
+        .query(
+            "SELECT sum(minutes) FROM (
+                 SELECT max(minutes) AS minutes
+                 FROM coding_activity
+                 GROUP BY user_id, date
+             )",
+        )
         .fetch_one()
         .await
         .unwrap_or(0);

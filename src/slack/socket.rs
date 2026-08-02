@@ -350,10 +350,16 @@ async fn query_coding_seconds(
     user: &str,
     range: &TimeRange,
 ) -> u64 {
-    let mut sql = String::from("SELECT sum(minutes) FROM coding_activity FINAL WHERE user_id = ?");
+    let mut sql = String::from(
+        "SELECT sum(minutes) FROM (
+             SELECT max(minutes) AS minutes
+             FROM coding_activity
+             WHERE user_id = ?",
+    );
     if range.start_date().is_some() {
         sql.push_str(" AND date >= ?");
     }
+    sql.push_str(" GROUP BY date )");
     let mut query = clickhouse.query(&sql);
     query = query.bind(user);
     if let Some(start_date) = range.start_date() {
