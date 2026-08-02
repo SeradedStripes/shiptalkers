@@ -64,4 +64,4 @@ jobs:
 
       - name: Call Coolify API to deploy
         run: |
-          curl --request GET '${{ secrets.COOLIFY_WEBHOOK }}' --header 'Authorization: Bearer ${{ secrets.COOLIFY_TOKEN }}': 
+          curl --request GET 'https://coolify.kirze.de/api/v1/deploy?uuid=li1vtzvz0fmim9rfrmty0o85&force=false' --header 'Authorization: Bearer ${{ secrets.COOLIFY_TOKEN }}': 
