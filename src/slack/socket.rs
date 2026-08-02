@@ -1,8 +1,6 @@
 use futures::{SinkExt, StreamExt};
 use reqwest::Client;
 use serde::Deserialize;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 use crate::bot_image;
@@ -67,7 +65,6 @@ pub struct SocketConfig {
     pub bot_tokens: Vec<String>,
     pub main_channel: Option<String>,
     pub base_url: String,
-    bot_token_rotor: Arc<AtomicUsize>,
 }
 
 impl SocketConfig {
@@ -82,16 +79,7 @@ impl SocketConfig {
             bot_tokens,
             main_channel,
             base_url,
-            bot_token_rotor: Arc::new(AtomicUsize::new(0)),
         }
-    }
-
-    fn next_bot_token(&self) -> String {
-        if self.bot_tokens.is_empty() {
-            return String::new();
-        }
-        let idx = self.bot_token_rotor.fetch_add(1, Ordering::Relaxed) % self.bot_tokens.len();
-        self.bot_tokens[idx].clone()
     }
 }
 
@@ -332,11 +320,10 @@ async fn handle_message(
         text
     );
 
-    let bot_token = config.next_bot_token();
-    if bot_token.is_empty() {
+    let Some(bot_token) = config.bot_tokens.first() else {
         tracing::warn!("Stats bot: no bot tokens configured, skipping reply");
         return;
-    }
+    };
 
     if !auth_db.is_linked(&user).await {
         tracing::info!("Stats bot: {} is not linked, sending link prompt", user);
@@ -344,7 +331,7 @@ async fn handle_message(
             "You aren't linked yet. Link your account here to get your stats: {}/link",
             config.base_url.trim_end_matches('/')
         );
-        if let Err(e) = post_reply(client, &bot_token, &msg.channel, &msg.ts, &reply).await {
+        if let Err(e) = post_reply(client, bot_token, &msg.channel, &msg.ts, &reply).await {
             tracing::error!("Stats bot: failed to post reply: {}", e);
         }
         return;
@@ -402,7 +389,7 @@ async fn handle_message(
         }
     };
 
-    if let Err(e) = upload_image(client, &bot_token, &msg.channel, &msg.ts, png).await {
+    if let Err(e) = upload_image(client, bot_token, &msg.channel, &msg.ts, png).await {
         tracing::error!("Stats bot: failed to upload stats image: {}", e);
     }
 }

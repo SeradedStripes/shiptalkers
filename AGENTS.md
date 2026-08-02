@@ -32,7 +32,7 @@ Scrapes every public channel and thread reply from Hack Club Slack into ClickHou
 
 - `src/main.rs` - entry point, env parsing, scraper orchestration
 - `src/slack/mod.rs` - SlackClient, per-method FIFO token-bucket rate limiter, 429 backoff; SlackClientPool round-robins `conversations.list` / `users.list` pages across bot tokens (one SlackClient per token)
-- `src/slack/socket.rs` - Slack Socket Mode (app events) via tokio-tungstenite; one connection per `SLACK_APP_TOKENS` app, message events sharded across apps so only one replies; stats bot replies to top-level messages in `SLACK_MAIN_CHANNEL` in a thread, via `chat.postMessage`, with a PNG card uploaded via `files.getUploadURLExternal` + `files.completeUploadExternal`. Replies round-robin across `SLACK_BOT_TOKENS`, one token per reply
+- `src/slack/socket.rs` - Slack Socket Mode (app events) via tokio-tungstenite; one connection per `SLACK_APP_TOKENS` app, message events sharded across apps so only one replies; stats bot replies to top-level messages in `SLACK_MAIN_CHANNEL` in a thread, via `chat.postMessage`, with a PNG card uploaded via `files.getUploadURLExternal` + `files.completeUploadExternal`. Replies always use the first `SLACK_BOT_TOKENS` entry (the main bot)
 - `src/bot_image.rs` - renders the stats card SVG (`templates/slack_image.html` + `src/website/static/slack_image_stats.css`) to PNG via resvg/usvg, with bundled DejaVu fonts
 - `src/db/clickhouse_db.rs` - ClickHouse schema, inserts, checkpoint queries, daily `OPTIMIZE TABLE slack_messages FINAL`
 - `src/db/sqlite.rs` - SQLite auth DB (`linked_users`), the only non-ClickHouse datastore
@@ -65,7 +65,7 @@ Scrapes every public channel and thread reply from Hack Club Slack into ClickHou
 
 ## Environment Variables
 
-- `SLACK_BOT_TOKENS` - required, comma-separated bot tokens (one per Slack app); `conversations.list` / `users.list` pages and stats bot replies round-robin across them
+- `SLACK_BOT_TOKENS` - required, comma-separated bot tokens (one per Slack app); `conversations.list` / `users.list` pages round-robin across them, stats bot replies always use the first entry (the main bot)
 - `SLACK_USER_TOKENS` - comma-separated user tokens, sharded round-robin per channel
 - `SLACK_APP_TOKENS` - optional, comma-separated app tokens; each opens its own Socket Mode connection and message events are sharded across them so only one bot replies
 - `SLACK_MAIN_CHANNEL` - channel ID the stats bot watches; users posting a time range there get a threaded reply. Optional, disables the bot when unset
@@ -79,7 +79,7 @@ Scrapes every public channel and thread reply from Hack Club Slack into ClickHou
 ## Gotchas
 
 - Slack rate limits are per (token, method). `conversations.history` and `conversations.replies` have separate budgets, so the rate limiter stays per method.
-- Every token gets its own rate-limiter budget: `SLACK_BOT_TOKENS` pages rotate one token per page, `SLACK_USER_TOKENS` channel shards each get their own SlackClient, and stats bot replies use one bot token per reply.
+- Every token gets its own rate-limiter budget: `SLACK_BOT_TOKENS` pages rotate one token per page, `SLACK_USER_TOKENS` channel shards each get their own SlackClient, and stats bot replies use the first bot token (the main bot).
 - Socket Mode opens one connection per `SLACK_APP_TOKENS` app. Slack delivers every event to every app, so message events are sharded (FNV hash of `ts`) and only the owning socket replies. Duplicate `channel_created` events are harmless because `insert_new_channels` is idempotent.
 - The rate limiter is a FIFO ticket queue that paces at exactly 1 request per delay, so one huge channel cannot stall the pass.
 - Scrape passes split into full-scrape (new channels) and incremental check (already-scraped channels) using `scraped_channels`.
