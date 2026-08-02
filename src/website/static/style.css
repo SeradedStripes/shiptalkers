@@ -32,11 +32,14 @@ body {
 .site-header .btn { margin-left: auto; padding: 0.5rem 1rem; font-size: 0.875rem; }
 
 .container { margin: 0 auto; padding: 2rem; width: 100%; flex: 1; }
+.back-link { display: inline-block; margin-bottom: 1rem; color: #aaa; text-decoration: none; }
+.back-link:hover { color: #fff; }
 body.index .container { max-width: 800px; }
 body.link .container { max-width: 600px; }
 body.stats .container { max-width: 1000px; }
 body.user .container { max-width: 1000px; }
 body.channel .container { max-width: 1000px; }
+body.leaderboard .container { max-width: 1000px; }
 body.search .container { max-width: 700px; }
 
 .search { display: flex; gap: 0.5rem; }

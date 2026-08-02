@@ -82,6 +82,28 @@ pub struct SearchTemplate {
     pub signed_in: bool,
 }
 
+#[derive(Template)]
+#[template(path = "leaderboard.html")]
+pub struct LeaderboardTemplate {
+    pub signed_in: bool,
+}
+
+#[derive(Template)]
+#[template(path = "leaderboard_category.html")]
+pub struct LeaderboardCategoryTemplate {
+    pub title: String,
+    pub unit: String,
+    pub rows: Vec<LeaderboardEntry>,
+    pub coming_soon: bool,
+    pub signed_in: bool,
+}
+
+pub struct LeaderboardEntry {
+    pub user_id: String,
+    pub display_name: String,
+    pub value: String,
+}
+
 pub struct SearchResult {
     pub display_name: String,
     pub user_id: String,
@@ -114,6 +136,8 @@ pub fn router(clickhouse: Client, auth_config: crate::auth::AuthConfig) -> Route
         .route("/link", get(auth::get_link))
         .route("/stats", get(get_stats_page))
         .route("/stats/:id", get(get_stats_for_id))
+        .route("/leaderboard", get(get_leaderboard))
+        .route("/leaderboard/:category", get(get_leaderboard_category))
         .route("/search", get(get_search))
         .route("/auth/hackclub/login", get(auth::auth_hackclub_login))
         .route("/auth/hackclub/callback", get(auth::auth_hackclub_callback))
@@ -265,6 +289,144 @@ async fn get_stats_for_id(
     } else {
         get_user_stats(&state, &headers, &id).await
     }
+}
+
+async fn get_leaderboard(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Html<String>, StatusCode> {
+    let signed_in = auth::session_from_request(&headers, &state.auth).is_some();
+    let template = LeaderboardTemplate { signed_in };
+    let html = template
+        .render()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Html(html))
+}
+
+async fn get_leaderboard_category(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(category): Path<String>,
+) -> Result<Html<String>, StatusCode> {
+    let ch = &state.clickhouse;
+    let signed_in = auth::session_from_request(&headers, &state.auth).is_some();
+
+    #[derive(clickhouse::Row, serde::Deserialize)]
+    struct LeaderboardRow {
+        user_id: String,
+        value: i64,
+    }
+
+    let (title, unit, coming_soon, rows): (String, String, bool, Vec<LeaderboardEntry>) =
+        match category.as_str() {
+            "talkers" => {
+                let rows: Vec<(String, i64)> = ch
+                    .query(
+                        "SELECT user_id, count() as value
+                         FROM slack_messages FINAL
+                         GROUP BY user_id
+                         ORDER BY value DESC
+                         LIMIT 100",
+                    )
+                    .fetch_all::<LeaderboardRow>()
+                    .await
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|r| (r.user_id, r.value))
+                    .collect();
+                (
+                    "Top Talkers".into(),
+                    "Messages".into(),
+                    false,
+                    leaderboard_entries(ch, rows, fmt_thousands).await,
+                )
+            }
+            "coders" => {
+                let rows: Vec<(String, i64)> = ch
+                    .query(
+                        "SELECT user_id, sum(minutes) as value
+                         FROM coding_activity
+                         GROUP BY user_id
+                         ORDER BY value DESC
+                         LIMIT 100",
+                    )
+                    .fetch_all::<LeaderboardRow>()
+                    .await
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|r| (r.user_id, r.value))
+                    .collect();
+                (
+                    "Top Coders".into(),
+                    "Coding Time".into(),
+                    false,
+                    leaderboard_entries(ch, rows, |v| format!("{} min", fmt_thousands(v))).await,
+                )
+            }
+            "combined" => ("Top Combined".into(), String::new(), true, Vec::new()),
+            _ => {
+                return Err(StatusCode::NOT_FOUND);
+            }
+        };
+
+    let template = LeaderboardCategoryTemplate {
+        title,
+        unit,
+        rows,
+        coming_soon,
+        signed_in,
+    };
+    let html = template
+        .render()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Html(html))
+}
+
+async fn leaderboard_entries(
+    ch: &Client,
+    rows: Vec<(String, i64)>,
+    format_value: impl Fn(u64) -> String,
+) -> Vec<LeaderboardEntry> {
+    let mut name_ids: Vec<String> = rows.iter().map(|(user_id, _)| user_id.clone()).collect();
+    name_ids.sort();
+    name_ids.dedup();
+
+    #[derive(clickhouse::Row, serde::Deserialize)]
+    struct NameRow {
+        user_id: String,
+        display_name: String,
+    }
+
+    let names: std::collections::HashMap<String, String> = if name_ids.is_empty() {
+        std::collections::HashMap::new()
+    } else {
+        let in_list = name_ids.join("', '");
+        ch.query(&format!(
+            "SELECT user_id, display_name FROM users FINAL WHERE user_id IN ('{}')",
+            in_list
+        ))
+        .fetch_all::<NameRow>()
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|r| (r.user_id, r.display_name))
+        .collect()
+    };
+
+    rows.into_iter()
+        .map(|(user_id, value)| {
+            let value = value.max(0) as u64;
+            LeaderboardEntry {
+                user_id: user_id.clone(),
+                display_name: names
+                    .get(&user_id)
+                    .filter(|n| !n.is_empty())
+                    .cloned()
+                    .unwrap_or(user_id),
+                value: format_value(value),
+            }
+        })
+        .collect()
 }
 
 async fn get_user_stats(
@@ -820,9 +982,7 @@ mod tests {
         for uri in ["/stats/U01MPHKFZ7S", "/stats/C0123456789"] {
             let res = app
                 .clone()
-                .oneshot(
-                    Request::builder().uri(uri).body(Body::empty()).unwrap(),
-                )
+                .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
                 .await
                 .unwrap();
             let status = res.status();

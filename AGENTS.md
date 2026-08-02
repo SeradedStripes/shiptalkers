@@ -34,10 +34,11 @@ Scrapes every public channel and thread reply from Hack Club Slack into ClickHou
 - `src/slack/mod.rs` - SlackClient, per-method FIFO token-bucket rate limiter, 429 backoff
 - `src/slack/socket.rs` - Slack Socket Mode (app events) via tokio-tungstenite
 - `src/db/clickhouse_db.rs` - ClickHouse schema, inserts, checkpoint queries
-- `src/website/mod.rs` - axum router, server-rendered `/stats`, `/stats/:id` (user or channel, dispatched by `U`/`C` prefix) and `/search` via askama
+- `src/website/mod.rs` - axum router, server-rendered `/stats`, `/stats/:id` (user or channel, dispatched by `U`/`C` prefix), `/leaderboard` and `/search` via askama
 - `templates/stats.html` - askama template for the stats page
 - `templates/user.html` - askama template for the per-user stats page
 - `templates/channel.html` - askama template for the per-channel stats page
+- `templates/leaderboard.html` - askama template for the leaderboard page
 - `templates/search.html` - askama template for user and channel search results
 - `templates/search_form.html` - shared inline search form partial
 - `src/website/static/` - index.html, link.html, style.css
