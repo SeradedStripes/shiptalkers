@@ -1,5 +1,5 @@
 use askama::Template;
-use axum::extract::State;
+use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Html;
 use axum::{Router, routing::get};
@@ -39,6 +39,25 @@ pub struct Stats {
     pub signed_in: bool,
 }
 
+#[derive(Template)]
+#[template(path = "user.html")]
+pub struct UserTemplate {
+    pub display_name: String,
+    pub slack_id: String,
+    pub total_messages: String,
+    pub coding_minutes: String,
+    pub channels: String,
+    pub last_msg: String,
+    pub top_channels: Vec<ChannelStats>,
+    pub signed_in: bool,
+    pub found: bool,
+}
+
+pub struct ChannelStats {
+    pub channel_name: String,
+    pub messages: String,
+}
+
 pub struct UserStats {
     pub display_name: String,
     pub user_id: String,
@@ -65,6 +84,7 @@ pub fn router(clickhouse: Client, auth_config: crate::auth::AuthConfig) -> Route
         .route("/", get(get_index))
         .route("/link", get(auth::get_link))
         .route("/stats", get(get_stats_page))
+        .route("/stats/:slack_id", get(get_user_stats))
         .route("/auth/hackclub/login", get(auth::auth_hackclub_login))
         .route("/auth/hackclub/callback", get(auth::auth_hackclub_callback))
         .route("/auth/hackatime/login", get(auth::auth_hackatime_login))
@@ -120,6 +140,128 @@ async fn get_stats_page(
 ) -> Result<Html<String>, StatusCode> {
     let stats = load_stats(&state.clickhouse, &headers, &state.auth).await;
     let html = stats
+        .render()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Html(html))
+}
+
+async fn get_user_stats(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(slack_id): Path<String>,
+) -> Result<Html<String>, StatusCode> {
+    let ch = &state.clickhouse;
+    let signed_in = auth::session_from_request(&headers, &state.auth).is_some();
+
+    let display_name: String = ch
+        .query("SELECT display_name FROM users FINAL WHERE user_id = ?")
+        .bind(&slack_id)
+        .fetch_one()
+        .await
+        .unwrap_or_default();
+
+    let total_messages: u64 = ch
+        .query("SELECT count() FROM slack_messages FINAL WHERE user_id = ?")
+        .bind(&slack_id)
+        .fetch_one()
+        .await
+        .unwrap_or(0);
+
+    let coding_minutes: i64 = ch
+        .query("SELECT sum(minutes) FROM coding_activity WHERE user_id = ?")
+        .bind(&slack_id)
+        .fetch_one()
+        .await
+        .unwrap_or(0);
+
+    let channels: u64 = ch
+        .query("SELECT uniqExact(channel_id) FROM slack_messages FINAL WHERE user_id = ?")
+        .bind(&slack_id)
+        .fetch_one()
+        .await
+        .unwrap_or(0);
+
+    let last_ts: String = ch
+        .query("SELECT max(message_ts) FROM slack_messages FINAL WHERE user_id = ?")
+        .bind(&slack_id)
+        .fetch_one()
+        .await
+        .unwrap_or_default();
+
+    #[derive(clickhouse::Row, serde::Deserialize)]
+    struct ChannelCount {
+        channel_id: String,
+        messages: u64,
+    }
+
+    let counts: Vec<ChannelCount> = ch
+        .query(
+            "SELECT channel_id, count() as messages
+             FROM slack_messages FINAL
+             WHERE user_id = ?
+             GROUP BY channel_id
+             ORDER BY messages DESC
+             LIMIT 10",
+        )
+        .bind(&slack_id)
+        .fetch_all()
+        .await
+        .unwrap_or_default();
+
+    let channel_names: std::collections::HashMap<String, String> = if counts.is_empty() {
+        std::collections::HashMap::new()
+    } else {
+        #[derive(clickhouse::Row, serde::Deserialize)]
+        struct ChannelName {
+            channel_id: String,
+            name: String,
+        }
+        let placeholders = counts.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+        let mut query = ch.query(&format!(
+            "SELECT channel_id, name FROM slack_channels FINAL WHERE channel_id IN ({})",
+            placeholders
+        ));
+        for c in &counts {
+            query = query.bind(&c.channel_id);
+        }
+        query
+            .fetch_all::<ChannelName>()
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|r| (r.channel_id, r.name))
+            .collect()
+    };
+
+    let top_channels: Vec<ChannelStats> = counts
+        .into_iter()
+        .map(|c| ChannelStats {
+            channel_name: channel_names
+                .get(&c.channel_id)
+                .cloned()
+                .unwrap_or_else(|| c.channel_id.clone()),
+            messages: fmt_thousands(c.messages),
+        })
+        .collect();
+
+    let found = total_messages > 0 || coding_minutes > 0 || !display_name.is_empty();
+
+    let template = UserTemplate {
+        display_name: if display_name.is_empty() {
+            slack_id.clone()
+        } else {
+            display_name
+        },
+        slack_id,
+        total_messages: fmt_thousands(total_messages),
+        coding_minutes: fmt_thousands(coding_minutes.max(0) as u64),
+        channels: fmt_thousands(channels),
+        last_msg: fmt_last_ts(&last_ts),
+        top_channels,
+        signed_in,
+        found,
+    };
+    let html = template
         .render()
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Html(html))
@@ -411,4 +553,46 @@ fn fmt_last_ts(ts: &str) -> String {
     let hour = (secs % 86400) / 3600;
     let minute = (secs % 3600) / 60;
     format!("{year:04}-{month:02}-{day:02} {hour:02}:{minute:02} UTC")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn user_stats_route_matches() {
+        let ch = Client::default()
+            .with_url("http://localhost:8123")
+            .with_user("ship_talkers")
+            .with_password("ship_talkers")
+            .with_database("ship_talkers");
+        let auth_config = crate::auth::AuthConfig {
+            hca_client_id: String::new(),
+            hca_client_secret: String::new(),
+            hackatime_client_id: String::new(),
+            hackatime_client_secret: String::new(),
+            base_url: "http://localhost:3000".into(),
+            session_secret: String::new(),
+        };
+        let app = router(ch, auth_config);
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .uri("/stats/U01MPHKFZ7S")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = res.status();
+        eprintln!("status for /stats/U01MPHKFZ7S: {}", status);
+        assert_ne!(
+            status,
+            axum::http::StatusCode::NOT_FOUND,
+            "route must match"
+        );
+    }
 }

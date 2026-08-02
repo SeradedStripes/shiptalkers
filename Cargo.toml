@@ -21,3 +21,6 @@ tower-http = { version = "0.5", features = ["fs"] }
 askama = "0.12"
 tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
 futures = "0.3"
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }

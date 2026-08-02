@@ -35,6 +35,7 @@ body {
 body.index .container { max-width: 800px; }
 body.link .container { max-width: 600px; }
 body.stats .container { max-width: 1000px; }
+body.user .container { max-width: 1000px; }
 
 .site-footer { border-top: 1px solid #262626; padding: 1.5rem; text-align: center; }
 .site-footer p { margin: 0; font-size: 0.875rem; }
@@ -76,6 +77,8 @@ table { width: 100%; border-collapse: collapse; background: #1a1a1a; border-radi
 th, td { padding: 1rem; text-align: left; border-bottom: 1px solid #333; }
 th { color: #888; font-size: 0.875rem; text-transform: uppercase; }
 tr:last-child td { border-bottom: none; }
+table a { color: #f472b6; text-decoration: none; }
+table a:hover { text-decoration: underline; }
 
 .live { display: inline-block; width: 8px; height: 8px; background: #22c55e; border-radius: 50%; margin-right: 0.5rem; animation: pulse 2s infinite; }
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
