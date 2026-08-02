@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="refresh" content="10">
+    <title>{{ title }} - Ship Talkers</title>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body class="leaderboard">
+    {% include "header.html" %}
+    <div class="container">
+        <a href="/leaderboard" class="back-link">Back to all leaderboards</a>
+        <h1><span class="live"></span>{{ title }}</h1>
+
+        {% if coming_soon %}
+        <div class="table-card">
+            <p class="empty">Coming soon</p>
+        </div>
+        {% else %}
+        <div class="table-card">
+            <table>
+                <thead>
+                    <tr><th>#</th><th>User</th><th>{{ unit }}</th></tr>
+                </thead>
+                <tbody>
+                    {% if rows.is_empty() %}
+                    <tr><td colspan="3" class="empty">Coming soon</td></tr>
+                    {% else %}
+                    {% for e in rows %}
+                    <tr><td>{{ loop.index }}</td><td><a href="/stats/{{ e.user_id }}">{{ e.display_name }}</a></td><td>{{ e.value }}</td></tr>
+                    {% endfor %}
+                    {% endif %}
+                </tbody>
+            </table>
+        </div>
+        {% endif %}
+    </div>
+    {% include "footer.html" %}
+</body>
+</html>

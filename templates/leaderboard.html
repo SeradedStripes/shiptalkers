@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Leaderboard - Ship Talkers</title>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body class="leaderboard">
+    {% include "header.html" %}
+    <div class="container">
+        <h1><span class="live"></span>Leaderboard</h1>
+        <p>Choose a leaderboard:</p>
+        <div class="links">
+            <a href="/leaderboard/talkers" class="btn">Top Talkers</a>
+            <a href="/leaderboard/coders" class="btn">Top Coders</a>
+            <a href="/leaderboard/combined" class="btn">Top Combined</a>
+        </div>
+    </div>
+    {% include "footer.html" %}
+</body>
+</html>
