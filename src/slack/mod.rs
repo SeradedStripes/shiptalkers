@@ -406,7 +406,7 @@ impl SlackClient {
             }
             let mut params = vec![
                 ("channel".to_string(), channel_id.to_string()),
-                ("limit".to_string(), "100".to_string()),
+                ("limit".to_string(), "999".to_string()),
             ];
             if let Some(c) = &cursor {
                 params.push(("cursor".to_string(), c.clone()));
