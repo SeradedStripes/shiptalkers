@@ -19,7 +19,7 @@ services:
         condition: service_healthy
 
   clickhouse:
-    image: clickhouse/clickhouse-server:latest
+    image: clickhouse/clickhouse-server:26.7.1.1315-amd64compat
     environment:
       - CLICKHOUSE_DB=ship_talkers
       - CLICKHOUSE_USER=ship_talkers
