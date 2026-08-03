@@ -1,7 +1,7 @@
 use askama::Template;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
-use axum::response::Html;
+use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::{Router, routing::get};
 use clickhouse::Client;
 use std::collections::HashMap;
@@ -112,6 +112,7 @@ pub struct Stats {
 #[template(path = "user.html")]
 pub struct UserTemplate {
     pub display_name: String,
+    pub pfp: String,
     pub slack_id: String,
     pub total_messages: String,
     pub coding_minutes: String,
@@ -183,17 +184,20 @@ pub struct LeaderboardCategoryTemplate {
 pub struct LeaderboardEntry {
     pub user_id: String,
     pub display_name: String,
+    pub pfp: String,
     pub value: String,
     pub extra: String,
 }
 
 pub struct SearchResult {
     pub display_name: String,
+    pub pfp: String,
     pub user_id: String,
 }
 
 pub struct UserStats {
     pub display_name: String,
+    pub pfp: String,
     pub user_id: String,
     pub messages: String,
 }
@@ -222,6 +226,7 @@ pub fn router(
         .route("/leaderboard", get(get_leaderboard))
         .route("/leaderboard/:category", get(get_leaderboard_category))
         .route("/search", get(get_search))
+        .route("/pfp/:id", get(get_pfp))
         .route("/auth/hackclub/login", get(auth::auth_hackclub_login))
         .route("/auth/hackclub/callback", get(auth::auth_hackclub_callback))
         .route("/auth/hackatime/login", get(auth::auth_hackatime_login))
@@ -254,6 +259,28 @@ pub fn router(
         )
         .fallback_service(ServeDir::new("static"))
         .with_state(state)
+}
+
+fn local_pfp(user_id: &str, pfp_url: &str) -> String {
+    if pfp_url.is_empty() {
+        String::new()
+    } else {
+        format!("/pfp/{}", user_id)
+    }
+}
+
+async fn get_pfp(State(state): State<AppState>, Path(user_id): Path<String>) -> Response {
+    let url: String = state
+        .clickhouse
+        .query("SELECT pfp FROM users FINAL WHERE user_id = ?")
+        .bind(&user_id)
+        .fetch_one()
+        .await
+        .unwrap_or_default();
+    if url.is_empty() {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    Redirect::temporary(&url).into_response()
 }
 
 fn fmt_thousands(n: u64) -> String {
@@ -375,12 +402,13 @@ async fn get_search(
         struct SearchRow {
             user_id: String,
             display_name: String,
+            pfp: String,
         }
         let pattern = format!("%{}%", query.trim());
         state
             .clickhouse
             .query(
-                "SELECT user_id, display_name FROM users FINAL
+                "SELECT user_id, display_name, pfp FROM users FINAL
                  WHERE display_name ILIKE ? OR user_id ILIKE ?
                  ORDER BY (display_name ILIKE ?) DESC, display_name
                  LIMIT 25",
@@ -394,6 +422,7 @@ async fn get_search(
             .into_iter()
             .map(|r| SearchResult {
                 display_name: r.display_name,
+                pfp: local_pfp(&r.user_id, &r.pfp),
                 user_id: r.user_id,
             })
             .collect()
@@ -423,6 +452,7 @@ async fn get_search(
             .into_iter()
             .map(|r| SearchResult {
                 display_name: r.name,
+                pfp: String::new(),
                 user_id: r.channel_id,
             })
             .collect()
@@ -591,34 +621,37 @@ async fn leaderboard_entries(
     struct NameRow {
         user_id: String,
         display_name: String,
+        pfp: String,
     }
 
-    let names: std::collections::HashMap<String, String> = if name_ids.is_empty() {
+    let names: std::collections::HashMap<String, (String, String)> = if name_ids.is_empty() {
         std::collections::HashMap::new()
     } else {
         let in_list = name_ids.join("', '");
         ch.query(&format!(
-            "SELECT user_id, display_name FROM users FINAL WHERE user_id IN ('{}')",
+            "SELECT user_id, display_name, pfp FROM users FINAL WHERE user_id IN ('{}')",
             in_list
         ))
         .fetch_all::<NameRow>()
         .await
         .unwrap_or_default()
         .into_iter()
-        .map(|r| (r.user_id, r.display_name))
+        .map(|r| (r.user_id, (r.display_name, r.pfp)))
         .collect()
     };
 
     rows.into_iter()
         .map(|(user_id, value, extra)| {
             let value = value.max(0) as u64;
+            let (display_name, pfp) = names.get(&user_id).cloned().unwrap_or_default();
             LeaderboardEntry {
                 user_id: user_id.clone(),
-                display_name: names
-                    .get(&user_id)
-                    .filter(|n| !n.is_empty())
-                    .cloned()
-                    .unwrap_or(user_id),
+                display_name: if display_name.is_empty() {
+                    user_id.clone()
+                } else {
+                    display_name
+                },
+                pfp: local_pfp(&user_id, &pfp),
                 value: format_value(value),
                 extra: extra
                     .map(|v| v.max(0) as u64)
@@ -662,6 +695,14 @@ async fn get_user_stats(
         .fetch_one()
         .await
         .unwrap_or_default();
+
+    let pfp_url: String = ch
+        .query("SELECT pfp FROM users FINAL WHERE user_id = ?")
+        .bind(slack_id)
+        .fetch_one()
+        .await
+        .unwrap_or_default();
+    let pfp = local_pfp(slack_id, &pfp_url);
 
     let total_messages: u64 = ch
         .query("SELECT count() FROM slack_messages WHERE user_id = ?")
@@ -910,6 +951,7 @@ async fn get_user_stats(
         } else {
             display_name
         },
+        pfp,
         slack_id: slack_id.to_string(),
         total_messages: fmt_thousands(total_messages),
         coding_minutes: fmt_thousands(coding_minutes.max(0) as u64),
@@ -1002,34 +1044,39 @@ async fn get_channel_stats(
     struct PosterNameRow {
         user_id: String,
         display_name: String,
+        pfp: String,
     }
 
-    let poster_names: std::collections::HashMap<String, String> = if name_ids.is_empty() {
+    let poster_names: std::collections::HashMap<String, (String, String)> = if name_ids.is_empty() {
         std::collections::HashMap::new()
     } else {
         let in_list = name_ids.join("', '");
         ch.query(&format!(
-            "SELECT user_id, display_name FROM users FINAL WHERE user_id IN ('{}')",
+            "SELECT user_id, display_name, pfp FROM users FINAL WHERE user_id IN ('{}')",
             in_list
         ))
         .fetch_all::<PosterNameRow>()
         .await
         .unwrap_or_default()
         .into_iter()
-        .map(|r| (r.user_id, r.display_name))
+        .map(|r| (r.user_id, (r.display_name, r.pfp)))
         .collect()
     };
 
     let top_posters: Vec<UserStats> = posters
         .into_iter()
-        .map(|p| UserStats {
-            user_id: p.user_id.clone(),
-            display_name: poster_names
-                .get(&p.user_id)
-                .filter(|n| !n.is_empty())
-                .cloned()
-                .unwrap_or(p.user_id),
-            messages: fmt_thousands(p.messages),
+        .map(|p| {
+            let (display_name, pfp) = poster_names.get(&p.user_id).cloned().unwrap_or_default();
+            UserStats {
+                user_id: p.user_id.clone(),
+                display_name: if display_name.is_empty() {
+                    p.user_id.clone()
+                } else {
+                    display_name
+                },
+                pfp: local_pfp(&p.user_id, &pfp),
+                messages: fmt_thousands(p.messages),
+            }
         })
         .collect();
 

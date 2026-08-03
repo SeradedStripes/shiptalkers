@@ -70,6 +70,7 @@ pub async fn init_tables(client: &Client) -> Result<(), Box<dyn std::error::Erro
             "CREATE TABLE IF NOT EXISTS users (
                 user_id String,
                 display_name String,
+                pfp String DEFAULT '',
                 updated UInt64 DEFAULT 0
             ) ENGINE = ReplacingMergeTree()
             ORDER BY user_id",
@@ -77,9 +78,14 @@ pub async fn init_tables(client: &Client) -> Result<(), Box<dyn std::error::Erro
         .execute()
         .await?;
 
-    // Add updated column if it doesn't exist (migration for existing tables)
+    // Add columns if they don't exist (migrations for existing tables)
     client
         .query("ALTER TABLE users ADD COLUMN IF NOT EXISTS updated UInt64 DEFAULT 0")
+        .execute()
+        .await
+        .ok();
+    client
+        .query("ALTER TABLE users ADD COLUMN IF NOT EXISTS pfp String DEFAULT ''")
         .execute()
         .await
         .ok();
@@ -498,6 +504,7 @@ pub async fn insert_new_channels(
 pub struct SlackUserRow {
     pub user_id: String,
     pub display_name: String,
+    pub pfp: String,
     pub updated: u64,
 }
 
@@ -529,6 +536,20 @@ pub async fn get_user_updates(
         .fetch_all()
         .await?;
     Ok(rows.into_iter().map(|r| (r.user_id, r.updated)).collect())
+}
+
+pub async fn get_user_ids_without_pfp(
+    client: &Client,
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    #[derive(Debug, Row, Deserialize)]
+    struct PfpRow {
+        user_id: String,
+    }
+    let rows: Vec<PfpRow> = client
+        .query("SELECT user_id FROM users FINAL WHERE pfp = ''")
+        .fetch_all()
+        .await?;
+    Ok(rows.into_iter().map(|r| r.user_id).collect())
 }
 
 pub async fn get_max_message_ts(

@@ -44,7 +44,7 @@
                     <tr><td colspan="2" class="empty">No activity</td></tr>
                     {% else %}
                     {% for u in top_posters %}
-                    <tr><td><a href="/stats/{{ u.user_id }}">{{ u.display_name }}</a></td><td>{{ u.messages }}</td></tr>
+                    <tr><td><span class="user-cell">{% if !u.pfp.is_empty() %}<img class="avatar" src="{{ u.pfp }}" alt="">{% endif %}<a href="/stats/{{ u.user_id }}">{{ u.display_name }}</a></span></td><td>{{ u.messages }}</td></tr>
                     {% endfor %}
                     {% endif %}
                 </tbody>

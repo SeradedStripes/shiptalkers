@@ -32,6 +32,7 @@ pub struct SlackChannel {
 pub struct SlackUser {
     pub id: String,
     pub display_name: String,
+    pub pfp: String,
     pub updated: u64,
 }
 
@@ -482,6 +483,16 @@ impl SlackClientPool {
                         })
                         .unwrap_or("")
                         .to_string();
+                    let pfp = ["image_192", "image_72", "image_48", "image_32", "image_24"]
+                        .into_iter()
+                        .find_map(|key| {
+                            profile
+                                .and_then(|p| p.get(key))
+                                .and_then(|v| v.as_str())
+                                .filter(|s| !s.is_empty())
+                                .map(|s| s.to_string())
+                        })
+                        .unwrap_or_default();
                     let updated = m
                         .get("updated")
                         .and_then(|v| v.as_u64().or_else(|| v.as_f64().map(|f| f as u64)))
@@ -489,6 +500,7 @@ impl SlackClientPool {
                     page_users.push(SlackUser {
                         id: id.to_string(),
                         display_name,
+                        pfp,
                         updated,
                     });
                 }

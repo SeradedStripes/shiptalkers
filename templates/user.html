@@ -11,8 +11,15 @@
     {% include "header.html" %}
     <div class="container">
         {% if found %}
-        <h1>{{ display_name }}</h1>
-        <p>{{ slack_id }}</p>
+        <div class="profile-head">
+            {% if !pfp.is_empty() %}
+            <img class="avatar avatar-large" src="{{ pfp }}" alt="{{ display_name }}">
+            {% endif %}
+            <div>
+                <h1>{{ display_name }}</h1>
+                <p>{{ slack_id }}</p>
+            </div>
+        </div>
 
         <div class="grid">
             <div class="stat">

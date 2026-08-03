@@ -105,7 +105,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             );
             loop {
                 let ok = sync_users(&pool, &clickhouse_for_users).await;
-                let wait = if ok { 86400 } else { 300 };
+                let wait = if ok { 7200 } else { 300 };
                 tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
             }
         });
@@ -244,27 +244,39 @@ async fn sync_users(slack_pool: &slack::SlackClientPool, clickhouse: &clickhouse
             return false;
         }
     };
+    let missing_pfps: std::collections::HashSet<String> =
+        match db::clickhouse_db::get_user_ids_without_pfp(clickhouse).await {
+            Ok(ids) => ids.into_iter().collect(),
+            Err(e) => {
+                tracing::warn!("Failed to get users missing pfps: {}", e);
+                std::collections::HashSet::new()
+            }
+        };
     tracing::info!(
-        "Syncing users from Slack ({} already stored)",
-        existing.len()
+        "Syncing users from Slack ({} already stored, {} missing pfps)",
+        existing.len(),
+        missing_pfps.len()
     );
     let existing = Arc::new(existing);
+    let missing_pfps = Arc::new(missing_pfps);
     let changed_total = Arc::new(AtomicU64::new(0));
     let result = slack_pool
         .fetch_users(|page| {
             let clickhouse = clickhouse.clone();
             let existing = existing.clone();
+            let missing_pfps = missing_pfps.clone();
             let changed_total = changed_total.clone();
             Box::pin(async move {
                 let changed: Vec<db::clickhouse_db::SlackUserRow> = page
                     .into_iter()
                     .filter(|u| match existing.get(&u.id) {
-                        Some(prev) => *prev < u.updated,
+                        Some(prev) => *prev < u.updated || missing_pfps.contains(&u.id),
                         None => true,
                     })
                     .map(|u| db::clickhouse_db::SlackUserRow {
                         user_id: u.id,
                         display_name: u.display_name,
+                        pfp: u.pfp,
                         updated: u.updated,
                     })
                     .collect();

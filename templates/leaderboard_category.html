@@ -37,7 +37,7 @@
                     {% for e in rows %}
                     <tr>
                         <td>{{ loop.index }}</td>
-                        <td><a href="/stats/{{ e.user_id }}">{{ e.display_name }}</a></td>
+                        <td><span class="user-cell">{% if !e.pfp.is_empty() %}<img class="avatar" src="{{ e.pfp }}" alt="">{% endif %}<a href="/stats/{{ e.user_id }}">{{ e.display_name }}</a></span></td>
                         <td>{{ e.value }}</td>
                         {% if extra_unit.is_some() %}
                         <td>{{ e.extra }}</td>

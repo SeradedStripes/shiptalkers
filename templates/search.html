@@ -25,7 +25,7 @@
                 </thead>
                 <tbody>
                     {% for r in results %}
-                    <tr><td><a href="/stats/{{ r.user_id }}">{{ r.display_name }}</a></td><td>{{ r.user_id }}</td></tr>
+                    <tr><td><span class="user-cell">{% if !r.pfp.is_empty() %}<img class="avatar" src="{{ r.pfp }}" alt="">{% endif %}<a href="/stats/{{ r.user_id }}">{{ r.display_name }}</a></span></td><td>{{ r.user_id }}</td></tr>
                     {% endfor %}
                 </tbody>
             </table>

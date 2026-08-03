@@ -119,6 +119,13 @@ tr:last-child td { border-bottom: none; }
 table a { color: #f472b6; text-decoration: none; }
 table a:hover { text-decoration: underline; }
 
+.user-cell { display: inline-flex; align-items: center; gap: 0.6rem; }
+.avatar { width: 32px; height: 32px; border-radius: 50%; background: #262626; object-fit: cover; }
+.profile-head { display: flex; align-items: center; gap: 1.25rem; margin-bottom: 1rem; }
+.profile-head h1 { margin-bottom: 0; }
+.profile-head p { margin-bottom: 0; }
+.avatar-large { width: 96px; height: 96px; }
+
 .live { display: inline-block; width: 8px; height: 8px; background: #22c55e; border-radius: 50%; margin-right: 0.5rem; animation: pulse 2s infinite; }
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
 
