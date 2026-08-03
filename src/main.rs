@@ -311,8 +311,9 @@ async fn run_scraper(
 ) -> Result<(), String> {
     let bot_pool = slack::SlackClientPool::new(bot_tokens, request_delay, max_inflight);
 
-    if let Err(e) = db::clickhouse_db::recompute_user_scores(&clickhouse, &[], &slack_time).await {
-        tracing::warn!("Failed to backfill user scores: {}", e);
+    match db::clickhouse_db::recompute_user_scores(&clickhouse, &[], &slack_time).await {
+        Ok(()) => tracing::info!("Startup Slack Time score backfill complete"),
+        Err(e) => tracing::warn!("Failed to backfill user scores: {}", e),
     }
 
     let cycle = Duration::from_secs(30 * 60);

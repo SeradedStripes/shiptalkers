@@ -286,19 +286,22 @@ pub async fn recompute_user_scores(
     user_ids: &[String],
     formula: &crate::formula::Formula,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let ids: Vec<String> = if user_ids.is_empty() {
+    let full = user_ids.is_empty();
+    let ids: Vec<String> = if full {
         #[derive(Debug, Row, Deserialize)]
         struct UserRow {
             user_id: String,
         }
 
-        client
+        let ids = client
             .query("SELECT DISTINCT user_id FROM slack_messages")
             .fetch_all::<UserRow>()
             .await?
             .into_iter()
             .map(|r| r.user_id)
-            .collect()
+            .collect::<Vec<String>>();
+        tracing::info!("Backfilling Slack Time scores for all {} users", ids.len());
+        ids
     } else {
         let mut ids: Vec<String> = user_ids.to_vec();
         ids.sort();
@@ -306,12 +309,20 @@ pub async fn recompute_user_scores(
         ids
     };
 
+    let start = std::time::Instant::now();
     let mut done = 0usize;
     for chunk in ids.chunks(SCORE_RECOMPUTE_CHUNK) {
         done += recompute_user_scores_chunk(client, chunk, formula).await?;
+        if full {
+            tracing::debug!("Backfill progress: {}/{} users recomputed", done, ids.len());
+        }
     }
     if done > 0 {
-        tracing::info!("Recomputed Slack Time scores for {} users", done);
+        tracing::info!(
+            "Recomputed Slack Time scores for {} users in {:.1}s",
+            done,
+            start.elapsed().as_secs_f64()
+        );
     }
     Ok(())
 }
