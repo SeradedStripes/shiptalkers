@@ -215,6 +215,7 @@ pub fn router(
     };
 
     Router::new()
+        .route("/health", get(|| async { "ok" }))
         .route("/", get(get_index))
         .route("/link", get(auth::get_link))
         .route("/stats", get(get_stats_page))
