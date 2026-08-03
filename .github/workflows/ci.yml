@@ -46,7 +46,7 @@ jobs:
       - name: Cache Rust artifacts
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: ${{ runnner.os }}-rust-cache
+          shared-key: rust-cache
 
       - name: Check formatting
         run: cargo fmt --all -- --check
