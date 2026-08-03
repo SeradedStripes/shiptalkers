@@ -7,6 +7,7 @@ const CSS: &str = include_str!("website/static/slack_image_stats.css");
 
 const NAME_FONT_SIZE: f32 = 40.0;
 const NAME_MAX_WIDTH: f32 = 580.0;
+const IMAGE_SCALE: f32 = 1.2;
 
 pub struct StatsImage<'a> {
     pub user: &'a str,
@@ -73,11 +74,15 @@ pub fn render_stats_image(s: &StatsImage) -> Result<Vec<u8>, String> {
 
     let tree = usvg::Tree::from_str(&svg, &opt).map_err(|e| format!("svg parse error: {e}"))?;
     let size = tree.size();
-    let width = size.width().round() as u32;
-    let height = size.height().round() as u32;
+    let width = (size.width() * IMAGE_SCALE).round() as u32;
+    let height = (size.height() * IMAGE_SCALE).round() as u32;
 
     let mut pixmap = tiny_skia::Pixmap::new(width, height).ok_or("failed to allocate pixmap")?;
-    resvg::render(&tree, tiny_skia::Transform::default(), &mut pixmap.as_mut());
+    resvg::render(
+        &tree,
+        tiny_skia::Transform::from_scale(IMAGE_SCALE, IMAGE_SCALE),
+        &mut pixmap.as_mut(),
+    );
     pixmap
         .encode_png()
         .map_err(|e| format!("png encode error: {e}"))
