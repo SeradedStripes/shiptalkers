@@ -5,9 +5,79 @@ use axum::response::Html;
 use axum::{Router, routing::get};
 use clickhouse::Client;
 use std::collections::HashMap;
+use std::future::Future;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+use tokio::sync::Mutex;
 use tower_http::services::ServeDir;
 
 pub mod auth;
+
+struct TtlValue<T> {
+    value: T,
+    expires_at: Instant,
+}
+
+struct TtlCache<T> {
+    inner: Mutex<Option<TtlValue<T>>>,
+    ttl: Duration,
+}
+
+impl<T> TtlCache<T> {
+    fn new(ttl: Duration) -> Self {
+        Self {
+            inner: Mutex::new(None),
+            ttl,
+        }
+    }
+
+    async fn get_or<F>(&self, compute: F) -> T
+    where
+        T: Clone,
+        F: Future<Output = T>,
+    {
+        let mut guard = self.inner.lock().await;
+        if let Some(cached) = guard.as_ref()
+            && cached.expires_at > Instant::now()
+        {
+            return cached.value.clone();
+        }
+        let value = compute.await;
+        *guard = Some(TtlValue {
+            value: value.clone(),
+            expires_at: Instant::now() + self.ttl,
+        });
+        value
+    }
+}
+
+#[derive(Clone)]
+pub struct AppCache {
+    banner: Arc<TtlCache<String>>,
+    stats: Arc<TtlCache<StatsSnapshot>>,
+    talkers: Arc<TtlCache<Vec<(String, i64, Option<i64>)>>>,
+}
+
+impl AppCache {
+    fn new() -> Self {
+        Self {
+            banner: Arc::new(TtlCache::new(Duration::from_secs(60))),
+            stats: Arc::new(TtlCache::new(Duration::from_secs(60))),
+            talkers: Arc::new(TtlCache::new(Duration::from_secs(300))),
+        }
+    }
+}
+
+#[derive(Clone)]
+struct StatsSnapshot {
+    total_messages: u64,
+    active_users: u64,
+    channels_tracked: u64,
+    total_channels: u64,
+    total_users: u64,
+    coding_minutes: u64,
+    db_size_bytes: u64,
+}
 
 #[derive(Clone)]
 pub struct AppState {
@@ -16,6 +86,7 @@ pub struct AppState {
     pub http: reqwest::Client,
     pub slack_time: crate::formula::Formula,
     pub auth_db: std::sync::Arc<crate::db::sqlite::AuthDb>,
+    pub cache: AppCache,
 }
 
 #[derive(Template)]
@@ -140,6 +211,7 @@ pub fn router(
         http: reqwest::Client::new(),
         slack_time,
         auth_db,
+        cache: AppCache::new(),
     };
 
     Router::new()
@@ -197,63 +269,69 @@ fn fmt_thousands(n: u64) -> String {
 }
 
 async fn scrape_banner_html(state: &AppState) -> String {
-    let ch = &state.clickhouse;
-    let total_channels: u64 = ch
-        .query("SELECT count() FROM slack_channels FINAL")
-        .fetch_one()
-        .await
-        .unwrap_or(0);
-    let scraped_channels: u64 = ch
-        .query("SELECT count() FROM scraped_channels")
-        .fetch_one()
-        .await
-        .unwrap_or(0);
-    if total_channels == 0 || scraped_channels >= total_channels {
-        return String::new();
-    }
-    let total_messages: u64 = ch
-        .query("SELECT count() FROM slack_messages FINAL")
-        .fetch_one()
-        .await
-        .unwrap_or(0);
-    let active_users: u64 = ch
-        .query("SELECT uniqExact(user_id) FROM slack_messages")
-        .fetch_one()
-        .await
-        .unwrap_or(0);
-    let total_users: u64 = ch
-        .query("SELECT count() FROM users FINAL")
-        .fetch_one()
-        .await
-        .unwrap_or(0);
+    state
+        .cache
+        .banner
+        .get_or(async {
+            let ch = &state.clickhouse;
+            let total_channels: u64 = ch
+                .query("SELECT count() FROM slack_channels FINAL")
+                .fetch_one()
+                .await
+                .unwrap_or(0);
+            let scraped_channels: u64 = ch
+                .query("SELECT count() FROM scraped_channels")
+                .fetch_one()
+                .await
+                .unwrap_or(0);
+            if total_channels == 0 || scraped_channels >= total_channels {
+                return String::new();
+            }
+            let total_messages: u64 = ch
+                .query("SELECT count() FROM slack_messages")
+                .fetch_one()
+                .await
+                .unwrap_or(0);
+            let active_users: u64 = ch
+                .query("SELECT uniqExact(user_id) FROM slack_messages")
+                .fetch_one()
+                .await
+                .unwrap_or(0);
+            let total_users: u64 = ch
+                .query("SELECT count() FROM users FINAL")
+                .fetch_one()
+                .await
+                .unwrap_or(0);
 
-    let channel_frac = scraped_channels as f64 / total_channels as f64;
-    let user_frac = if total_users > 0 {
-        active_users as f64 / total_users as f64
-    } else {
-        1.0
-    };
-    let coverage = (channel_frac + user_frac) / 2.0;
-    let scrape_pct_done = (coverage * 100.0).round().clamp(0.0, 100.0) as u64;
-    let scrape_pct_left = 100 - scrape_pct_done;
-    let messages_estimate = if coverage > 0.0 {
-        (total_messages as f64 / coverage).round() as u64
-    } else {
-        total_messages
-    };
+            let channel_frac = scraped_channels as f64 / total_channels as f64;
+            let user_frac = if total_users > 0 {
+                active_users as f64 / total_users as f64
+            } else {
+                1.0
+            };
+            let coverage = (channel_frac + user_frac) / 2.0;
+            let scrape_pct_done = (coverage * 100.0).round().clamp(0.0, 100.0) as u64;
+            let scrape_pct_left = 100 - scrape_pct_done;
+            let messages_estimate = if coverage > 0.0 {
+                (total_messages as f64 / coverage).round() as u64
+            } else {
+                total_messages
+            };
 
-    format!(
-        r#"<div class="scrape-banner"><div>Scraping in progress: {}/{} channels ({}% complete, about {}% left, {}/{} users)</div><div class="scrape-progress"><div class="scrape-progress-fill" style="width: {}%"></div></div><div>{} of ~{} estimated messages</div></div>"#,
-        fmt_thousands(scraped_channels),
-        fmt_thousands(total_channels),
-        scrape_pct_done,
-        scrape_pct_left,
-        fmt_thousands(active_users),
-        fmt_thousands(total_users),
-        scrape_pct_done,
-        fmt_thousands(total_messages),
-        fmt_thousands(messages_estimate),
-    )
+            format!(
+                r#"<div class="scrape-banner"><div>Scraping in progress: {}/{} channels ({}% complete, about {}% left, {}/{} users)</div><div class="scrape-progress"><div class="scrape-progress-fill" style="width: {}%"></div></div><div>{} of ~{} estimated messages</div></div>"#,
+                fmt_thousands(scraped_channels),
+                fmt_thousands(total_channels),
+                scrape_pct_done,
+                scrape_pct_left,
+                fmt_thousands(active_users),
+                fmt_thousands(total_users),
+                scrape_pct_done,
+                fmt_thousands(total_messages),
+                fmt_thousands(messages_estimate),
+            )
+        })
+        .await
 }
 
 async fn get_index(
@@ -426,73 +504,77 @@ async fn get_leaderboard_category(
                 total_chars: u64,
             }
 
-            let rows: Vec<TalkerRow> = ch
-                .query(
-                    "WITH
-                     msg AS (
-                         SELECT user_id, toInt64(splitByChar('.', message_ts)[1]) AS ts
-                         FROM slack_messages FINAL
-                     ),
-                     flagged AS (
-                         SELECT user_id, ts,
-                             if(ts - lag(ts) OVER (PARTITION BY user_id ORDER BY ts) > 2100, 1, 0) AS boundary
-                         FROM msg
-                     ),
-                     sess AS (
-                         SELECT user_id, ts,
-                             sum(boundary) OVER (PARTITION BY user_id ORDER BY ts) AS sid
-                         FROM flagged
-                     ),
-                     sessions AS (
-                         SELECT user_id, sid, min(ts) AS start_ts, max(ts) AS end_ts, count() AS msg_count
-                         FROM sess
-                         GROUP BY user_id, sid
-                     )
-                     SELECT user_id,
-                            sum(least(end_ts + 300 - start_ts, 14400)) AS total_time,
-                            sum(msg_count) AS messages,
-                            count() AS sessions
-                     FROM sessions
-                     GROUP BY user_id",
-                )
-                .fetch_all()
-                .await
-                .unwrap_or_default();
-            let chars: Vec<CharRow> = ch
-                .query(
-                    "SELECT user_id, sum(char_length(text)) AS total_chars
-                     FROM slack_messages FINAL
-                     GROUP BY user_id",
-                )
-                .fetch_all()
-                .await
-                .unwrap_or_default();
-            let char_map: std::collections::HashMap<String, u64> = chars
-                .into_iter()
-                .map(|r| (r.user_id, r.total_chars))
-                .collect();
+            let ranked = state.cache.talkers.get_or(async {
+                let rows: Vec<TalkerRow> = ch
+                    .query(
+                        "WITH
+                         msg AS (
+                             SELECT user_id, toInt64(splitByChar('.', message_ts)[1]) AS ts
+                             FROM slack_messages
+                         ),
+                         flagged AS (
+                             SELECT user_id, ts,
+                                 if(ts - lag(ts) OVER (PARTITION BY user_id ORDER BY ts) > 2100, 1, 0) AS boundary
+                             FROM msg
+                         ),
+                         sess AS (
+                             SELECT user_id, ts,
+                                 sum(boundary) OVER (PARTITION BY user_id ORDER BY ts) AS sid
+                             FROM flagged
+                         ),
+                         sessions AS (
+                             SELECT user_id, sid, min(ts) AS start_ts, max(ts) AS end_ts, count() AS msg_count
+                             FROM sess
+                             GROUP BY user_id, sid
+                         )
+                         SELECT user_id,
+                                sum(least(end_ts + 300 - start_ts, 14400)) AS total_time,
+                                sum(msg_count) AS messages,
+                                count() AS sessions
+                         FROM sessions
+                         GROUP BY user_id",
+                    )
+                    .fetch_all()
+                    .await
+                    .unwrap_or_default();
+                let chars: Vec<CharRow> = ch
+                    .query(
+                        "SELECT user_id, sum(char_length(text)) AS total_chars
+                         FROM slack_messages
+                         GROUP BY user_id",
+                    )
+                    .fetch_all()
+                    .await
+                    .unwrap_or_default();
+                let char_map: std::collections::HashMap<String, u64> = chars
+                    .into_iter()
+                    .map(|r| (r.user_id, r.total_chars))
+                    .collect();
 
-            let mut ranked: Vec<(String, i64, Option<i64>)> = rows
-                .into_iter()
-                .map(|r| {
-                    let total_chars = char_map.get(&r.user_id).copied().unwrap_or(0);
-                    let avg_length = if r.messages > 0 {
-                        total_chars as f64 / r.messages as f64
-                    } else {
-                        0.0
-                    };
-                    let score = state.slack_time.eval(&crate::formula::Metrics {
-                        message_count: r.messages,
-                        session_seconds: r.total_time,
-                        session_count: r.sessions,
-                        avg_message_length: avg_length,
-                        total_chars,
-                    });
-                    (r.user_id, score.max(0.0) as i64, Some(r.messages as i64))
-                })
-                .collect();
-            ranked.sort_by_key(|r| std::cmp::Reverse(r.1));
-            ranked.truncate(100);
+                let mut ranked: Vec<(String, i64, Option<i64>)> = rows
+                    .into_iter()
+                    .map(|r| {
+                        let total_chars = char_map.get(&r.user_id).copied().unwrap_or(0);
+                        let avg_length = if r.messages > 0 {
+                            total_chars as f64 / r.messages as f64
+                        } else {
+                            0.0
+                        };
+                        let score = state.slack_time.eval(&crate::formula::Metrics {
+                            message_count: r.messages,
+                            session_seconds: r.total_time,
+                            session_count: r.sessions,
+                            avg_message_length: avg_length,
+                            total_chars,
+                        });
+                        (r.user_id, score.max(0.0) as i64, Some(r.messages as i64))
+                    })
+                    .collect();
+                ranked.sort_by_key(|r| std::cmp::Reverse(r.1));
+                ranked.truncate(100);
+                ranked
+            })
+            .await;
             (
                 "Top Talkers".into(),
                 "Slack Time".into(),
@@ -637,7 +719,7 @@ async fn get_user_stats(
         .unwrap_or_default();
 
     let total_messages: u64 = ch
-        .query("SELECT count() FROM slack_messages FINAL WHERE user_id = ?")
+        .query("SELECT count() FROM slack_messages WHERE user_id = ?")
         .bind(slack_id)
         .fetch_one()
         .await
@@ -658,28 +740,28 @@ async fn get_user_stats(
         .unwrap_or(0);
 
     let channels: u64 = ch
-        .query("SELECT uniqExact(channel_id) FROM slack_messages FINAL WHERE user_id = ?")
+        .query("SELECT uniqExact(channel_id) FROM slack_messages WHERE user_id = ?")
         .bind(slack_id)
         .fetch_one()
         .await
         .unwrap_or(0);
 
     let total_chars: u64 = ch
-        .query("SELECT sum(char_length(text)) FROM slack_messages FINAL WHERE user_id = ?")
+        .query("SELECT sum(char_length(text)) FROM slack_messages WHERE user_id = ?")
         .bind(slack_id)
         .fetch_one()
         .await
         .unwrap_or(0);
 
     let last_ts: String = ch
-        .query("SELECT max(message_ts) FROM slack_messages FINAL WHERE user_id = ?")
+        .query("SELECT max(message_ts) FROM slack_messages WHERE user_id = ?")
         .bind(slack_id)
         .fetch_one()
         .await
         .unwrap_or_default();
 
     let first_ts: String = ch
-        .query("SELECT min(message_ts) FROM slack_messages FINAL WHERE user_id = ?")
+        .query("SELECT min(message_ts) FROM slack_messages WHERE user_id = ?")
         .bind(slack_id)
         .fetch_one()
         .await
@@ -694,7 +776,7 @@ async fn get_user_stats(
     let counts: Vec<ChannelCount> = ch
         .query(
             "SELECT channel_id, count() as messages
-             FROM slack_messages FINAL
+             FROM slack_messages
              WHERE user_id = ?
              GROUP BY channel_id
              ORDER BY messages DESC
@@ -764,7 +846,7 @@ async fn get_user_stats(
                     "WITH
                      msg AS (
                          SELECT toInt64(splitByChar('.', message_ts)[1]) AS ts
-                         FROM slack_messages FINAL
+                         FROM slack_messages
                          WHERE user_id = ?
                      ),
                      flagged AS (
@@ -817,7 +899,7 @@ async fn get_user_stats(
             let hour: HourRow = ch
                 .query(
                     "SELECT toHour(toDateTime(toInt64(splitByChar('.', message_ts)[1]))) AS hour
-                     FROM slack_messages FINAL
+                     FROM slack_messages
                      WHERE user_id = ?
                      GROUP BY hour
                      ORDER BY count() DESC
@@ -889,28 +971,28 @@ async fn get_channel_stats(
         .unwrap_or_default();
 
     let total_messages: u64 = ch
-        .query("SELECT count() FROM slack_messages FINAL WHERE channel_id = ?")
+        .query("SELECT count() FROM slack_messages WHERE channel_id = ?")
         .bind(channel_id)
         .fetch_one()
         .await
         .unwrap_or(0);
 
     let active_users: u64 = ch
-        .query("SELECT uniqExact(user_id) FROM slack_messages FINAL WHERE channel_id = ?")
+        .query("SELECT uniqExact(user_id) FROM slack_messages WHERE channel_id = ?")
         .bind(channel_id)
         .fetch_one()
         .await
         .unwrap_or(0);
 
     let last_ts: String = ch
-        .query("SELECT max(message_ts) FROM slack_messages FINAL WHERE channel_id = ?")
+        .query("SELECT max(message_ts) FROM slack_messages WHERE channel_id = ?")
         .bind(channel_id)
         .fetch_one()
         .await
         .unwrap_or_default();
 
     let first_ts: String = ch
-        .query("SELECT min(message_ts) FROM slack_messages FINAL WHERE channel_id = ?")
+        .query("SELECT min(message_ts) FROM slack_messages WHERE channel_id = ?")
         .bind(channel_id)
         .fetch_one()
         .await
@@ -925,7 +1007,7 @@ async fn get_channel_stats(
     let posters: Vec<PosterRow> = ch
         .query(
             "SELECT user_id, count() as messages
-             FROM slack_messages FINAL
+             FROM slack_messages
              WHERE channel_id = ?
              GROUP BY user_id
              ORDER BY messages DESC
@@ -998,9 +1080,36 @@ async fn get_channel_stats(
 }
 
 async fn load_stats(state: &AppState, headers: &HeaderMap) -> Stats {
+    let snapshot = state
+        .cache
+        .stats
+        .get_or(async { compute_stats(state).await })
+        .await;
+
+    let db_size_gib = snapshot.db_size_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
+    let db_size_label = format!(
+        "{:.prec$} GiB",
+        db_size_gib,
+        prec = if db_size_gib < 1.0 { 5 } else { 2 }
+    );
+
+    Stats {
+        total_messages: fmt_thousands(snapshot.total_messages),
+        active_users: fmt_thousands(snapshot.active_users),
+        channels_tracked: fmt_thousands(snapshot.channels_tracked),
+        total_channels: fmt_thousands(snapshot.total_channels),
+        total_users: fmt_thousands(snapshot.total_users),
+        coding_minutes: fmt_thousands(snapshot.coding_minutes),
+        db_size_label,
+        scrape_banner: scrape_banner_html(state).await,
+        signed_in: auth::session_from_request(headers, &state.auth).is_some(),
+    }
+}
+
+async fn compute_stats(state: &AppState) -> StatsSnapshot {
     let ch = &state.clickhouse;
     let total_messages: u64 = ch
-        .query("SELECT count() FROM slack_messages FINAL")
+        .query("SELECT count() FROM slack_messages")
         .fetch_one()
         .await
         .unwrap_or(0);
@@ -1047,23 +1156,14 @@ async fn load_stats(state: &AppState, headers: &HeaderMap) -> Stats {
         .await
         .unwrap_or(0);
 
-    let db_size_gib = db_size_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
-    let db_size_label = format!(
-        "{:.prec$} GiB",
-        db_size_gib,
-        prec = if db_size_gib < 1.0 { 5 } else { 2 }
-    );
-
-    Stats {
-        total_messages: fmt_thousands(total_messages),
-        active_users: fmt_thousands(active_users),
-        channels_tracked: fmt_thousands(channels_tracked),
-        total_channels: fmt_thousands(total_channels),
-        total_users: fmt_thousands(total_users),
-        coding_minutes: fmt_thousands(coding_minutes),
-        db_size_label,
-        scrape_banner: scrape_banner_html(state).await,
-        signed_in: auth::session_from_request(headers, &state.auth).is_some(),
+    StatsSnapshot {
+        total_messages,
+        active_users,
+        channels_tracked,
+        total_channels,
+        total_users,
+        coding_minutes,
+        db_size_bytes,
     }
 }
 

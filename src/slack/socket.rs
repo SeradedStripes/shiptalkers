@@ -409,7 +409,7 @@ async fn query_slack_seconds(
         "WITH
          msg AS (
              SELECT toInt64(splitByChar('.', message_ts)[1]) AS ts
-             FROM slack_messages FINAL
+             FROM slack_messages
              WHERE user_id = ?",
     );
     if range.start_ts().is_some() {
