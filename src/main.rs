@@ -301,42 +301,20 @@ async fn run_scraper(
 ) -> Result<(), String> {
     let bot_pool = slack::SlackClientPool::new(bot_tokens, request_delay, max_inflight);
 
-    let existing = db::clickhouse_db::get_known_channel_ids(&clickhouse)
-        .await
-        .map_err(|e| e.to_string())?;
-
-    if existing.is_empty() {
-        tracing::info!("No channels in ClickHouse, fetching all from Slack...");
-        full_fetch(&bot_pool, &clickhouse).await?;
-    } else {
-        tracing::info!(
-            "{} channels already in ClickHouse, skipping initial fetch",
-            existing.len()
-        );
-    }
+    let cycle = Duration::from_secs(30 * 60);
+    let mut last_optimize = std::time::Instant::now();
 
     if slack_user_tokens.is_empty() {
         tracing::warn!("No SLACK_USER_TOKENS set, message scraping disabled");
-    } else {
-        tracing::info!(
-            "Starting message scraper with {} user token(s)...",
-            slack_user_tokens.len()
-        );
-        scrape_all_messages(
-            &slack_user_tokens,
-            &clickhouse,
-            request_delay,
-            max_inflight,
-            channel_concurrency,
-        )
-        .await;
     }
 
-    tracing::info!("Will do a full rescan and rescrape every 24 hours");
     loop {
-        tokio::time::sleep(std::time::Duration::from_secs(86400)).await;
-        tracing::info!("24hr rescan starting...");
-        full_fetch(&bot_pool, &clickhouse).await?;
+        let cycle_start = std::time::Instant::now();
+
+        if let Err(e) = full_fetch(&bot_pool, &clickhouse).await {
+            tracing::warn!("Failed to fetch channel list: {}", e);
+        }
+
         if !slack_user_tokens.is_empty() {
             scrape_all_messages(
                 &slack_user_tokens,
@@ -347,8 +325,28 @@ async fn run_scraper(
             )
             .await;
         }
-        if let Err(e) = db::clickhouse_db::optimize_slack_messages(&clickhouse).await {
-            tracing::warn!("Failed to optimize slack_messages: {}", e);
+
+        if last_optimize.elapsed() >= Duration::from_secs(86400) {
+            if let Err(e) = db::clickhouse_db::optimize_slack_messages(&clickhouse).await {
+                tracing::warn!("Failed to optimize slack_messages: {}", e);
+            }
+            last_optimize = std::time::Instant::now();
+        }
+
+        let elapsed = cycle_start.elapsed();
+        if elapsed < cycle {
+            let wait = cycle.saturating_sub(elapsed);
+            tracing::info!(
+                "Scrape cycle done in {:.0}s, sleeping {:.0}s until next cycle",
+                elapsed.as_secs_f64(),
+                wait.as_secs_f64()
+            );
+            tokio::time::sleep(wait).await;
+        } else {
+            tracing::info!(
+                "Scrape cycle took {:.0}s (longer than 30m), starting next cycle immediately",
+                elapsed.as_secs_f64()
+            );
         }
     }
 }
