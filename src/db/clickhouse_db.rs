@@ -344,7 +344,6 @@ async fn recompute_user_scores_chunk(
     struct MetricsRow {
         user_id: String,
         total_time: u64,
-        messages: u64,
         sessions: u64,
     }
 
@@ -368,13 +367,12 @@ async fn recompute_user_scores_chunk(
                  FROM flagged
              ),
              sessions AS (
-                 SELECT user_id, sid, min(ts) AS start_ts, max(ts) AS end_ts, count() AS msg_count
+                 SELECT user_id, sid, min(ts) AS start_ts, max(ts) AS end_ts
                  FROM sess
                  GROUP BY user_id, sid
              )
              SELECT user_id,
                     sum(least(end_ts + 300 - start_ts, 14400)) AS total_time,
-                    sum(msg_count) AS messages,
                     count() AS sessions
              FROM sessions
              GROUP BY user_id
@@ -383,6 +381,28 @@ async fn recompute_user_scores_chunk(
         ))
         .fetch_all()
         .await?;
+
+    #[derive(Debug, Row, Deserialize)]
+    struct CountRow {
+        user_id: String,
+        messages: u64,
+    }
+
+    let counts: Vec<CountRow> = client
+        .query(&format!(
+            "SELECT user_id, count() AS messages
+             FROM slack_messages
+             {}
+             GROUP BY user_id",
+            where_clause
+        ))
+        .fetch_all()
+        .await?;
+
+    let count_map: HashMap<String, u64> = counts
+        .into_iter()
+        .map(|r| (r.user_id, r.messages))
+        .collect();
 
     #[derive(Debug, Row, Deserialize)]
     struct CharRow {
@@ -425,15 +445,16 @@ async fn recompute_user_scores_chunk(
     let rows: Vec<ScoreRow> = metrics
         .into_iter()
         .map(|m| {
+            let messages = count_map.get(&m.user_id).copied().unwrap_or(0);
             let total_chars = char_map.get(&m.user_id).copied().unwrap_or(0);
-            let avg_length = if m.messages > 0 {
-                total_chars as f64 / m.messages as f64
+            let avg_length = if messages > 0 {
+                total_chars as f64 / messages as f64
             } else {
                 0.0
             };
             let score = formula
                 .eval(&crate::formula::Metrics {
-                    message_count: m.messages,
+                    message_count: messages,
                     session_seconds: m.total_time,
                     session_count: m.sessions,
                     avg_message_length: avg_length,
@@ -444,7 +465,7 @@ async fn recompute_user_scores_chunk(
                 user_id: m.user_id,
                 score,
                 total_time: m.total_time,
-                messages: m.messages,
+                messages,
                 sessions: m.sessions,
                 total_chars,
                 updated,

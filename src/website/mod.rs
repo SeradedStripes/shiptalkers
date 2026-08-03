@@ -441,13 +441,13 @@ async fn get_leaderboard_category(
             #[derive(clickhouse::Row, serde::Deserialize)]
             struct ScoreRow {
                 user_id: String,
-                total_time: u64,
+                score: i64,
                 messages: u64,
             }
 
             let rows: Vec<ScoreRow> = match ch
                 .query(
-                    "SELECT user_id, total_time, messages
+                    "SELECT user_id, score, messages
                      FROM user_scores FINAL
                      ORDER BY score DESC
                      LIMIT 100",
@@ -463,7 +463,7 @@ async fn get_leaderboard_category(
             };
             let ranked: Vec<(String, i64, Option<i64>)> = rows
                 .into_iter()
-                .map(|r| (r.user_id, r.total_time as i64, Some(r.messages as i64)))
+                .map(|r| (r.user_id, r.score, Some(r.messages as i64)))
                 .collect();
             (
                 "Top Talkers".into(),
