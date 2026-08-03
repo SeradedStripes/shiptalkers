@@ -285,7 +285,7 @@ pub async fn insert_messages(
 /// Recomputes Slack Time scores for the given users (or every user when `user_ids`
 /// is empty) and upserts them into `user_scores`. The leaderboard reads top 100
 /// from `user_scores`, so scores only need to be refreshed when new messages arrive.
-const SCORE_RECOMPUTE_CHUNK: usize = 100;
+const SCORE_RECOMPUTE_CHUNK: usize = 50;
 
 pub async fn recompute_user_scores(
     client: &Client,
@@ -395,7 +395,7 @@ async fn recompute_user_scores_chunk(
             "SELECT user_id, sum(char_length(text)) AS total_chars
              FROM slack_messages
              {}
-             GROUP BY user_id, channel_id, message_ts",
+             GROUP BY user_id",
             where_clause
         ))
         .fetch_all()
