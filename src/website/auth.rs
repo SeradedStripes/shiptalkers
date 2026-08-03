@@ -104,7 +104,6 @@ pub async fn get_link(
             .map(|s| s.slack_id.clone())
             .unwrap_or_default(),
         hackatime_connected,
-        scrape_banner: super::scrape_banner_html(&state).await,
     };
     let html = template
         .render()
@@ -119,7 +118,6 @@ struct LinkTemplate {
     name: String,
     slack_id: String,
     hackatime_connected: bool,
-    scrape_banner: String,
 }
 
 pub async fn auth_hackclub_login(

@@ -11,25 +11,6 @@ body {
 
 .site-header { background: #161616; border-bottom: 1px solid #262626; }
 
-.scrape-banner {
-    background: repeating-linear-gradient(45deg, #b8912e, #b8912e 12px, #a37f1f 12px, #a37f1f 24px);
-    color: #0f0f0f;
-    text-align: center;
-    padding: 0.75rem 1rem;
-    font-weight: 700;
-}
-.scrape-progress {
-    background: rgba(15, 15, 15, 0.25);
-    border-radius: 999px;
-    height: 0.5rem;
-    max-width: 30rem;
-    margin: 0.5rem auto;
-    overflow: hidden;
-}
-.scrape-progress-fill {
-    background: #0f0f0f;
-    height: 100%;
-}
 .site-header nav {
     max-width: 1000px;
     margin: 0 auto;

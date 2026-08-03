@@ -53,14 +53,12 @@ impl<T> TtlCache<T> {
 
 #[derive(Clone)]
 pub struct AppCache {
-    banner: Arc<TtlCache<String>>,
     stats: Arc<TtlCache<StatsSnapshot>>,
 }
 
 impl AppCache {
     fn new() -> Self {
         Self {
-            banner: Arc::new(TtlCache::new(Duration::from_secs(60))),
             stats: Arc::new(TtlCache::new(Duration::from_secs(60))),
         }
     }
@@ -91,7 +89,6 @@ pub struct AppState {
 #[template(path = "index.html")]
 pub struct IndexTemplate {
     pub signed_in: bool,
-    pub scrape_banner: String,
 }
 
 #[derive(Template)]
@@ -104,7 +101,6 @@ pub struct Stats {
     pub total_users: String,
     pub coding_minutes: String,
     pub db_size_label: String,
-    pub scrape_banner: String,
     pub signed_in: bool,
 }
 
@@ -127,7 +123,6 @@ pub struct UserTemplate {
     pub active_hour: String,
     pub top_channels: Vec<ChannelStats>,
     pub signed_in: bool,
-    pub scrape_banner: String,
     pub found: bool,
 }
 
@@ -148,7 +143,6 @@ pub struct ChannelTemplate {
     pub last_msg: String,
     pub top_posters: Vec<UserStats>,
     pub signed_in: bool,
-    pub scrape_banner: String,
     pub found: bool,
 }
 
@@ -159,14 +153,12 @@ pub struct SearchTemplate {
     pub results: Vec<SearchResult>,
     pub channels: Vec<SearchResult>,
     pub signed_in: bool,
-    pub scrape_banner: String,
 }
 
 #[derive(Template)]
 #[template(path = "leaderboard.html")]
 pub struct LeaderboardTemplate {
     pub signed_in: bool,
-    pub scrape_banner: String,
 }
 
 #[derive(Template)]
@@ -178,7 +170,6 @@ pub struct LeaderboardCategoryTemplate {
     pub rows: Vec<LeaderboardEntry>,
     pub coming_soon: bool,
     pub signed_in: bool,
-    pub scrape_banner: String,
 }
 
 pub struct LeaderboardEntry {
@@ -295,81 +286,12 @@ fn fmt_thousands(n: u64) -> String {
     out
 }
 
-async fn scrape_banner_html(state: &AppState) -> String {
-    state
-        .cache
-        .banner
-        .get_or(async {
-            let ch = &state.clickhouse;
-            let total_channels: u64 = ch
-                .query("SELECT count() FROM slack_channels FINAL")
-                .fetch_one()
-                .await
-                .unwrap_or(0);
-            let scraped_channels: u64 = ch
-                .query("SELECT count() FROM scraped_channels")
-                .fetch_one()
-                .await
-                .unwrap_or(0);
-            if total_channels == 0 || scraped_channels >= total_channels {
-                return String::new();
-            }
-            let total_messages: u64 = ch
-                .query("SELECT count() FROM slack_messages")
-                .fetch_one()
-                .await
-                .unwrap_or(0);
-            let active_users: u64 = ch
-                .query("SELECT uniqExact(user_id) FROM slack_messages")
-                .fetch_one()
-                .await
-                .unwrap_or(0);
-            let total_users: u64 = ch
-                .query("SELECT count() FROM users FINAL")
-                .fetch_one()
-                .await
-                .unwrap_or(0);
-
-            let channel_frac = scraped_channels as f64 / total_channels as f64;
-            let user_frac = if total_users > 0 {
-                active_users as f64 / total_users as f64
-            } else {
-                1.0
-            };
-            let coverage = (channel_frac + user_frac) / 2.0;
-            let scrape_pct_done = (coverage * 100.0).round().clamp(0.0, 100.0) as u64;
-            let scrape_pct_left = 100 - scrape_pct_done;
-            let messages_estimate = if coverage > 0.0 {
-                (total_messages as f64 / coverage).round() as u64
-            } else {
-                total_messages
-            };
-
-            format!(
-                r#"<div class="scrape-banner"><div>Scraping in progress: {}/{} channels ({}% complete, about {}% left, {}/{} users)</div><div class="scrape-progress"><div class="scrape-progress-fill" style="width: {}%"></div></div><div>{} of ~{} estimated messages</div></div>"#,
-                fmt_thousands(scraped_channels),
-                fmt_thousands(total_channels),
-                scrape_pct_done,
-                scrape_pct_left,
-                fmt_thousands(active_users),
-                fmt_thousands(total_users),
-                scrape_pct_done,
-                fmt_thousands(total_messages),
-                fmt_thousands(messages_estimate),
-            )
-        })
-        .await
-}
-
 async fn get_index(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Html<String>, StatusCode> {
     let signed_in = auth::session_from_request(&headers, &state.auth).is_some();
-    let template = IndexTemplate {
-        signed_in,
-        scrape_banner: scrape_banner_html(&state).await,
-    };
+    let template = IndexTemplate { signed_in };
     let html = template
         .render()
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -463,7 +385,6 @@ async fn get_search(
         results,
         channels,
         signed_in,
-        scrape_banner: scrape_banner_html(&state).await,
     };
     let html = template
         .render()
@@ -488,10 +409,7 @@ async fn get_leaderboard(
     headers: HeaderMap,
 ) -> Result<Html<String>, StatusCode> {
     let signed_in = auth::session_from_request(&headers, &state.auth).is_some();
-    let template = LeaderboardTemplate {
-        signed_in,
-        scrape_banner: scrape_banner_html(&state).await,
-    };
+    let template = LeaderboardTemplate { signed_in };
     let html = template
         .render()
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -599,7 +517,6 @@ async fn get_leaderboard_category(
         rows,
         coming_soon,
         signed_in,
-        scrape_banner: scrape_banner_html(&state).await,
     };
     let html = template
         .render()
@@ -966,7 +883,6 @@ async fn get_user_stats(
         active_hour,
         top_channels,
         signed_in,
-        scrape_banner: scrape_banner_html(state).await,
         found,
     };
     let html = template
@@ -1095,7 +1011,6 @@ async fn get_channel_stats(
         last_msg: fmt_ts_local(&last_ts),
         top_posters,
         signed_in,
-        scrape_banner: scrape_banner_html(state).await,
         found,
     };
     let html = template
@@ -1126,7 +1041,6 @@ async fn load_stats(state: &AppState, headers: &HeaderMap) -> Stats {
         total_users: fmt_thousands(snapshot.total_users),
         coding_minutes: fmt_thousands(snapshot.coding_minutes),
         db_size_label,
-        scrape_banner: scrape_banner_html(state).await,
         signed_in: auth::session_from_request(headers, &state.auth).is_some(),
     }
 }
