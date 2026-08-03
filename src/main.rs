@@ -674,6 +674,30 @@ async fn scrape_one_channel(
             m
         }
         Err(e) => {
+            if e.to_string().contains("channel_not_found") {
+                tracing::warn!(
+                    "[token {}][{}/{}] Channel {} no longer exists, skipping",
+                    token_idx,
+                    idx,
+                    total_channels,
+                    channel_id
+                );
+                if let Err(err) =
+                    db::clickhouse_db::mark_channel_scraped(clickhouse, &channel_id).await
+                {
+                    tracing::warn!(
+                        "[token {}][{}/{}] Failed to record {} as scraped: {}",
+                        token_idx,
+                        idx,
+                        total_channels,
+                        channel_id,
+                        err
+                    );
+                }
+                processed.fetch_add(1, Ordering::Relaxed);
+                let _ = tx.send(idx).await;
+                return;
+            }
             tracing::warn!(
                 "[token {}][{}/{}] Failed to scrape {}: {}",
                 token_idx,
