@@ -19,12 +19,12 @@
 /// Functions: `log10`, `ln`, `sqrt`, `exp`, `abs`, `pow`. Supports `+ - * / ()`,
 /// decimals, and implicit multiplication, e.g. `2MESSAGE_COUNT` or `log10(TOTAL_CHARS)`.
 ///
-/// Default formula: `SESSION_SECONDS + MESSAGE_COUNT * log10(AVG_MESSAGE_LENGTH + 1)`.
-/// Session time is the core estimate; the second term adds a small per-message
-/// reading time that grows with the log of average message length, so a flood of
-/// one-character replies barely counts while substantive messages do. The `+ 1`
-/// keeps the log defined for empty messages.
-
+/// Default formula: `SESSION_SECONDS + 0.08 * TOTAL_CHARS + 2 * MESSAGE_COUNT`.
+/// Session time is the core estimate; the second term adds 0.08 seconds per
+/// character typed plus a flat 2 seconds per message. It is linear, so the same
+/// amount of text scores the same however it is divided across messages: a
+/// logarithmic per-message term inflated the score for short fragmented replies,
+/// and this formula avoids that. The coefficients can be calibrated later.
 pub const SLACK_TIME_CALCULATION_FORMULA: &str = "\
     SESSION_SECONDS \
     + 0.08 * TOTAL_CHARS \
