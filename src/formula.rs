@@ -24,9 +24,11 @@
 /// reading time that grows with the log of average message length, so a flood of
 /// one-character replies barely counts while substantive messages do. The `+ 1`
 /// keeps the log defined for empty messages.
+
 pub const SLACK_TIME_CALCULATION_FORMULA: &str = "\
     SESSION_SECONDS \
-    + MESSAGE_COUNT * log10(AVG_MESSAGE_LENGTH + 1) \
+    + 0.08 * TOTAL_CHARS \
+    + 2 * MESSAGE_COUNT \
 ";
 
 /// Per-user inputs fed into the formula. Computed by the website from ClickHouse.
