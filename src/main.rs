@@ -221,8 +221,15 @@ fn insert_page(
             })
             .collect();
 
-        if let Err(e) = db::clickhouse_db::insert_new_channels(&clickhouse, &rows).await {
-            tracing::error!("Failed to insert channels: {}", e);
+        match tokio::time::timeout(
+            Duration::from_secs(120),
+            db::clickhouse_db::insert_new_channels(&clickhouse, &rows),
+        )
+        .await
+        {
+            Ok(Ok(_)) => {}
+            Ok(Err(e)) => tracing::error!("Failed to insert channels: {}", e),
+            Err(_) => tracing::error!("Failed to insert channels: timed out after 2m"),
         }
     })
 }
@@ -585,6 +592,7 @@ async fn scrape_shard(
         }
     });
 
+    let channel_timeout = Duration::from_secs(25 * 60);
     let mut handles = Vec::with_capacity(channels.len());
     for (i, channel_id) in channels.iter().enumerate() {
         let permit = sem.clone();
@@ -592,9 +600,23 @@ async fn scrape_shard(
         let clickhouse = clickhouse.clone();
         let channel_id = channel_id.clone();
         let ctx = ctx.clone();
+        let ch_id = channel_id.clone();
         handles.push(tokio::spawn(async move {
             let _permit = permit.acquire().await;
-            scrape_one_channel(&client, &clickhouse, channel_id, i + 1, ctx).await;
+            if tokio::time::timeout(
+                channel_timeout,
+                scrape_one_channel(&client, &clickhouse, channel_id, i + 1, ctx),
+            )
+            .await
+            .is_err()
+            {
+                tracing::warn!(
+                    "[token {}] Channel {} timed out after {}s, skipping",
+                    token_idx,
+                    ch_id,
+                    channel_timeout.as_secs()
+                );
+            }
         }));
     }
     drop(tx);

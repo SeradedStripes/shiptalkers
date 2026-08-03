@@ -30,7 +30,7 @@ Scrapes every public channel and thread reply from Hack Club Slack into ClickHou
 
 ## Architecture
 
-- `src/main.rs` - entry point, env parsing, scraper orchestration; message scrape cycles run every 30 minutes, pacing a full pass over every channel (round-robin across user tokens) to the 30m boundary before repeating
+- `src/main.rs` - entry point, env parsing, scraper orchestration; message scrape cycles run every 30 minutes, pacing a full pass over every channel (round-robin across user tokens) to the 30m boundary before repeating. Per-channel tasks are wrapped in a 25m timeout and `conversations.list` page inserts in a 2m timeout, so a stalled ClickHouse call can never wedge a pass or cycle
 - `src/slack/mod.rs` - SlackClient, per-method FIFO token-bucket rate limiter, 429 backoff; SlackClientPool round-robins `conversations.list` / `users.list` pages across bot tokens (one SlackClient per token)
 - `src/slack/socket.rs` - Slack Socket Mode (app events) via tokio-tungstenite; one connection per `SLACK_APP_TOKENS` app, message events sharded across apps so only one replies; stats bot replies to top-level messages in `SLACK_MAIN_CHANNEL` in a thread, via `chat.postMessage`, with a PNG card uploaded via `files.getUploadURLExternal` + `files.completeUploadExternal`. Replies always use the first `SLACK_BOT_TOKENS` entry (the main bot)
 - `src/bot_image.rs` - renders the stats card SVG (`templates/slack_image.html` + `src/website/static/slack_image_stats.css`) to PNG via resvg/usvg, with bundled DejaVu fonts
