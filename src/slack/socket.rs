@@ -342,20 +342,14 @@ async fn handle_message(
 
     let (percent, more, other) = if slack_seconds >= coding_seconds {
         let percent = if coding_seconds > 0 {
-            (slack_seconds - coding_seconds)
-                .checked_div(coding_seconds)
-                .unwrap_or(100)
-                * 100
+            ((slack_seconds as f64 / coding_seconds as f64 - 1.0) * 100.0).round() as u64
         } else {
             100
         };
         (percent, "Slack", "Coding")
     } else {
         let percent = if slack_seconds > 0 {
-            (coding_seconds - slack_seconds)
-                .checked_div(slack_seconds)
-                .unwrap_or(100)
-                * 100
+            ((coding_seconds as f64 / slack_seconds as f64 - 1.0) * 100.0).round() as u64
         } else {
             100
         };
