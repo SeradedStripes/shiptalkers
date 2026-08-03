@@ -133,6 +133,22 @@ pub async fn init_tables(client: &Client) -> Result<(), Box<dyn std::error::Erro
 
     client
         .query(
+            "CREATE TABLE IF NOT EXISTS user_scores (
+                user_id String,
+                score Int64,
+                total_time UInt64,
+                messages UInt64,
+                sessions UInt64,
+                total_chars UInt64,
+                updated UInt64
+            ) ENGINE = ReplacingMergeTree(updated)
+            ORDER BY user_id",
+        )
+        .execute()
+        .await?;
+
+    client
+        .query(
             "CREATE TABLE IF NOT EXISTS hackatime_connections (
                 slack_id String,
                 access_token String,
@@ -258,6 +274,181 @@ pub async fn insert_messages(
     }
     insert.end().await?;
     Ok(count)
+}
+
+/// Recomputes Slack Time scores for the given users (or every user when `user_ids`
+/// is empty) and upserts them into `user_scores`. The leaderboard reads top 100
+/// from `user_scores`, so scores only need to be refreshed when new messages arrive.
+const SCORE_RECOMPUTE_CHUNK: usize = 100;
+
+pub async fn recompute_user_scores(
+    client: &Client,
+    user_ids: &[String],
+    formula: &crate::formula::Formula,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let ids: Vec<String> = if user_ids.is_empty() {
+        #[derive(Debug, Row, Deserialize)]
+        struct UserRow {
+            user_id: String,
+        }
+
+        client
+            .query("SELECT DISTINCT user_id FROM slack_messages")
+            .fetch_all::<UserRow>()
+            .await?
+            .into_iter()
+            .map(|r| r.user_id)
+            .collect()
+    } else {
+        let mut ids: Vec<String> = user_ids.to_vec();
+        ids.sort();
+        ids.dedup();
+        ids
+    };
+
+    let mut done = 0usize;
+    for chunk in ids.chunks(SCORE_RECOMPUTE_CHUNK) {
+        done += recompute_user_scores_chunk(client, chunk, formula).await?;
+    }
+    if done > 0 {
+        tracing::info!("Recomputed Slack Time scores for {} users", done);
+    }
+    Ok(())
+}
+
+async fn recompute_user_scores_chunk(
+    client: &Client,
+    ids: &[String],
+    formula: &crate::formula::Formula,
+) -> Result<usize, Box<dyn std::error::Error>> {
+    let where_clause = format!("WHERE user_id IN ('{}')", ids.join("', '"));
+
+    #[derive(Debug, Row, Deserialize)]
+    struct MetricsRow {
+        user_id: String,
+        total_time: u64,
+        messages: u64,
+        sessions: u64,
+    }
+
+    let metrics: Vec<MetricsRow> = client
+        .query(&format!(
+            "WITH
+             msg AS (
+                 SELECT user_id, toInt64(splitByChar('.', message_ts)[1]) AS ts
+                 FROM slack_messages
+                 {}
+                 GROUP BY user_id, ts
+             ),
+             flagged AS (
+                 SELECT user_id, ts,
+                     if(ts - lag(ts) OVER (PARTITION BY user_id ORDER BY ts) > 2100, 1, 0) AS boundary
+                 FROM msg
+             ),
+             sess AS (
+                 SELECT user_id, ts,
+                     sum(boundary) OVER (PARTITION BY user_id ORDER BY ts) AS sid
+                 FROM flagged
+             ),
+             sessions AS (
+                 SELECT user_id, sid, min(ts) AS start_ts, max(ts) AS end_ts, count() AS msg_count
+                 FROM sess
+                 GROUP BY user_id, sid
+             )
+             SELECT user_id,
+                    sum(least(end_ts + 300 - start_ts, 14400)) AS total_time,
+                    sum(msg_count) AS messages,
+                    count() AS sessions
+             FROM sessions
+             GROUP BY user_id
+             SETTINGS max_bytes_before_external_sort = 268435456",
+            where_clause
+        ))
+        .fetch_all()
+        .await?;
+
+    #[derive(Debug, Row, Deserialize)]
+    struct CharRow {
+        user_id: String,
+        total_chars: u64,
+    }
+
+    let chars: Vec<CharRow> = client
+        .query(&format!(
+            "SELECT user_id, sum(char_length(text)) AS total_chars
+             FROM (
+                 SELECT any(user_id) AS user_id, any(text) AS text
+                 FROM slack_messages
+                 {}
+                 GROUP BY channel_id, message_ts
+             )
+             GROUP BY user_id",
+            where_clause
+        ))
+        .fetch_all()
+        .await?;
+
+    let char_map: HashMap<String, u64> = chars
+        .into_iter()
+        .map(|r| (r.user_id, r.total_chars))
+        .collect();
+
+    let updated = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    #[derive(Debug, Row, Serialize)]
+    struct ScoreRow {
+        user_id: String,
+        score: i64,
+        total_time: u64,
+        messages: u64,
+        sessions: u64,
+        total_chars: u64,
+        updated: u64,
+    }
+
+    let rows: Vec<ScoreRow> = metrics
+        .into_iter()
+        .map(|m| {
+            let total_chars = char_map.get(&m.user_id).copied().unwrap_or(0);
+            let avg_length = if m.messages > 0 {
+                total_chars as f64 / m.messages as f64
+            } else {
+                0.0
+            };
+            let score = formula
+                .eval(&crate::formula::Metrics {
+                    message_count: m.messages,
+                    session_seconds: m.total_time,
+                    session_count: m.sessions,
+                    avg_message_length: avg_length,
+                    total_chars,
+                })
+                .max(0.0) as i64;
+            ScoreRow {
+                user_id: m.user_id,
+                score,
+                total_time: m.total_time,
+                messages: m.messages,
+                sessions: m.sessions,
+                total_chars,
+                updated,
+            }
+        })
+        .collect();
+
+    if rows.is_empty() {
+        return Ok(0);
+    }
+
+    let mut insert = client.insert("user_scores")?;
+    for r in &rows {
+        insert.write(r).await?;
+    }
+    insert.end().await?;
+    Ok(rows.len())
 }
 
 pub async fn get_known_channel_ids(

@@ -72,12 +72,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let clickhouse_for_scraper = database.clickhouse.clone();
     let slack_bot_tokens_for_scraper = slack_bot_tokens.clone();
     let slack_user_tokens_for_scraper = slack_user_tokens.clone();
+    let slack_time_for_scraper = slack_time.clone();
 
     tokio::spawn(async move {
         if let Err(e) = run_scraper(
             clickhouse_for_scraper,
             slack_bot_tokens_for_scraper,
             slack_user_tokens_for_scraper,
+            slack_time_for_scraper,
             Duration::from_millis(slack_request_delay_ms),
             slack_max_inflight,
             slack_channel_concurrency,
@@ -302,11 +304,16 @@ async fn run_scraper(
     clickhouse: clickhouse::Client,
     bot_tokens: Vec<String>,
     slack_user_tokens: Vec<String>,
+    slack_time: formula::Formula,
     request_delay: Duration,
     max_inflight: usize,
     channel_concurrency: usize,
 ) -> Result<(), String> {
     let bot_pool = slack::SlackClientPool::new(bot_tokens, request_delay, max_inflight);
+
+    if let Err(e) = db::clickhouse_db::recompute_user_scores(&clickhouse, &[], &slack_time).await {
+        tracing::warn!("Failed to backfill user scores: {}", e);
+    }
 
     let cycle = Duration::from_secs(30 * 60);
     let mut last_optimize = std::time::Instant::now();
@@ -326,6 +333,7 @@ async fn run_scraper(
             scrape_all_messages(
                 &slack_user_tokens,
                 &clickhouse,
+                &slack_time,
                 request_delay,
                 max_inflight,
                 channel_concurrency,
@@ -361,6 +369,7 @@ async fn run_scraper(
 async fn scrape_all_messages(
     user_tokens: &[String],
     clickhouse: &clickhouse::Client,
+    slack_time: &formula::Formula,
     request_delay: Duration,
     max_inflight: usize,
     channel_concurrency: usize,
@@ -410,6 +419,7 @@ async fn scrape_all_messages(
             user_tokens,
             clickhouse,
             &new_channels,
+            slack_time,
             request_delay,
             max_inflight,
             channel_concurrency,
@@ -426,6 +436,7 @@ async fn scrape_all_messages(
             user_tokens,
             clickhouse,
             &check_channels,
+            slack_time,
             request_delay,
             max_inflight,
             channel_concurrency,
@@ -440,6 +451,7 @@ async fn scrape_channel_list(
     user_tokens: &[String],
     clickhouse: &clickhouse::Client,
     channels: &[String],
+    slack_time: &formula::Formula,
     request_delay: Duration,
     max_inflight: usize,
     channel_concurrency: usize,
@@ -495,21 +507,20 @@ async fn scrape_channel_list(
             .map(|(_, c)| c.clone())
             .collect();
 
+        let (tx, rx) = tokio::sync::mpsc::channel::<usize>(512);
+        let ctx = ShardCtx {
+            token_idx,
+            total_channels: shard.len(),
+            max_inflight,
+            channel_concurrency,
+            total: total.clone(),
+            processed: processed.clone(),
+            tx,
+            slack_time: slack_time.clone(),
+        };
         let clickhouse = clickhouse.clone();
-        let total = total.clone();
-        let processed = processed.clone();
         workers.push(tokio::spawn(async move {
-            scrape_shard(
-                &client,
-                &clickhouse,
-                &shard,
-                token_idx,
-                max_inflight,
-                channel_concurrency,
-                total,
-                processed,
-            )
-            .await;
+            scrape_shard(&client, &clickhouse, shard, ctx, rx).await;
         }));
     }
 
@@ -529,40 +540,36 @@ struct ShardCtx {
     token_idx: usize,
     total_channels: usize,
     max_inflight: usize,
+    channel_concurrency: usize,
     total: Arc<AtomicU64>,
     processed: Arc<AtomicU64>,
     tx: tokio::sync::mpsc::Sender<usize>,
+    slack_time: formula::Formula,
 }
 
 async fn scrape_shard(
     user_client: &slack::SlackClient,
     clickhouse: &clickhouse::Client,
-    channels: &[String],
-    token_idx: usize,
-    max_inflight: usize,
-    channel_concurrency: usize,
-    total: Arc<AtomicU64>,
-    processed: Arc<AtomicU64>,
+    channels: Vec<String>,
+    ctx: ShardCtx,
+    rx: tokio::sync::mpsc::Receiver<usize>,
 ) {
     if channels.is_empty() {
-        tracing::info!("[token {}] No channels assigned", token_idx);
+        tracing::info!("[token {}] No channels assigned", ctx.token_idx);
         return;
     }
-    tracing::info!("[token {}] Scraping {} channels", token_idx, channels.len());
+    tracing::info!(
+        "[token {}] Scraping {} channels",
+        ctx.token_idx,
+        channels.len()
+    );
 
-    let channel_concurrency = channel_concurrency.max(1);
-    let total_channels = channels.len();
+    let channel_concurrency = ctx.channel_concurrency.max(1);
     let sem = Arc::new(tokio::sync::Semaphore::new(channel_concurrency));
 
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<usize>(512);
-    let ctx = ShardCtx {
-        token_idx,
-        total_channels,
-        max_inflight,
-        total: total.clone(),
-        processed: processed.clone(),
-        tx: tx.clone(),
-    };
+    let tx = ctx.tx.clone();
+    let token_idx = ctx.token_idx;
+    let mut rx = rx;
     let reporter = tokio::spawn(async move {
         let mut batch: Vec<String> = Vec::new();
         let mut tick = tokio::time::interval(Duration::from_secs(4));
@@ -605,7 +612,7 @@ async fn scrape_shard(
             let _permit = permit.acquire().await;
             if tokio::time::timeout(
                 channel_timeout,
-                scrape_one_channel(&client, &clickhouse, channel_id, i + 1, ctx),
+                scrape_one_channel(&client, &clickhouse, channel_id, i + 1, &ctx),
             )
             .await
             .is_err()
@@ -631,14 +638,14 @@ async fn scrape_one_channel(
     clickhouse: &clickhouse::Client,
     channel_id: String,
     idx: usize,
-    ctx: ShardCtx,
+    ctx: &ShardCtx,
 ) {
     let token_idx = ctx.token_idx;
     let total_channels = ctx.total_channels;
     let max_inflight = ctx.max_inflight;
-    let total = ctx.total;
-    let processed = ctx.processed;
-    let tx = ctx.tx;
+    let total = ctx.total.clone();
+    let processed = ctx.processed.clone();
+    let tx = ctx.tx.clone();
     let start = std::time::Instant::now();
     let fully_scraped = db::clickhouse_db::is_fully_scraped(clickhouse, &channel_id)
         .await
@@ -782,6 +789,7 @@ async fn scrape_one_channel(
     let mut threads_found = 0usize;
     let mut thread_replies = 0u64;
     let mut threads_skipped = 0usize;
+    let mut thread_users: Vec<String> = Vec::new();
     if !thread_parents.is_empty() {
         threads_found = thread_parents.len();
         let sem = Arc::new(tokio::sync::Semaphore::new(max_inflight));
@@ -808,14 +816,38 @@ async fn scrape_one_channel(
                 .await
             }));
         }
-        for (skipped, inserted_replies) in futures::future::join_all(handles)
+        for (skipped, inserted_replies, users) in futures::future::join_all(handles)
             .await
             .into_iter()
             .flatten()
         {
             threads_skipped += skipped;
             thread_replies += inserted_replies;
+            thread_users.extend(users);
         }
+    }
+
+    let mut users_to_recompute: Vec<String> = messages.iter().map(|m| m.user.clone()).collect();
+    users_to_recompute.extend(thread_users);
+    users_to_recompute.sort();
+    users_to_recompute.dedup();
+    if !users_to_recompute.is_empty()
+        && let Err(e) = db::clickhouse_db::recompute_user_scores(
+            clickhouse,
+            &users_to_recompute,
+            &ctx.slack_time,
+        )
+        .await
+    {
+        tracing::warn!(
+            "[token {}][{}/{}] Failed to recompute scores for {} users in {}: {}",
+            token_idx,
+            idx,
+            total_channels,
+            users_to_recompute.len(),
+            channel_id,
+            e
+        );
     }
 
     if !fully_scraped
@@ -892,7 +924,7 @@ async fn scrape_thread(
     idx: usize,
     total_channels: usize,
     total: Arc<AtomicU64>,
-) -> (usize, u64) {
+) -> (usize, u64, Vec<String>) {
     let thread_fully =
         db::clickhouse_db::is_thread_fully_scraped(clickhouse, &channel_id, &thread_ts)
             .await
@@ -907,7 +939,7 @@ async fn scrape_thread(
     };
 
     if thread_fully {
-        return (1, 0);
+        return (1, 0, Vec::new());
     }
 
     match user_client
@@ -922,6 +954,7 @@ async fn scrape_thread(
             };
 
             let mut inserted = 0u64;
+            let reply_users: Vec<String> = replies.iter().map(|m| m.user.clone()).collect();
             if !replies.is_empty() {
                 let rows: Vec<db::clickhouse_db::SlackMessageRow> = replies
                     .iter()
@@ -967,7 +1000,7 @@ async fn scrape_thread(
                 );
             }
 
-            (0, inserted)
+            (0, inserted, reply_users)
         }
         Err(e) => {
             tracing::warn!(
@@ -979,7 +1012,7 @@ async fn scrape_thread(
                 channel_id,
                 e
             );
-            (0, 0)
+            (0, 0, Vec::new())
         }
     }
 }

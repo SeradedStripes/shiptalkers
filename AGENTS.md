@@ -30,11 +30,11 @@ Scrapes every public channel and thread reply from Hack Club Slack into ClickHou
 
 ## Architecture
 
-- `src/main.rs` - entry point, env parsing, scraper orchestration; message scrape cycles run every 30 minutes, pacing a full pass over every channel (round-robin across user tokens) to the 30m boundary before repeating. Per-channel tasks are wrapped in a 25m timeout and `conversations.list` page inserts in a 2m timeout, so a stalled ClickHouse call can never wedge a pass or cycle
+- `src/main.rs` - entry point, env parsing, scraper orchestration; message scrape cycles run every 30 minutes, pacing a full pass over every channel (round-robin across user tokens) to the 30m boundary before repeating. Per-channel tasks are wrapped in a 25m timeout and `conversations.list` page inserts in a 2m timeout, so a stalled ClickHouse call can never wedge a pass or cycle. After a channel's messages and thread replies are inserted, the touched users' Slack Time scores are recomputed into `user_scores`; a startup backfill recomputes all users
 - `src/slack/mod.rs` - SlackClient, per-method FIFO token-bucket rate limiter, 429 backoff; SlackClientPool round-robins `conversations.list` / `users.list` pages across bot tokens (one SlackClient per token)
 - `src/slack/socket.rs` - Slack Socket Mode (app events) via tokio-tungstenite; one connection per `SLACK_APP_TOKENS` app, message events sharded across apps so only one replies; stats bot replies to top-level messages in `SLACK_MAIN_CHANNEL` in a thread, via `chat.postMessage`, with a PNG card uploaded via `files.getUploadURLExternal` + `files.completeUploadExternal`. Replies always use the first `SLACK_BOT_TOKENS` entry (the main bot)
 - `src/bot_image.rs` - renders the stats card SVG (`templates/slack_image.html` + `src/website/static/slack_image_stats.css`) to PNG via resvg/usvg, with bundled DejaVu fonts
-- `src/db/clickhouse_db.rs` - ClickHouse schema, inserts, checkpoint queries, periodic `OPTIMIZE TABLE slack_messages` (24h, no startup dedup)
+- `src/db/clickhouse_db.rs` - ClickHouse schema, inserts, checkpoint queries, periodic `OPTIMIZE TABLE slack_messages` (24h, no startup dedup); `user_scores` (per-user Slack Time score and metrics, `ReplacingMergeTree(updated)`) refreshed by `recompute_user_scores` whenever a user's messages change, in batches of 100 users
 - `src/db/sqlite.rs` - SQLite auth DB (`linked_users`), the only non-ClickHouse datastore
 - `src/website/mod.rs` - axum router, server-rendered `/stats`, `/stats/:id` (user or channel, dispatched by `U`/`C` prefix), `/leaderboard` and `/search` via askama
 - `templates/stats.html` - askama template for the stats page
@@ -49,11 +49,11 @@ Scrapes every public channel and thread reply from Hack Club Slack into ClickHou
 
 ## Slack Time Formula
 
-`SLACK_TIME_CALCULATION_FORMULA` in `src/formula.rs` drives Top Talkers ranking and the per-user Slack Time report. Variables: `SESSION_SECONDS` (sessionizer output, 5 min windows split after 30 min inactivity, capped at 4 h), `MESSAGE_COUNT`, `SESSION_COUNT`, `TOTAL_CHARS`, `AVG_MESSAGE_LENGTH`. Functions: `log10`, `ln`, `sqrt`, `exp`, `abs`, `pow`. Supports `+ - * / ()` and implicit multiplication like `2MESSAGE_COUNT`. Invalid formulas fail at startup. Comments above the constant document each variable's source.
+`SLACK_TIME_CALCULATION_FORMULA` in `src/formula.rs` drives Top Talkers ranking (computed per user into `user_scores`, ranked by `score`) and the per-user Slack Time report. Variables: `SESSION_SECONDS` (sessionizer output, 5 min windows split after 30 min inactivity, capped at 4 h), `MESSAGE_COUNT`, `SESSION_COUNT`, `TOTAL_CHARS`, `AVG_MESSAGE_LENGTH`. Functions: `log10`, `ln`, `sqrt`, `exp`, `abs`, `pow`. Supports `+ - * / ()` and implicit multiplication like `2MESSAGE_COUNT`. Invalid formulas fail at startup. Comments above the constant document each variable's source.
 
 ## Conventions
 
-- ClickHouse is the only analytics datastore. The stats page reads `slack_messages`, `slack_channels`, and `coding_activity`. SQLite (`src/db/sqlite.rs`) holds auth/linked-user state only.
+- ClickHouse is the only analytics datastore. The stats page reads `slack_messages`, `slack_channels`, `coding_activity`, and `user_scores`. SQLite (`src/db/sqlite.rs`) holds auth/linked-user state only.
 - Insert data before marking any checkpoint complete. Main channel messages are inserted before thread replies.
 - Progress tracking uses `max(message_ts)` per channel and `max(thread reply ts)` per thread.
 - Logging is `tracing` only. Per-channel, per-thread, and per-fetch work logs at debug; inserts, page progress, and 15s `Progress:` lines log at info.
