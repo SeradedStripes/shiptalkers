@@ -5,8 +5,7 @@ on:
     branches:
       - main
     paths-ignore:
-      - .github/**
-      - ./**/*.md
+      - "**/*.md"
       - .env.example
       - justfile
       - .gitignore
@@ -17,8 +16,7 @@ on:
     branches:
       - main
     paths-ignore:
-      - .github/**
-      - ./**/*.md
+      - "**/*.md"
       - .env.example
       - justfile
       - .gitignore
