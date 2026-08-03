@@ -264,7 +264,7 @@ pub async fn get_known_channel_ids(
     client: &Client,
 ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     let rows: Vec<ChannelIdRow> = client
-        .query("SELECT channel_id FROM slack_channels")
+        .query("SELECT channel_id FROM slack_channels FINAL")
         .fetch_all()
         .await?;
 
