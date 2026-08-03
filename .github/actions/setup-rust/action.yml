@@ -1,0 +1,7 @@
+name: Setup Rust
+description: "GitHub Action to set up Rust toolchain and cache cargo dependencies."
+runs:
+  using: "composite"
+  steps:
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
