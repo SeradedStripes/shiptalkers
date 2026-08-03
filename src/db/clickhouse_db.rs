@@ -376,13 +376,9 @@ async fn recompute_user_scores_chunk(
     let chars: Vec<CharRow> = client
         .query(&format!(
             "SELECT user_id, sum(char_length(text)) AS total_chars
-             FROM (
-                 SELECT any(user_id) AS user_id, any(text) AS text
-                 FROM slack_messages
-                 {}
-                 GROUP BY channel_id, message_ts
-             )
-             GROUP BY user_id",
+             FROM slack_messages
+             {}
+             GROUP BY user_id, channel_id, message_ts",
             where_clause
         ))
         .fetch_all()
