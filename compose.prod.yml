@@ -4,8 +4,6 @@ services:
     image: ghcr.io/seradedstripes/shiptalkers-app:latest
     pull_policy: always
     restart: unless-stopped
-    ports:
-      - "3002:3000"
     env_file: .env
     environment:
       - CLICKHOUSE_URL=http://clickhouse:8123
@@ -34,9 +32,6 @@ services:
       - CLICKHOUSE_DB=ship_talkers
       - CLICKHOUSE_USER=ship_talkers
       - CLICKHOUSE_PASSWORD=ship_talkers
-    # Optional: expose the HTTP port if you want to query it from the host.
-    ports:
-      - "8123:8123"
     volumes:
       - clickhouse-data:/var/lib/clickhouse
     healthcheck:
