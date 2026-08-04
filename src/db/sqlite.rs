@@ -14,12 +14,15 @@ impl AuthDb {
             std::fs::create_dir_all(parent)?;
         }
         let conn = Connection::open(path)?;
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
         conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS linked_users (
+            "PRAGMA journal_mode=WAL;
+             PRAGMA synchronous=FULL;
+             CREATE TABLE IF NOT EXISTS linked_users (
                 slack_id TEXT PRIMARY KEY,
                 display_name TEXT NOT NULL,
                 linked_at TEXT NOT NULL DEFAULT (datetime('now'))
-            );",
+             );",
         )?;
         Ok(Self {
             conn: Mutex::new(conn),

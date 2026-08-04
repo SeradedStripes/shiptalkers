@@ -166,7 +166,8 @@ pub async fn auth_hackclub_callback(
         .unwrap_or_else(|| "Hacker".to_string());
 
     if let Err(e) = state.auth_db.mark_linked(&slack_id, &name).await {
-        tracing::warn!("Failed to record linked user {}: {}", slack_id, e);
+        tracing::error!("Failed to record linked user {}: {}", slack_id, e);
+        return Err(StatusCode::INTERNAL_SERVER_ERROR);
     }
 
     let session = auth::Session { slack_id, name };
