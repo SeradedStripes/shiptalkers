@@ -137,7 +137,59 @@ async fn run_socket(
     auth_db: std::sync::Arc<AuthDb>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let client = Client::new();
+    let mut failures = 0u32;
 
+    loop {
+        match serve_socket(
+            &client,
+            socket_idx,
+            num_sockets,
+            &app_token,
+            &config,
+            &clickhouse,
+            &auth_db,
+        )
+        .await
+        {
+            Ok(()) => {
+                tracing::warn!(
+                    "Socket Mode connection ended (app {}/{}), reconnecting",
+                    socket_idx + 1,
+                    num_sockets
+                );
+                failures = 0;
+            }
+            Err(e) => {
+                tracing::error!(
+                    "Socket Mode error (app {}/{}): {}",
+                    socket_idx + 1,
+                    num_sockets,
+                    e
+                );
+                failures += 1;
+            }
+        }
+
+        let delay = (1u64 << failures.min(6)).min(60);
+        tracing::info!(
+            "Reconnecting Socket Mode in {}s (app {}/{})",
+            delay,
+            socket_idx + 1,
+            num_sockets
+        );
+        tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
+    }
+}
+
+async fn serve_socket(
+    client: &Client,
+    socket_idx: usize,
+    num_sockets: usize,
+    app_token: &str,
+    config: &SocketConfig,
+    clickhouse: &clickhouse::Client,
+    auth_db: &std::sync::Arc<AuthDb>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let resp: ConnectionsOpenResponse = client
         .post("https://slack.com/api/apps.connections.open")
         .header("Authorization", format!("Bearer {}", app_token))
@@ -186,16 +238,16 @@ async fn run_socket(
                             {
                                 match event_type {
                                     "channel_created" => {
-                                        handle_channel_created(&client, event, &clickhouse).await;
+                                        handle_channel_created(client, event, clickhouse).await;
                                     }
                                     "message" => {
                                         handle_message(
-                                            &client,
-                                            &config,
+                                            client,
+                                            config,
                                             socket_idx,
                                             num_sockets,
-                                            &auth_db,
-                                            &clickhouse,
+                                            auth_db,
+                                            clickhouse,
                                             event,
                                         )
                                         .await;
@@ -222,12 +274,6 @@ async fn run_socket(
             _ => {}
         }
     }
-
-    tracing::warn!(
-        "Socket Mode connection ended (app {}/{})",
-        socket_idx + 1,
-        num_sockets
-    );
 
     Ok(())
 }
