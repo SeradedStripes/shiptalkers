@@ -792,7 +792,7 @@ async fn scrape_one_channel(
     let mut thread_parents: Vec<String> = Vec::new();
     for msg in &messages {
         if let Some(ref t) = msg.thread_ts
-            && t != &msg.ts
+            && t == &msg.ts
             && !thread_parents.contains(t)
         {
             thread_parents.push(t.clone());
@@ -951,20 +951,19 @@ async fn scrape_thread(
         None
     };
 
-    if thread_fully {
-        return (1, 0, Vec::new());
-    }
-
     match user_client
         .fetch_thread_replies(&channel_id, &thread_ts, thread_oldest.as_deref())
         .await
     {
         Ok(replies) => {
-            let replies: Vec<_> = if let Some(ref o) = thread_oldest {
-                replies.into_iter().filter(|m| m.ts > *o).collect()
-            } else {
-                replies
-            };
+            let replies: Vec<_> = replies
+                .into_iter()
+                .filter(|m| m.ts != thread_ts)
+                .filter(|m| match &thread_oldest {
+                    Some(o) => m.ts > *o,
+                    None => true,
+                })
+                .collect();
 
             let mut inserted = 0u64;
             let reply_users: Vec<String> = replies.iter().map(|m| m.user.clone()).collect();
