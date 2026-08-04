@@ -30,13 +30,15 @@ Scrapes every public channel and thread reply from Hack Club Slack into ClickHou
 
 ## Architecture
 
-- `src/main.rs` - entry point, env parsing, scraper orchestration; message scrape cycles run every 30 minutes, pacing a full pass over every channel (round-robin across user tokens) to the 30m boundary before repeating. Per-channel tasks are wrapped in a 25m timeout and `conversations.list` page inserts in a 2m timeout, so a stalled ClickHouse call can never wedge a pass or cycle. After a channel's messages and thread replies are inserted, the touched users' Slack Time scores are recomputed into `user_scores`; a startup backfill recomputes all users. Fully-scraped channels are also re-scanned for threads: every 6h a recent 7-day window of history is fetched (throttled per channel in memory) so messages that gained a thread after their first scrape get their replies fetched too. `sync_users` runs `users.list` every 2h (retry after 5m on failure), upserts only users whose `updated` changed or who lack a pfp URL, so avatar URLs stay current
+- `src/main.rs` - entry point, settings + env parsing, scraper orchestration; message scrape cycles run every 30 minutes, pacing a full pass over every channel (round-robin across user tokens) to the 30m boundary before repeating. Per-channel tasks are wrapped in a 25m timeout and `conversations.list` page inserts in a 2m timeout, so a stalled ClickHouse call can never wedge a pass or cycle. After a channel's messages and thread replies are inserted, the touched users' Slack Time scores are recomputed into `user_scores`; a startup backfill recomputes all users. Fully-scraped channels are also re-scanned for threads: every `SLACK_THREAD_RESCAN_INTERVAL_HOURS` (default 6h) a recent `SLACK_THREAD_RESCAN_HOURS` (default 7-day) window of history is fetched (throttled per channel in memory) so messages that gained a thread after their first scrape get their replies fetched too. `sync_users` runs `users.list` every 2h (retry after 5m on failure), upserts only users whose `updated` changed or who lack a pfp URL, so avatar URLs stay current
 - `src/slack/mod.rs` - SlackClient, per-method FIFO token-bucket rate limiter, 429 backoff; SlackClientPool round-robins `conversations.list` / `users.list` pages across bot tokens (one SlackClient per token)
 - `src/slack/socket.rs` - Slack Socket Mode (app events) via tokio-tungstenite; one connection per `SLACK_APP_TOKENS` app, message events sharded across apps so only one replies; each connection reconnects forever with exponential backoff (fresh `apps.connections.open` URL per attempt, 1s to 60s) since Slack recycles connections; stats bot replies to top-level messages in `SLACK_MAIN_CHANNEL` in a thread, via `chat.postMessage`, with a PNG card uploaded via `files.getUploadURLExternal` + `files.completeUploadExternal`. Replies always use the first `SLACK_BOT_TOKENS` entry (the main bot)
 - `src/bot_image.rs` - renders the stats card SVG (`templates/slack_image.html` + `src/website/static/slack_image_stats.css`) to PNG via resvg/usvg, with bundled DejaVu fonts
 - `src/db/clickhouse_db.rs` - ClickHouse schema, inserts, checkpoint queries, periodic `OPTIMIZE TABLE slack_messages` (24h, no startup dedup); `user_scores` (per-user Slack Time score and metrics, `ReplacingMergeTree(updated)`) refreshed by `recompute_user_scores` whenever a user's messages change, in batches of 50 users
-- `src/db/sqlite.rs` - SQLite auth DB (`linked_users`), the only non-ClickHouse datastore
-- `src/website/mod.rs` - axum router, server-rendered `/stats`, `/stats/:id` (user or channel, dispatched by `U`/`C` prefix), `/leaderboard` and `/search` via askama; `/pfp/:id` looks up the stored Slack pfp URL and redirects to it
+- `src/db/sqlite.rs` - SQLite auth DB (`linked_users`), the only non-ClickHouse datastore; also holds the `settings` table backing runtime settings
+- `src/settings.rs` - runtime settings: seeded from the SQLite `settings` table with env-var fallback, exposed as `RuntimeSettings` (an `Arc<RwLock<HashMap>>`) so admin edits apply without a restart; `SETTING_KEYS`, `SECRET_KEYS`, `RESTART_KEYS`, `READONLY_KEYS`, and `default_value` drive the admin form and save/apply logic
+- `src/website/mod.rs` - axum router, server-rendered `/stats`, `/stats/:id` (user or channel, dispatched by `U`/`C` prefix), `/leaderboard` and `/search` via askama; `/pfp/:id` looks up the stored Slack pfp URL and redirects to it; `/admin` (guarded by `ADMIN_SLACK_IDS`) shows the settings panel with POST `/admin/settings` saving via `RuntimeSettings::update`
+- `templates/admin.html` - askama template for the admin panel page
 - `templates/stats.html` - askama template for the stats page
 - `templates/user.html` - askama template for the per-user stats page
 - `templates/channel.html` - askama template for the per-channel stats page
@@ -53,7 +55,7 @@ Scrapes every public channel and thread reply from Hack Club Slack into ClickHou
 
 ## Conventions
 
-- ClickHouse is the only analytics datastore. The stats page reads `slack_messages`, `slack_channels`, `coding_activity`, and `user_scores`. SQLite (`src/db/sqlite.rs`) holds auth/linked-user state only.
+- ClickHouse is the only analytics datastore. The stats page reads `slack_messages`, `slack_channels`, `coding_activity`, and `user_scores`. SQLite (`src/db/sqlite.rs`) holds auth/linked-user state and the `settings` table.
 - Insert data before marking any checkpoint complete. Main channel messages are inserted before thread replies.
 - Progress tracking uses `max(message_ts)` per channel and `max(thread reply ts)` per thread.
 - Logging is `tracing` only. Per-channel, per-thread, and per-fetch work logs at debug; inserts, page progress, and 15s `Progress:` lines log at info.
@@ -65,16 +67,21 @@ Scrapes every public channel and thread reply from Hack Club Slack into ClickHou
 
 ## Environment Variables
 
-- `SLACK_BOT_TOKENS` - required, comma-separated bot tokens (one per Slack app); `conversations.list` / `users.list` pages round-robin across them, stats bot replies always use the first entry (the main bot)
-- `SLACK_USER_TOKENS` - comma-separated user tokens, sharded round-robin per channel
-- `SLACK_APP_TOKENS` - optional, comma-separated app tokens; each opens its own Socket Mode connection and message events are sharded across them so only one bot replies
-- `SLACK_MAIN_CHANNEL` - channel ID the stats bot watches; users posting a time range there get a threaded reply. Optional, disables the bot when unset
-- `SQLITE_DB_PATH` - SQLite auth DB path (linked users), default `data/auth.db`
+All settings below are runtime-editable from `/admin` and persisted to the SQLite `settings` table; env vars seed the value on first run and act as fallback for keys never saved. Keys marked restart apply on the next restart.
+
+- `SLACK_BOT_TOKENS` - required, comma-separated bot tokens (one per Slack app); `conversations.list` / `users.list` pages round-robin across them, stats bot replies always use the first entry (the main bot). Live-applies.
+- `SLACK_USER_TOKENS` - comma-separated user tokens, sharded round-robin per channel. Live-applies.
+- `SLACK_APP_TOKENS` - optional, comma-separated app tokens; each opens its own Socket Mode connection and message events are sharded across them so only one bot replies. Restart.
+- `SLACK_MAIN_CHANNEL` - channel ID the stats bot watches; users posting a time range there get a threaded reply. Optional, disables the bot when unset. Live-applies.
+- `SQLITE_DB_PATH` - SQLite auth DB path (linked users), default `data/auth.db`. Restart, read only.
+- `ADMIN_SLACK_IDS` - comma-separated Slack user IDs who can access `/admin` and see the Admin tab in the header
 - `SLACK_REQUEST_DELAY_MS` - request pacing per method per token, default 1200 (tier 3, 50 req/min)
 - `SLACK_MAX_INFLIGHT` - burst per method per token, default 8
 - `SLACK_CHANNEL_CONCURRENCY` - channels scraped concurrently per token, default 8
-- `CLICKHOUSE_URL`, `CLICKHOUSE_USER`, `CLICKHOUSE_PASSWORD`, `CLICKHOUSE_DB`
-- `HOST`, `PORT` - web server bind, default 0.0.0.0:3000
+- `SLACK_THREAD_RESCAN_HOURS` - thread rescan history window, default 168 (7 days)
+- `SLACK_THREAD_RESCAN_INTERVAL_HOURS` - how often fully-scraped channels are re-scanned for threads, default 6
+- `CLICKHOUSE_URL`, `CLICKHOUSE_USER`, `CLICKHOUSE_PASSWORD`, `CLICKHOUSE_DB` - restart
+- `HOST`, `PORT` - web server bind, default 0.0.0.0:3000. Restart.
 
 ## Gotchas
 

@@ -57,6 +57,10 @@ fn clear_cookie(key: &str) -> HeaderValue {
     set_cookie(key, "", Some(0))
 }
 
+fn auth_config(state: &AppState) -> crate::auth::AuthConfig {
+    state.settings.auth_config()
+}
+
 pub(crate) fn session_from_request(
     headers: &HeaderMap,
     auth_config: &auth::AuthConfig,
@@ -72,7 +76,7 @@ pub async fn get_link(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Html<String>, StatusCode> {
-    let session = session_from_request(&headers, &state.auth);
+    let session = session_from_request(&headers, &auth_config(&state));
     let hackatime_connected = match &session {
         Some(s) => clickhouse_db::is_hackatime_connected(&state.clickhouse, &s.slack_id)
             .await
@@ -104,6 +108,15 @@ pub async fn get_link(
             .map(|s| s.slack_id.clone())
             .unwrap_or_default(),
         hackatime_connected,
+        is_admin: session
+            .as_ref()
+            .map(|s| {
+                state
+                    .settings
+                    .get_list("ADMIN_SLACK_IDS")
+                    .contains(&s.slack_id)
+            })
+            .unwrap_or(false),
     };
     let html = template
         .render()
@@ -118,13 +131,14 @@ struct LinkTemplate {
     name: String,
     slack_id: String,
     hackatime_connected: bool,
+    is_admin: bool,
 }
 
 pub async fn auth_hackclub_login(
     State(state): State<AppState>,
 ) -> Result<impl IntoResponse, StatusCode> {
     let state_val = auth::random_state();
-    let location = auth::hca_authorize_url(&state.auth, &state_val);
+    let location = auth::hca_authorize_url(&auth_config(&state), &state_val);
     let mut response = Redirect::to(&location).into_response();
     response
         .headers_mut()
@@ -152,7 +166,7 @@ pub async fn auth_hackclub_callback(
         return Err(StatusCode::BAD_REQUEST);
     }
 
-    let token = auth::exchange_hca_code(&state.http, &state.auth, &params.code)
+    let token = auth::exchange_hca_code(&state.http, &auth_config(&state), &params.code)
         .await
         .map_err(|_| StatusCode::BAD_REQUEST)?;
     let identity = auth::fetch_hca_identity(&state.http, &token)
@@ -171,7 +185,7 @@ pub async fn auth_hackclub_callback(
     }
 
     let session = auth::Session { slack_id, name };
-    let cookie = auth::issue_session(&session, &state.auth.session_secret);
+    let cookie = auth::issue_session(&session, auth_config(&state).session_secret.as_str());
 
     let mut response = Redirect::to("/link").into_response();
     response
@@ -187,11 +201,11 @@ pub async fn auth_hackatime_login(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, StatusCode> {
-    if session_from_request(&headers, &state.auth).is_none() {
+    if session_from_request(&headers, &auth_config(&state)).is_none() {
         return Err(StatusCode::UNAUTHORIZED);
     }
     let state_val = auth::random_state();
-    let location = auth::hackatime_authorize_url(&state.auth, &state_val);
+    let location = auth::hackatime_authorize_url(&auth_config(&state), &state_val);
     let mut response = Redirect::to(&location).into_response();
     response
         .headers_mut()
@@ -219,7 +233,7 @@ pub async fn auth_hackatime_callback(
         tracing::warn!("hackatime callback missing code or state");
         return Err(StatusCode::BAD_REQUEST);
     };
-    let session = session_from_request(&headers, &state.auth);
+    let session = session_from_request(&headers, &auth_config(&state));
     let Some(session) = session else {
         tracing::warn!("hackatime callback without session");
         return Err(StatusCode::UNAUTHORIZED);
@@ -240,7 +254,8 @@ pub async fn auth_hackatime_callback(
         _ => {}
     }
 
-    let token = match auth::exchange_hackatime_code(&state.http, &state.auth, &code).await {
+    let token = match auth::exchange_hackatime_code(&state.http, &auth_config(&state), &code).await
+    {
         Ok(t) => t,
         Err(e) => {
             tracing::warn!("hackatime token exchange failed: {}", e);
@@ -306,7 +321,8 @@ pub async fn auth_hackatime_disconnect(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Redirect, StatusCode> {
-    let session = session_from_request(&headers, &state.auth).ok_or(StatusCode::UNAUTHORIZED)?;
+    let session =
+        session_from_request(&headers, &auth_config(&state)).ok_or(StatusCode::UNAUTHORIZED)?;
     clickhouse_db::delete_hackatime_connection(&state.clickhouse, &session.slack_id)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;

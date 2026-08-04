@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Admin Panel - Ship Talkers</title>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body class="admin">
+    {% include "header.html" %}
+    <div class="container">
+        <h1>Admin Panel</h1>
+        <p>Settings apply immediately where possible. Keys marked restart apply on the next restart.</p>
+        <form method="post" action="/admin/settings">
+            {% for field in fields %}
+            <div class="setting-row">
+                <label for="{{ field.key }}">
+                    {{ field.key }}
+                    {% if field.restart %}<span class="badge">restart</span>{% endif %}
+                    {% if field.readonly %}<span class="badge">read only</span>{% endif %}
+                </label>
+                {% if field.secret %}
+                <input type="password" id="{{ field.key }}" name="{{ field.key }}" value="{{ field.value }}" {% if field.readonly %}disabled{% endif %}>
+                {% else %}
+                <input type="text" id="{{ field.key }}" name="{{ field.key }}" value="{{ field.value }}" {% if field.readonly %}disabled{% endif %}>
+                {% endif %}
+            </div>
+            {% endfor %}
+            <button type="submit" class="btn">Save Settings</button>
+        </form>
+    </div>
+    {% include "footer.html" %}
+</body>
+</html>

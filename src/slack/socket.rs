@@ -6,6 +6,7 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 use crate::bot_image;
 use crate::db::clickhouse_db::{self, SlackChannelRow};
 use crate::db::sqlite::AuthDb;
+use crate::settings::RuntimeSettings;
 
 #[derive(Debug, Deserialize)]
 struct SocketMessage {
@@ -62,24 +63,11 @@ struct GetUploadUrlResponse {
 #[derive(Clone)]
 pub struct SocketConfig {
     pub app_tokens: Vec<String>,
-    pub bot_tokens: Vec<String>,
-    pub main_channel: Option<String>,
-    pub base_url: String,
 }
 
 impl SocketConfig {
-    pub fn new(
-        app_tokens: Vec<String>,
-        bot_tokens: Vec<String>,
-        main_channel: Option<String>,
-        base_url: String,
-    ) -> Self {
-        Self {
-            app_tokens,
-            bot_tokens,
-            main_channel,
-            base_url,
-        }
+    pub fn new(app_tokens: Vec<String>) -> Self {
+        Self { app_tokens }
     }
 }
 
@@ -87,30 +75,32 @@ pub async fn start_socket_mode(
     config: SocketConfig,
     clickhouse: clickhouse::Client,
     auth_db: std::sync::Arc<AuthDb>,
+    settings: RuntimeSettings,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     if config.app_tokens.is_empty() {
         return Err("No SLACK_APP_TOKENS set, Socket Mode disabled".into());
     }
 
-    if let Some(channel) = &config.main_channel {
-        tracing::info!("Stats bot watching channel {}", channel);
-    } else {
+    let main_channel = settings.get("SLACK_MAIN_CHANNEL");
+    if main_channel.is_empty() {
         tracing::warn!("SLACK_MAIN_CHANNEL not set, stats bot disabled");
+    } else {
+        tracing::info!("Stats bot watching channel {}", main_channel);
     }
 
     let num_sockets = config.app_tokens.len();
     let mut sockets = Vec::with_capacity(num_sockets);
     for (socket_idx, app_token) in config.app_tokens.iter().enumerate() {
-        let config = config.clone();
         let clickhouse = clickhouse.clone();
         let auth_db = auth_db.clone();
+        let settings = settings.clone();
         sockets.push(run_socket(
             socket_idx,
             num_sockets,
             app_token.clone(),
-            config,
             clickhouse,
             auth_db,
+            settings,
         ));
     }
 
@@ -132,9 +122,9 @@ async fn run_socket(
     socket_idx: usize,
     num_sockets: usize,
     app_token: String,
-    config: SocketConfig,
     clickhouse: clickhouse::Client,
     auth_db: std::sync::Arc<AuthDb>,
+    settings: RuntimeSettings,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let client = Client::new();
     let mut failures = 0u32;
@@ -145,9 +135,9 @@ async fn run_socket(
             socket_idx,
             num_sockets,
             &app_token,
-            &config,
             &clickhouse,
             &auth_db,
+            &settings,
         )
         .await
         {
@@ -186,9 +176,9 @@ async fn serve_socket(
     socket_idx: usize,
     num_sockets: usize,
     app_token: &str,
-    config: &SocketConfig,
     clickhouse: &clickhouse::Client,
     auth_db: &std::sync::Arc<AuthDb>,
+    settings: &RuntimeSettings,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let resp: ConnectionsOpenResponse = client
         .post("https://slack.com/api/apps.connections.open")
@@ -243,11 +233,11 @@ async fn serve_socket(
                                     "message" => {
                                         handle_message(
                                             client,
-                                            config,
                                             socket_idx,
                                             num_sockets,
                                             auth_db,
                                             clickhouse,
+                                            settings,
                                             event,
                                         )
                                         .await;
@@ -317,14 +307,15 @@ async fn handle_channel_created(
 
 async fn handle_message(
     client: &Client,
-    config: &SocketConfig,
     socket_idx: usize,
     num_sockets: usize,
     auth_db: &std::sync::Arc<AuthDb>,
     clickhouse: &clickhouse::Client,
+    settings: &RuntimeSettings,
     event: &serde_json::Value,
 ) {
-    let Some(main_channel) = &config.main_channel else {
+    let main_channel = settings.get("SLACK_MAIN_CHANNEL");
+    if main_channel.is_empty() {
         return;
     };
 
@@ -332,7 +323,7 @@ async fn handle_message(
         return;
     };
 
-    if msg.channel != *main_channel {
+    if msg.channel != main_channel {
         return;
     }
     if shard_for_ts(&msg.ts, num_sockets) != socket_idx {
@@ -366,18 +357,19 @@ async fn handle_message(
         text
     );
 
-    let Some(bot_token) = config.bot_tokens.first() else {
+    let Some(bot_token) = settings.get_list("SLACK_BOT_TOKENS").first().cloned() else {
         tracing::warn!("Stats bot: no bot tokens configured, skipping reply");
         return;
     };
+    let base_url = settings.get("BASE_URL");
 
     if !auth_db.is_linked(&user).await {
         tracing::info!("Stats bot: {} is not linked, sending link prompt", user);
         let reply = format!(
             "You aren't linked yet. Link your account here to get your stats: {}/link",
-            config.base_url.trim_end_matches('/')
+            base_url.trim_end_matches('/')
         );
-        if let Err(e) = post_reply(client, bot_token, &msg.channel, &msg.ts, &reply).await {
+        if let Err(e) = post_reply(client, &bot_token, &msg.channel, &msg.ts, &reply).await {
             tracing::error!("Stats bot: failed to post reply: {}", e);
         }
         return;
@@ -429,7 +421,7 @@ async fn handle_message(
         }
     };
 
-    if let Err(e) = upload_image(client, bot_token, &msg.channel, &msg.ts, png).await {
+    if let Err(e) = upload_image(client, &bot_token, &msg.channel, &msg.ts, png).await {
         tracing::error!("Stats bot: failed to upload stats image: {}", e);
     }
 }

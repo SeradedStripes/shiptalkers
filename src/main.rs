@@ -2,6 +2,7 @@ mod auth;
 mod bot_image;
 mod db;
 mod formula;
+mod settings;
 mod slack;
 mod website;
 
@@ -27,29 +28,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .init();
 
-    let slack_bot_tokens = parse_token_list("SLACK_BOT_TOKENS");
-    if slack_bot_tokens.is_empty() {
-        return Err("SLACK_BOT_TOKENS must be set".into());
-    }
-    let slack_user_tokens = parse_token_list("SLACK_USER_TOKENS");
-    let slack_app_tokens = parse_token_list("SLACK_APP_TOKENS");
-    let slack_request_delay_ms = env::var("SLACK_REQUEST_DELAY_MS")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(1200);
-    let slack_max_inflight = env::var("SLACK_MAX_INFLIGHT")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(8);
-    let slack_channel_concurrency = env::var("SLACK_CHANNEL_CONCURRENCY")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(8);
-    let clickhouse_url =
-        env::var("CLICKHOUSE_URL").unwrap_or_else(|_| "http://localhost:8123".into());
-    let clickhouse_user = env::var("CLICKHOUSE_USER").unwrap_or_else(|_| "default".into());
-    let clickhouse_password = env::var("CLICKHOUSE_PASSWORD").unwrap_or_default();
-    let clickhouse_db = env::var("CLICKHOUSE_DB").unwrap_or_else(|_| "default".into());
+    let auth_db_path = env::var("SQLITE_DB_PATH").unwrap_or_else(|_| "data/auth.db".into());
+    let auth_db = std::sync::Arc::new(
+        db::sqlite::AuthDb::open(&auth_db_path)
+            .map_err(|e| format!("Failed to open auth DB {}: {}", auth_db_path, e))?,
+    );
+    tracing::info!("Auth DB at {}", auth_db_path);
+
+    let settings = settings::RuntimeSettings::load(&auth_db).await;
+
+    let clickhouse_url = settings.get("CLICKHOUSE_URL");
+    let clickhouse_user = settings.get("CLICKHOUSE_USER");
+    let clickhouse_password = settings.get("CLICKHOUSE_PASSWORD");
+    let clickhouse_db = settings.get("CLICKHOUSE_DB");
 
     let slack_time = formula::Formula::parse(formula::SLACK_TIME_CALCULATION_FORMULA)
         .expect("SLACK_TIME_CALCULATION_FORMULA must be a valid formula");
@@ -62,30 +53,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         &clickhouse_db,
     );
 
-    let auth_db_path = env::var("SQLITE_DB_PATH").unwrap_or_else(|_| "data/auth.db".into());
-    let auth_db = std::sync::Arc::new(
-        db::sqlite::AuthDb::open(&auth_db_path)
-            .map_err(|e| format!("Failed to open auth DB {}: {}", auth_db_path, e))?,
-    );
-    tracing::info!("Auth DB at {}", auth_db_path);
-
     tracing::info!("Initializing ClickHouse tables...");
     db::clickhouse_db::init_tables(&database.clickhouse).await?;
 
     let clickhouse_for_scraper = database.clickhouse.clone();
-    let slack_bot_tokens_for_scraper = slack_bot_tokens.clone();
-    let slack_user_tokens_for_scraper = slack_user_tokens.clone();
+    let settings_for_scraper = settings.clone();
     let slack_time_for_scraper = slack_time.clone();
 
     tokio::spawn(async move {
         if let Err(e) = run_scraper(
             clickhouse_for_scraper,
-            slack_bot_tokens_for_scraper,
-            slack_user_tokens_for_scraper,
+            settings_for_scraper,
             slack_time_for_scraper,
-            Duration::from_millis(slack_request_delay_ms),
-            slack_max_inflight,
-            slack_channel_concurrency,
         )
         .await
         {
@@ -95,18 +74,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     {
         let clickhouse_for_users = database.clickhouse.clone();
-        let slack_bot_tokens_for_users = slack_bot_tokens.clone();
-        let user_sync_delay = env::var("SLACK_USER_SYNC_DELAY_MS")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(3000);
+        let settings_for_users = settings.clone();
         tokio::spawn(async move {
-            let pool = slack::SlackClientPool::new(
-                slack_bot_tokens_for_users,
-                Duration::from_millis(user_sync_delay),
-                slack_max_inflight,
-            );
             loop {
+                let pool = slack::SlackClientPool::new(
+                    settings_for_users.get_list("SLACK_BOT_TOKENS"),
+                    Duration::from_millis(settings_for_users.get_u64("SLACK_USER_SYNC_DELAY_MS")),
+                    settings_for_users.get_u64("SLACK_MAX_INFLIGHT") as usize,
+                );
                 let ok = sync_users(&pool, &clickhouse_for_users).await;
                 let wait = if ok { 7200 } else { 300 };
                 tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
@@ -114,22 +89,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
-    if !slack_app_tokens.is_empty() {
-        let base_url = env::var("BASE_URL").unwrap_or_else(|_| "http://localhost:3000".into());
-        let socket_config = slack::SocketConfig::new(
-            slack_app_tokens,
-            slack_bot_tokens.clone(),
-            env::var("SLACK_MAIN_CHANNEL")
-                .ok()
-                .filter(|v| !v.trim().is_empty()),
-            base_url,
-        );
+    if !settings.get_list("SLACK_APP_TOKENS").is_empty() {
+        let socket_config = slack::SocketConfig::new(settings.get_list("SLACK_APP_TOKENS"));
         let clickhouse_for_socket = database.clickhouse.clone();
         let auth_db_for_socket = auth_db.clone();
+        let settings_for_socket = settings.clone();
         tokio::spawn(async move {
-            if let Err(e) =
-                slack::start_socket_mode(socket_config, clickhouse_for_socket, auth_db_for_socket)
-                    .await
+            if let Err(e) = slack::start_socket_mode(
+                socket_config,
+                clickhouse_for_socket,
+                auth_db_for_socket,
+                settings_for_socket,
+            )
+            .await
             {
                 tracing::error!("Socket Mode error: {}", e);
             }
@@ -138,18 +110,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tracing::warn!("SLACK_APP_TOKENS not set, Socket Mode disabled");
     }
 
-    let host = env::var("HOST").unwrap_or_else(|_| "0.0.0.0".into());
-    let port = env::var("PORT").unwrap_or_else(|_| "3000".into());
-    let addr = format!("{}:{}", host, port);
-
-    let auth_config = auth::AuthConfig {
-        hca_client_id: env::var("HCA_CLIENT_ID")?,
-        hca_client_secret: env::var("HCA_CLIENT_SECRET")?,
-        hackatime_client_id: env::var("HACKATIME_CLIENT_ID")?,
-        hackatime_client_secret: env::var("HACKATIME_CLIENT_SECRET")?,
-        base_url: env::var("BASE_URL").unwrap_or_else(|_| "http://localhost:3000".into()),
-        session_secret: env::var("SESSION_SECRET")?,
-    };
+    let addr = format!("{}:{}", settings.get("HOST"), settings.get("PORT"));
 
     {
         let clickhouse_for_resync = database.clickhouse.clone();
@@ -166,25 +127,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let listener = TcpListener::bind(&addr).await?;
     axum::serve(
         listener,
-        website::router(database.clickhouse, auth_config, slack_time, auth_db),
+        website::router(database.clickhouse, settings, slack_time, auth_db),
     )
     .with_graceful_shutdown(shutdown_signal())
     .await?;
 
     Ok(())
-}
-
-fn parse_token_list(var: &str) -> Vec<String> {
-    env::var(var)
-        .ok()
-        .filter(|v| !v.trim().is_empty())
-        .map(|v| {
-            v.split(',')
-                .map(|t| t.trim().to_string())
-                .filter(|t| !t.is_empty())
-                .collect()
-        })
-        .unwrap_or_default()
 }
 
 async fn shutdown_signal() {
@@ -317,15 +265,9 @@ async fn sync_users(slack_pool: &slack::SlackClientPool, clickhouse: &clickhouse
 
 async fn run_scraper(
     clickhouse: clickhouse::Client,
-    bot_tokens: Vec<String>,
-    slack_user_tokens: Vec<String>,
+    settings: settings::RuntimeSettings,
     slack_time: formula::Formula,
-    request_delay: Duration,
-    max_inflight: usize,
-    channel_concurrency: usize,
 ) -> Result<(), String> {
-    let bot_pool = slack::SlackClientPool::new(bot_tokens, request_delay, max_inflight);
-
     match db::clickhouse_db::recompute_user_scores(&clickhouse, &[], &slack_time).await {
         Ok(()) => tracing::info!("Startup Slack Time score backfill complete"),
         Err(e) => tracing::warn!("Failed to backfill user scores: {}", e),
@@ -334,27 +276,20 @@ async fn run_scraper(
     let cycle = Duration::from_secs(30 * 60);
     let mut last_optimize = std::time::Instant::now();
 
-    if slack_user_tokens.is_empty() {
-        tracing::warn!("No SLACK_USER_TOKENS set, message scraping disabled");
-    }
-
     loop {
         let cycle_start = std::time::Instant::now();
+        let request_delay = Duration::from_millis(settings.get_u64("SLACK_REQUEST_DELAY_MS"));
+        let max_inflight = settings.get_u64("SLACK_MAX_INFLIGHT") as usize;
+        let bot_tokens = settings.get_list("SLACK_BOT_TOKENS");
+        let user_tokens = settings.get_list("SLACK_USER_TOKENS");
+        let bot_pool = slack::SlackClientPool::new(bot_tokens, request_delay, max_inflight);
 
         if let Err(e) = full_fetch(&bot_pool, &clickhouse).await {
             tracing::warn!("Failed to fetch channel list: {}", e);
         }
 
-        if !slack_user_tokens.is_empty() {
-            scrape_all_messages(
-                &slack_user_tokens,
-                &clickhouse,
-                &slack_time,
-                request_delay,
-                max_inflight,
-                channel_concurrency,
-            )
-            .await;
+        if !user_tokens.is_empty() {
+            scrape_all_messages(&settings, &clickhouse, &slack_time).await;
         }
 
         if last_optimize.elapsed() >= Duration::from_secs(86400) {
@@ -383,12 +318,9 @@ async fn run_scraper(
 }
 
 async fn scrape_all_messages(
-    user_tokens: &[String],
+    settings: &settings::RuntimeSettings,
     clickhouse: &clickhouse::Client,
     slack_time: &formula::Formula,
-    request_delay: Duration,
-    max_inflight: usize,
-    channel_concurrency: usize,
 ) {
     let channels = match db::clickhouse_db::get_known_channel_ids(clickhouse).await {
         Ok(c) => c,
@@ -431,16 +363,7 @@ async fn scrape_all_messages(
 
     if !new_channels.is_empty() {
         tracing::info!("Full-scraping {} new channels...", new_channels.len());
-        scrape_channel_list(
-            user_tokens,
-            clickhouse,
-            &new_channels,
-            slack_time,
-            request_delay,
-            max_inflight,
-            channel_concurrency,
-        )
-        .await;
+        scrape_channel_list(settings, clickhouse, &new_channels, slack_time).await;
     }
 
     if !check_channels.is_empty() {
@@ -448,30 +371,24 @@ async fn scrape_all_messages(
             "Checking {} already-scraped channels for new messages...",
             check_channels.len()
         );
-        scrape_channel_list(
-            user_tokens,
-            clickhouse,
-            &check_channels,
-            slack_time,
-            request_delay,
-            max_inflight,
-            channel_concurrency,
-        )
-        .await;
+        scrape_channel_list(settings, clickhouse, &check_channels, slack_time).await;
     }
 
     tracing::info!("Message scrape pass complete");
 }
 
 async fn scrape_channel_list(
-    user_tokens: &[String],
+    settings: &settings::RuntimeSettings,
     clickhouse: &clickhouse::Client,
     channels: &[String],
     slack_time: &formula::Formula,
-    request_delay: Duration,
-    max_inflight: usize,
-    channel_concurrency: usize,
 ) {
+    let request_delay = Duration::from_millis(settings.get_u64("SLACK_REQUEST_DELAY_MS"));
+    let max_inflight = settings.get_u64("SLACK_MAX_INFLIGHT") as usize;
+    let channel_concurrency = settings.get_u64("SLACK_CHANNEL_CONCURRENCY") as usize;
+    let thread_rescan_window_hours = settings.get_u64("SLACK_THREAD_RESCAN_HOURS");
+    let thread_rescan_interval_hours = settings.get_u64("SLACK_THREAD_RESCAN_INTERVAL_HOURS");
+    let user_tokens = settings.get_list("SLACK_USER_TOKENS");
     tracing::info!(
         "Scraping {} channels with {} token(s)...",
         channels.len(),
@@ -529,6 +446,8 @@ async fn scrape_channel_list(
             total_channels: shard.len(),
             max_inflight,
             channel_concurrency,
+            thread_rescan_window_hours,
+            thread_rescan_interval_hours,
             total: total.clone(),
             processed: processed.clone(),
             tx,
@@ -557,6 +476,8 @@ struct ShardCtx {
     total_channels: usize,
     max_inflight: usize,
     channel_concurrency: usize,
+    thread_rescan_window_hours: u64,
+    thread_rescan_interval_hours: u64,
     total: Arc<AtomicU64>,
     processed: Arc<AtomicU64>,
     tx: tokio::sync::mpsc::Sender<usize>,
@@ -809,7 +730,7 @@ async fn scrape_one_channel(
     if oldest.is_some()
         && thread_rescan_due(
             &channel_id,
-            Duration::from_secs(THREAD_RESCAN_INTERVAL_HOURS * 3600),
+            Duration::from_secs(ctx.thread_rescan_interval_hours * 3600),
         )
     {
         let now = std::time::SystemTime::now()
@@ -817,7 +738,7 @@ async fn scrape_one_channel(
             .map(|d| d.as_secs())
             .unwrap_or(0);
         let window_ts = now
-            .saturating_sub(THREAD_RESCAN_WINDOW_HOURS * 3600)
+            .saturating_sub(ctx.thread_rescan_window_hours * 3600)
             .to_string();
         match user_client
             .get_channel_history(&channel_id, Some(&window_ts))
@@ -987,9 +908,6 @@ async fn scrape_one_channel(
         );
     }
 }
-
-const THREAD_RESCAN_WINDOW_HOURS: u64 = 168;
-const THREAD_RESCAN_INTERVAL_HOURS: u64 = 6;
 
 static THREAD_RESCAN_LAST: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
 
