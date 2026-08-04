@@ -6,12 +6,15 @@ mod slack;
 mod website;
 
 use dotenvy::dotenv;
+use std::collections::HashMap;
 use std::env;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::net::TcpListener;
 
 #[tokio::main]
@@ -799,6 +802,63 @@ async fn scrape_one_channel(
         }
     }
 
+    // For channels already being checked incrementally, periodically re-scan a
+    // recent window of history so messages that gained a thread since they were
+    // first scraped (their root is older than this pass's new messages) get their
+    // threads fetched too. Throttled per channel.
+    if oldest.is_some()
+        && thread_rescan_due(
+            &channel_id,
+            Duration::from_secs(THREAD_RESCAN_INTERVAL_HOURS * 3600),
+        )
+    {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let window_ts = now
+            .saturating_sub(THREAD_RESCAN_WINDOW_HOURS * 3600)
+            .to_string();
+        match user_client
+            .get_channel_history(&channel_id, Some(&window_ts))
+            .await
+        {
+            Ok(extra) => {
+                let mut found = 0usize;
+                for msg in &extra {
+                    if let Some(ref t) = msg.thread_ts
+                        && t == &msg.ts
+                        && !thread_parents.contains(t)
+                    {
+                        thread_parents.push(t.clone());
+                        found += 1;
+                    }
+                }
+                record_thread_rescan(&channel_id);
+                if found > 0 {
+                    tracing::info!(
+                        "[token {}][{}/{}] Thread re-scan of {} found {} new thread roots",
+                        token_idx,
+                        idx,
+                        total_channels,
+                        channel_id,
+                        found
+                    );
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "[token {}][{}/{}] Failed to re-scan recent history for threads in {}: {}",
+                    token_idx,
+                    idx,
+                    total_channels,
+                    channel_id,
+                    e
+                );
+            }
+        }
+    }
+
     let mut threads_found = 0usize;
     let mut thread_replies = 0u64;
     let mut threads_skipped = 0usize;
@@ -926,6 +986,26 @@ async fn scrape_one_channel(
             summary.join(", ")
         );
     }
+}
+
+const THREAD_RESCAN_WINDOW_HOURS: u64 = 168;
+const THREAD_RESCAN_INTERVAL_HOURS: u64 = 6;
+
+static THREAD_RESCAN_LAST: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
+
+fn thread_rescan_due(channel_id: &str, interval: Duration) -> bool {
+    let last = THREAD_RESCAN_LAST.get_or_init(|| Mutex::new(HashMap::new()));
+    let map = last.lock().unwrap();
+    match map.get(channel_id) {
+        Some(prev) => prev.elapsed() >= interval,
+        None => true,
+    }
+}
+
+fn record_thread_rescan(channel_id: &str) {
+    let last = THREAD_RESCAN_LAST.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut map = last.lock().unwrap();
+    map.insert(channel_id.to_string(), Instant::now());
 }
 
 async fn scrape_thread(
