@@ -220,15 +220,20 @@ async fn sync_users(slack_pool: &slack::SlackClientPool, clickhouse: &clickhouse
             Box::pin(async move {
                 let changed: Vec<db::clickhouse_db::SlackUserRow> = page
                     .into_iter()
-                    .filter(|u| match existing.get(&u.id) {
-                        Some(prev) => *prev < u.updated || missing_pfps.contains(&u.id),
-                        None => true,
+                    .filter(|u| {
+                        u.is_deleted
+                            || match existing.get(&u.id) {
+                                Some(prev) => *prev < u.updated || missing_pfps.contains(&u.id),
+                                None => true,
+                            }
                     })
                     .map(|u| db::clickhouse_db::SlackUserRow {
                         user_id: u.id,
                         display_name: u.display_name,
                         pfp: u.pfp,
                         updated: u.updated,
+                        is_bot: u.is_bot as u8,
+                        is_deleted: u.is_deleted as u8,
                     })
                     .collect();
                 if changed.is_empty() {

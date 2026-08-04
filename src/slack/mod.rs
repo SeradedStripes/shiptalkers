@@ -32,8 +32,11 @@ pub struct SlackChannel {
 pub struct SlackUser {
     pub id: String,
     pub display_name: String,
+
     pub pfp: String,
     pub updated: u64,
+    pub is_bot: bool,
+    pub is_deleted: bool,
 }
 
 struct Inner {
@@ -467,9 +470,6 @@ impl SlackClientPool {
                     };
                     let is_bot = m.get("is_bot").and_then(|v| v.as_bool()).unwrap_or(false);
                     let deleted = m.get("deleted").and_then(|v| v.as_bool()).unwrap_or(false);
-                    if is_bot || deleted {
-                        continue;
-                    }
                     let profile = m.get("profile");
                     let display_name = profile
                         .and_then(|p| p.get("display_name"))
@@ -502,6 +502,8 @@ impl SlackClientPool {
                         display_name,
                         pfp,
                         updated,
+                        is_bot,
+                        is_deleted: deleted || (display_name.is_empty() && !is_bot),
                     });
                 }
             }

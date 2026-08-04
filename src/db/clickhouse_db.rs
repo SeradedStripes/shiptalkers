@@ -71,7 +71,9 @@ pub async fn init_tables(client: &Client) -> Result<(), Box<dyn std::error::Erro
                 user_id String,
                 display_name String,
                 pfp String DEFAULT '',
-                updated UInt64 DEFAULT 0
+                updated UInt64 DEFAULT 0,
+                is_bot UInt8 DEFAULT 0,
+                is_deleted UInt8 DEFAULT 0
             ) ENGINE = ReplacingMergeTree()
             ORDER BY user_id",
         )
@@ -86,6 +88,16 @@ pub async fn init_tables(client: &Client) -> Result<(), Box<dyn std::error::Erro
         .ok();
     client
         .query("ALTER TABLE users ADD COLUMN IF NOT EXISTS pfp String DEFAULT ''")
+        .execute()
+        .await
+        .ok();
+    client
+        .query("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_bot UInt8 DEFAULT 0")
+        .execute()
+        .await
+        .ok();
+    client
+        .query("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_deleted UInt8 DEFAULT 0")
         .execute()
         .await
         .ok();
@@ -527,6 +539,8 @@ pub struct SlackUserRow {
     pub display_name: String,
     pub pfp: String,
     pub updated: u64,
+    pub is_bot: u8,
+    pub is_deleted: u8,
 }
 
 pub async fn upsert_users(

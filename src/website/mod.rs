@@ -14,6 +14,9 @@ use tower_http::services::ServeDir;
 
 use crate::settings::{self, RuntimeSettings};
 
+const EXCLUDE_BOTS_DELETED: &str =
+    "user_id NOT IN (SELECT user_id FROM users FINAL WHERE is_bot = 1 OR is_deleted = 1)";
+
 pub mod auth;
 
 struct TtlValue<T> {
@@ -428,12 +431,13 @@ async fn get_search(
             user_id: String,
             display_name: String,
             pfp: String,
+            is_deleted: u8,
         }
         let pattern = format!("%{}%", query.trim());
         state
             .clickhouse
             .query(
-                "SELECT user_id, display_name, pfp FROM users FINAL
+                "SELECT user_id, display_name, pfp, is_deleted FROM users FINAL
                  WHERE display_name ILIKE ? OR user_id ILIKE ?
                  ORDER BY (display_name ILIKE ?) DESC, display_name
                  LIMIT 25",
@@ -446,7 +450,11 @@ async fn get_search(
             .unwrap_or_default()
             .into_iter()
             .map(|r| SearchResult {
-                display_name: r.display_name,
+                display_name: if r.is_deleted == 1 {
+                    "Deleted account".to_string()
+                } else {
+                    r.display_name
+                },
                 pfp: local_pfp(&r.user_id, &r.pfp),
                 user_id: r.user_id,
             })
@@ -553,12 +561,13 @@ async fn get_leaderboard_category(
             }
 
             let rows: Vec<ScoreRow> = match ch
-                .query(
+                .query(&format!(
                     "SELECT user_id, score, messages
                      FROM user_scores FINAL
+                     WHERE {EXCLUDE_BOTS_DELETED}
                      ORDER BY score DESC
-                     LIMIT 100",
-                )
+                     LIMIT 100"
+                ))
                 .fetch_all()
                 .await
             {
@@ -582,16 +591,17 @@ async fn get_leaderboard_category(
         }
         "coders" => {
             let rows: Vec<(String, i64)> = match ch
-                .query(
+                .query(&format!(
                     "SELECT user_id, sum(m) as value FROM (
                          SELECT user_id, date, max(minutes) AS m
                          FROM coding_activity
                          GROUP BY user_id, date
                      )
+                     WHERE {EXCLUDE_BOTS_DELETED}
                      GROUP BY user_id
                      ORDER BY value DESC
-                     LIMIT 100",
-                )
+                     LIMIT 100"
+                ))
                 .fetch_all::<LeaderboardRow>()
                 .await
             {
@@ -714,19 +724,26 @@ async fn get_user_stats(
     let ch = &state.clickhouse;
     let signed_in = signed_in(state, headers);
 
-    let display_name: String = ch
-        .query("SELECT display_name FROM users FINAL WHERE user_id = ?")
+    #[derive(clickhouse::Row, serde::Deserialize)]
+    struct UserInfoRow {
+        display_name: String,
+        pfp: String,
+        is_bot: u8,
+        is_deleted: u8,
+    }
+    let info: Option<UserInfoRow> = ch
+        .query("SELECT display_name, pfp, is_bot, is_deleted FROM users FINAL WHERE user_id = ?")
         .bind(slack_id)
-        .fetch_one()
+        .fetch_optional()
         .await
+        .unwrap_or(None);
+    let is_bot = info.as_ref().map(|i| i.is_bot == 1).unwrap_or(false);
+    let is_deleted = info.as_ref().map(|i| i.is_deleted == 1).unwrap_or(false);
+    let display_name = info
+        .as_ref()
+        .map(|i| i.display_name.clone())
         .unwrap_or_default();
-
-    let pfp_url: String = ch
-        .query("SELECT pfp FROM users FINAL WHERE user_id = ?")
-        .bind(slack_id)
-        .fetch_one()
-        .await
-        .unwrap_or_default();
+    let pfp_url = info.as_ref().map(|i| i.pfp.clone()).unwrap_or_default();
     let pfp = local_pfp(slack_id, &pfp_url);
 
     let total_messages: u64 = ch
@@ -944,34 +961,40 @@ async fn get_user_stats(
             rank: u64,
         }
 
-        let score: Option<i64> = ch
-            .query("SELECT score FROM user_scores FINAL WHERE user_id = ? LIMIT 1")
-            .bind(slack_id)
-            .fetch_optional()
-            .await
-            .unwrap_or(None);
-        match score {
-            Some(_) => ch
-                .query(
-                    "SELECT count() + 1
-                     FROM (
-                         SELECT user_id FROM user_scores FINAL
-                         WHERE score > (
-                             SELECT score FROM user_scores FINAL WHERE user_id = ? LIMIT 1
-                         )
-                     )",
-                )
+        if is_bot || is_deleted {
+            String::new()
+        } else {
+            let score: Option<i64> = ch
+                .query("SELECT score FROM user_scores FINAL WHERE user_id = ? LIMIT 1")
                 .bind(slack_id)
-                .fetch_one::<RankRow>()
+                .fetch_optional()
                 .await
-                .map(|r| format!("#{}", fmt_thousands(r.rank)))
-                .unwrap_or_default(),
-            None => String::new(),
+                .unwrap_or(None);
+            match score {
+                Some(_) => ch
+                    .query(&format!(
+                        "SELECT count() + 1
+                         FROM (
+                             SELECT user_id FROM user_scores FINAL
+                             WHERE {EXCLUDE_BOTS_DELETED} AND score > (
+                                 SELECT score FROM user_scores FINAL WHERE user_id = ? LIMIT 1
+                             )
+                         )"
+                    ))
+                    .bind(slack_id)
+                    .fetch_one::<RankRow>()
+                    .await
+                    .map(|r| format!("#{}", fmt_thousands(r.rank)))
+                    .unwrap_or_default(),
+                None => String::new(),
+            }
         }
     };
 
     let template = UserTemplate {
-        display_name: if display_name.is_empty() {
+        display_name: if is_deleted {
+            "Deleted account".to_string()
+        } else if display_name.is_empty() {
             slack_id.to_string()
         } else {
             display_name
@@ -1023,7 +1046,10 @@ async fn get_channel_stats(
         .unwrap_or(0);
 
     let active_users: u64 = ch
-        .query("SELECT uniqExact(user_id) FROM slack_messages WHERE channel_id = ?")
+        .query(&format!(
+            "SELECT uniqExact(user_id) FROM slack_messages
+             WHERE channel_id = ? AND {EXCLUDE_BOTS_DELETED}"
+        ))
         .bind(channel_id)
         .fetch_one()
         .await
@@ -1050,14 +1076,14 @@ async fn get_channel_stats(
     }
 
     let posters: Vec<PosterRow> = ch
-        .query(
+        .query(&format!(
             "SELECT user_id, count() as messages
              FROM slack_messages
-             WHERE channel_id = ?
+             WHERE channel_id = ? AND {EXCLUDE_BOTS_DELETED}
              GROUP BY user_id
              ORDER BY messages DESC
-             LIMIT 10",
-        )
+             LIMIT 10"
+        ))
         .bind(channel_id)
         .fetch_all()
         .await
@@ -1070,6 +1096,7 @@ async fn get_channel_stats(
         user_id: String,
         display_name: String,
         pfp: String,
+        is_deleted: u8,
     }
 
     let poster_names: std::collections::HashMap<String, (String, String)> = if name_ids.is_empty() {
@@ -1077,14 +1104,21 @@ async fn get_channel_stats(
     } else {
         let in_list = name_ids.join("', '");
         ch.query(&format!(
-            "SELECT user_id, display_name, pfp FROM users FINAL WHERE user_id IN ('{}')",
+            "SELECT user_id, display_name, pfp, is_deleted FROM users FINAL WHERE user_id IN ('{}')",
             in_list
         ))
         .fetch_all::<PosterNameRow>()
         .await
         .unwrap_or_default()
         .into_iter()
-        .map(|r| (r.user_id, (r.display_name, r.pfp)))
+        .map(|r| {
+            let label = if r.is_deleted == 1 {
+                "Deleted account".to_string()
+            } else {
+                r.display_name
+            };
+            (r.user_id, (label, r.pfp))
+        })
         .collect()
     };
 
@@ -1165,7 +1199,9 @@ async fn compute_stats(state: &AppState) -> StatsSnapshot {
         .unwrap_or(0);
 
     let active_users: u64 = ch
-        .query("SELECT uniqExact(user_id) FROM slack_messages")
+        .query(&format!(
+            "SELECT uniqExact(user_id) FROM slack_messages WHERE {EXCLUDE_BOTS_DELETED}"
+        ))
         .fetch_one()
         .await
         .unwrap_or(0);
@@ -1183,7 +1219,7 @@ async fn compute_stats(state: &AppState) -> StatsSnapshot {
         .unwrap_or(0);
 
     let total_users: u64 = ch
-        .query("SELECT count() FROM users FINAL")
+        .query("SELECT count() FROM users FINAL WHERE is_bot = 0 AND is_deleted = 0")
         .fetch_one()
         .await
         .unwrap_or(0);

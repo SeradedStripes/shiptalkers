@@ -499,16 +499,21 @@ async fn query_coding_seconds(
 }
 
 async fn user_display_name(clickhouse: &clickhouse::Client, user: &str) -> String {
-    let name: String = clickhouse
-        .query("SELECT display_name FROM users FINAL WHERE user_id = ?")
+    #[derive(clickhouse::Row, serde::Deserialize)]
+    struct NameRow {
+        display_name: String,
+        is_deleted: u8,
+    }
+    let row: Option<NameRow> = clickhouse
+        .query("SELECT display_name, is_deleted FROM users FINAL WHERE user_id = ?")
         .bind(user)
-        .fetch_one()
+        .fetch_optional()
         .await
-        .unwrap_or_default();
-    if name.is_empty() {
-        user.to_string()
-    } else {
-        name
+        .unwrap_or(None);
+    match row {
+        Some(r) if r.is_deleted == 1 => "Deleted account".to_string(),
+        Some(r) if !r.display_name.is_empty() => r.display_name,
+        _ => user.to_string(),
     }
 }
 
