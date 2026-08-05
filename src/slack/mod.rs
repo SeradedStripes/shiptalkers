@@ -497,13 +497,14 @@ impl SlackClientPool {
                         .get("updated")
                         .and_then(|v| v.as_u64().or_else(|| v.as_f64().map(|f| f as u64)))
                         .unwrap_or(0);
+                    let is_deleted = deleted || (display_name.is_empty() && !is_bot);
                     page_users.push(SlackUser {
                         id: id.to_string(),
                         display_name,
                         pfp,
                         updated,
                         is_bot,
-                        is_deleted: deleted || (display_name.is_empty() && !is_bot),
+                        is_deleted,
                     });
                 }
             }
