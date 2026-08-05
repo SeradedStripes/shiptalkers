@@ -386,8 +386,16 @@ async fn post_admin_settings(
     let entries: Vec<(String, String)> = settings::SETTING_KEYS
         .iter()
         .filter_map(|key| {
-            form.get(*key)
-                .map(|v| ((*key).to_string(), v.trim().to_string()))
+            form.get(*key).map(|v| {
+                (
+                    (*key).to_string(),
+                    v.lines()
+                        .map(str::trim)
+                        .filter(|line| !line.is_empty())
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                )
+            })
         })
         .collect();
     if let Err(e) = state.settings.update(&state.auth_db, &entries).await {
