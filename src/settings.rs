@@ -172,3 +172,31 @@ impl RuntimeSettings {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn update_applies_immediately() {
+        let db = Arc::new(crate::db::sqlite::AuthDb::open(":memory:").unwrap());
+        let settings = RuntimeSettings::load(&db).await;
+        settings
+            .update(&db, &[("SLACK_REQUEST_DELAY_MS".into(), "777".into())])
+            .await
+            .unwrap();
+        assert_eq!(settings.get("SLACK_REQUEST_DELAY_MS"), "777");
+    }
+
+    #[tokio::test]
+    async fn readonly_keys_are_ignored() {
+        let db = Arc::new(crate::db::sqlite::AuthDb::open(":memory:").unwrap());
+        let settings = RuntimeSettings::load(&db).await;
+        settings
+            .update(&db, &[("SQLITE_DB_PATH".into(), "changed".into())])
+            .await
+            .unwrap();
+        assert_eq!(settings.get("SQLITE_DB_PATH"), "data/auth.db");
+    }
+}

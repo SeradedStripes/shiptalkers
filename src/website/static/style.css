@@ -116,9 +116,22 @@ table a:hover { text-decoration: underline; }
 .table-card h2 { font-size: 1.25rem; margin-bottom: 1rem; display: flex; align-items: center; gap: 0.5rem; }
 .empty { text-align: center; color: #666; }
 
-.setting-row { display: flex; align-items: center; gap: 1rem; margin-bottom: 1rem; }
-.setting-row label { flex: 0 0 320px; color: #ccc; display: flex; align-items: center; gap: 0.5rem; }
-.setting-row input { flex: 1; background: #1a1a1a; border: 1px solid #333; color: #eee; border-radius: 8px; padding: 0.6rem 0.75rem; }
-.setting-row input:disabled { opacity: 0.5; }
-.badge { font-size: 0.6875rem; text-transform: uppercase; color: #fbbf24; border: 1px solid #fbbf24; border-radius: 999px; padding: 0.125rem 0.5rem; }
-@media (max-width: 700px) { .setting-row { flex-direction: column; align-items: stretch; gap: 0.35rem; } .setting-row label { flex: none; } }
+body.admin .container { max-width: 800px; }
+
+.admin-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 1rem; margin-top: 2rem; }
+.admin-card { background: #1a1a1a; border-radius: 12px; padding: 1.5rem; text-decoration: none; display: block; }
+.admin-card:hover { background: #202020; }
+.admin-card h2 { color: #fff; margin-bottom: 0.5rem; }
+.admin-card p { margin-bottom: 1.25rem; }
+
+.setting-block { background: #1a1a1a; border: 1px solid #262626; border-radius: 12px; padding: 1rem 1.25rem; margin-bottom: 1rem; }
+.setting-head { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.6rem; flex-wrap: wrap; }
+.setting-key { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.875rem; color: #fff; }
+.setting-block input { width: 100%; background: #0f0f0f; border: 1px solid #333; color: #eee; border-radius: 8px; padding: 0.6rem 0.75rem; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.setting-block input:focus { outline: none; border-color: #f472b6; }
+.setting-block input:disabled { opacity: 0.5; }
+.badge { font-size: 0.6875rem; text-transform: uppercase; letter-spacing: 0.03em; color: #fbbf24; border: 1px solid #fbbf24; border-radius: 999px; padding: 0.125rem 0.5rem; }
+.badge.live { color: #22c55e; border-color: #22c55e; }
+.badge.readonly { color: #888; border-color: #555; }
+.reveal-btn { margin-left: auto; background: #262626; border: 1px solid #333; color: #aaa; border-radius: 8px; padding: 0.25rem 0.75rem; font-size: 0.75rem; cursor: pointer; }
+.reveal-btn:hover { color: #fff; border-color: #555; }

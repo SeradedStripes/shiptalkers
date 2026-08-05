@@ -1,5 +1,5 @@
-// The only JavaScript on the site. Converts UTC <time> elements to the
-// visitor's local timezone. With JS disabled the UTC fallback text stays.
+// The only JavaScript loaded on public pages. Converts UTC <time> elements to
+// the visitor's local timezone. With JS disabled the UTC fallback text stays.
 document.querySelectorAll("time[datetime]").forEach(function (el) {
     var d = new Date(el.getAttribute("datetime"));
     if (isNaN(d.getTime())) {

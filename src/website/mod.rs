@@ -190,6 +190,13 @@ pub struct LeaderboardCategoryTemplate {
 pub struct AdminTemplate {
     pub signed_in: bool,
     pub is_admin: bool,
+}
+
+#[derive(Template)]
+#[template(path = "admin_config.html")]
+pub struct ConfigTemplate {
+    pub signed_in: bool,
+    pub is_admin: bool,
     pub fields: Vec<SettingField>,
 }
 
@@ -197,8 +204,8 @@ pub struct SettingField {
     pub key: String,
     pub value: String,
     pub secret: bool,
-    pub restart: bool,
     pub readonly: bool,
+    pub live: bool,
 }
 
 pub struct LeaderboardEntry {
@@ -242,6 +249,7 @@ pub fn router(
         .route("/", get(get_index))
         .route("/link", get(auth::get_link))
         .route("/admin", get(get_admin))
+        .route("/admin/config", get(get_admin_config))
         .route("/admin/settings", post(post_admin_settings))
         .route("/stats", get(get_stats_page))
         .route("/stats/:id", get(get_stats_for_id))
@@ -279,6 +287,15 @@ pub fn router(
                     .unwrap()
             }),
         )
+        .route(
+            "/admin.js",
+            get(|| async {
+                axum::response::Response::builder()
+                    .header(axum::http::header::CONTENT_TYPE, "application/javascript")
+                    .body(axum::body::Body::from(include_str!("static/admin.js")))
+                    .unwrap()
+            }),
+        )
         .fallback_service(ServeDir::new("static"))
         .with_state(state)
 }
@@ -313,6 +330,23 @@ async fn get_admin(
     if !is_admin(&state, &headers) {
         return Err(StatusCode::FORBIDDEN);
     }
+    let template = AdminTemplate {
+        signed_in: signed_in(&state, &headers),
+        is_admin: true,
+    };
+    let html = template
+        .render()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Html(html))
+}
+
+async fn get_admin_config(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Html<String>, StatusCode> {
+    if !is_admin(&state, &headers) {
+        return Err(StatusCode::FORBIDDEN);
+    }
     let fields = state
         .settings
         .all()
@@ -325,12 +359,12 @@ async fn get_admin(
                 key,
                 value,
                 secret,
-                restart,
                 readonly,
+                live: !restart,
             }
         })
         .collect();
-    let template = AdminTemplate {
+    let template = ConfigTemplate {
         signed_in: signed_in(&state, &headers),
         is_admin: true,
         fields,
@@ -360,7 +394,7 @@ async fn post_admin_settings(
         tracing::error!("Failed to update settings: {}", e);
         return Err(StatusCode::INTERNAL_SERVER_ERROR);
     }
-    Ok(Redirect::to("/admin"))
+    Ok(Redirect::to("/admin/config"))
 }
 
 async fn get_pfp(State(state): State<AppState>, Path(user_id): Path<String>) -> Response {

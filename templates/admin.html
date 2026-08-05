@@ -10,25 +10,16 @@
     {% include "header.html" %}
     <div class="container">
         <h1>Admin Panel</h1>
-        <p>Settings apply immediately where possible. Keys marked restart apply on the next restart.</p>
-        <form method="post" action="/admin/settings">
-            {% for field in fields %}
-            <div class="setting-row">
-                <label for="{{ field.key }}">
-                    {{ field.key }}
-                    {% if field.restart %}<span class="badge">restart</span>{% endif %}
-                    {% if field.readonly %}<span class="badge">read only</span>{% endif %}
-                </label>
-                {% if field.secret %}
-                <input type="password" id="{{ field.key }}" name="{{ field.key }}" value="{{ field.value }}" {% if field.readonly %}disabled{% endif %}>
-                {% else %}
-                <input type="text" id="{{ field.key }}" name="{{ field.key }}" value="{{ field.value }}" {% if field.readonly %}disabled{% endif %}>
-                {% endif %}
-            </div>
-            {% endfor %}
-            <button type="submit" class="btn">Save Settings</button>
-        </form>
+        <p>Manage Ship Talkers configuration and integrations.</p>
+        <div class="admin-grid">
+            <a href="/admin/config" class="admin-card">
+                <h2>Configuration</h2>
+                <p>Environment variables and runtime settings. Live changes apply immediately.</p>
+                <span class="btn">Open Configuration</span>
+            </a>
+        </div>
     </div>
     {% include "footer.html" %}
 </body>
+<script src="/admin.js" defer></script>
 </html>

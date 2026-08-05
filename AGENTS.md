@@ -37,8 +37,9 @@ Scrapes every public channel and thread reply from Hack Club Slack into ClickHou
 - `src/db/clickhouse_db.rs` - ClickHouse schema, inserts, checkpoint queries, periodic `OPTIMIZE TABLE slack_messages` (24h, no startup dedup); `user_scores` (per-user Slack Time score and metrics, `ReplacingMergeTree(updated)`) refreshed by `recompute_user_scores` whenever a user's messages change, in batches of 50 users
 - `src/db/sqlite.rs` - SQLite auth DB (`linked_users`), the only non-ClickHouse datastore; also holds the `settings` table backing runtime settings
 - `src/settings.rs` - runtime settings: seeded from the SQLite `settings` table with env-var fallback, exposed as `RuntimeSettings` (an `Arc<RwLock<HashMap>>`) so admin edits apply without a restart; `SETTING_KEYS`, `SECRET_KEYS`, `RESTART_KEYS`, `READONLY_KEYS`, and `default_value` drive the admin form and save/apply logic
-- `src/website/mod.rs` - axum router, server-rendered `/stats`, `/stats/:id` (user or channel, dispatched by `U`/`C` prefix), `/leaderboard` and `/search` via askama; `/pfp/:id` looks up the stored Slack pfp URL and redirects to it; `/admin` (guarded by `ADMIN_SLACK_IDS`) shows the settings panel with POST `/admin/settings` saving via `RuntimeSettings::update`
-- `templates/admin.html` - askama template for the admin panel page
+- `src/website/mod.rs` - axum router, server-rendered `/stats`, `/stats/:id` (user or channel, dispatched by `U`/`C` prefix), `/leaderboard` and `/search` via askama; `/pfp/:id` looks up the stored Slack pfp URL and redirects to it; `/admin` (guarded by `ADMIN_SLACK_IDS`) is a dashboard linking to `/admin/config`, which lists every setting with its value, live/restart/read-only tags, and a show/hide toggle for secrets; POST `/admin/settings` saves via `RuntimeSettings::update`
+- `templates/admin.html` - askama template for the admin dashboard page (links to the config page)
+- `templates/admin_config.html` - askama template for the admin config page, one block per setting: key with live/restart/read-only tags and a show/hide toggle for secrets, value input below
 - `templates/stats.html` - askama template for the stats page
 - `templates/user.html` - askama template for the per-user stats page
 - `templates/channel.html` - askama template for the per-channel stats page
@@ -46,7 +47,7 @@ Scrapes every public channel and thread reply from Hack Club Slack into ClickHou
 - `templates/search.html` - askama template for user and channel search results
 - `templates/search_form.html` - shared inline search form partial
 - `templates/slack_image.html` - askama SVG template for the stats bot card (CSS inlined from `slack_image_stats.css`)
-- `src/website/static/` - style.css, time.js, slack_image_stats.css
+- `src/website/static/` - style.css, time.js, admin.js, slack_image_stats.css
 - `src/formula.rs` - Slack Time formula evaluator and the `SLACK_TIME_CALCULATION_FORMULA` code constant (edit here to change the algorithm)
 
 ## Slack Time Formula
@@ -60,14 +61,14 @@ Scrapes every public channel and thread reply from Hack Club Slack into ClickHou
 - Progress tracking uses `max(message_ts)` per channel and `max(thread reply ts)` per thread.
 - Logging is `tracing` only. Per-channel, per-thread, and per-fetch work logs at debug; inserts, page progress, and 15s `Progress:` lines log at info.
 - Multi-token scraping round-robins channel shards across tokens and prefixes log lines with `[token k]`.
-- The website has exactly one JavaScript file (`src/website/static/time.js`, loaded via `header.html`), which converts UTC `<time>` elements to the visitor's local timezone. Everything else renders server side with askama and auto refreshes via `<meta http-equiv="refresh">`. Number formatting lives in Rust (`fmt_thousands`).
+- The website has exactly one public JavaScript file (`src/website/static/time.js`, loaded via `header.html`), which converts UTC `<time>` elements to the visitor's local timezone; `admin.js` is loaded only on the admin pages and wires the config show/hide buttons. Everything else renders server side with askama and auto refreshes via `<meta http-equiv="refresh">`. Number formatting lives in Rust (`fmt_thousands`).
 - ClickHouse row structs use `#[derive(clickhouse::Row, serde::Deserialize)]`, plus `Serialize` when inserting.
 - Queries that must survive transient DB issues fall back with `unwrap_or` / `unwrap_or_default`, never panic.
 - Errors use `Box<dyn std::error::Error>` (plus `Send + Sync` across await points) or `String` in scraper tasks.
 
 ## Environment Variables
 
-All settings below are runtime-editable from `/admin` and persisted to the SQLite `settings` table; env vars seed the value on first run and act as fallback for keys never saved. Keys marked restart apply on the next restart.
+All settings below are runtime-editable from `/admin/config` and persisted to the SQLite `settings` table; env vars seed the value on first run and act as fallback for keys never saved. Keys marked restart apply on the next restart.
 
 - `SLACK_BOT_TOKENS` - required, comma-separated bot tokens (one per Slack app); `conversations.list` / `users.list` pages round-robin across them, stats bot replies always use the first entry (the main bot). Live-applies.
 - `SLACK_USER_TOKENS` - comma-separated user tokens, sharded round-robin per channel. Live-applies.
