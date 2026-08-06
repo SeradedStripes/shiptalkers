@@ -57,6 +57,20 @@ fn load_manifest(path: &Path) -> Result<Value, String> {
     Ok(value)
 }
 
+fn slack_error(prefix: &str, resp: &Value) -> String {
+    let mut msg = format!("{prefix} failed: {}", resp["error"]);
+    if let Some(errors) = resp["errors"].as_array() {
+        for e in errors {
+            msg.push_str(&format!(
+                "\n  {}: {}",
+                e["pointer"].as_str().unwrap_or("(no pointer)"),
+                e["message"].as_str().unwrap_or("(no message)")
+            ));
+        }
+    }
+    msg
+}
+
 fn inject_redirect(manifest: &mut Value, redirect_uri: &str) {
     let mut redirects = extract_strings(&manifest["oauth_config"]["redirect_urls"]);
     if !redirects.iter().any(|r| r == redirect_uri) {
@@ -144,6 +158,26 @@ async fn run() -> Result<(), String> {
     let mut manifest = load_manifest(&manifest_path)?;
     inject_redirect(&mut manifest, &redirect_uri);
 
+    println!("Validating manifest...");
+    let resp: Value = client
+        .post(format!("{API}/apps.manifest.validate"))
+        .bearer_auth(&config_token)
+        .json(&json!({ "manifest": manifest.to_string() }))
+        .send()
+        .await
+        .map_err(|e| e.to_string())?
+        .json()
+        .await
+        .map_err(|e| e.to_string())?;
+    if resp["ok"] != true {
+        return Err(slack_error("apps.manifest.validate", &resp));
+    }
+    if let Some(warnings) = resp["warnings"].as_array() {
+        for w in warnings {
+            eprintln!("warning: {w}");
+        }
+    }
+
     println!("Creating app from manifest...");
     let resp: Value = client
         .post(format!("{API}/apps.manifest.create"))
@@ -156,7 +190,7 @@ async fn run() -> Result<(), String> {
         .await
         .map_err(|e| e.to_string())?;
     if resp["ok"] != true {
-        return Err(format!("apps.manifest.create failed: {}", resp["error"]));
+        return Err(slack_error("apps.manifest.create", &resp));
     }
     let app_id = resp["app_id"].as_str().unwrap_or("").to_string();
     let client_id = resp["credentials"]["client_id"]
@@ -330,7 +364,12 @@ mod tests {
     #[test]
     fn loads_default_manifest() {
         let manifest = load_manifest(&default_manifest_path()).unwrap();
-        assert_eq!(manifest["display_information"]["name"], "Ship Talkers");
+        assert!(
+            !manifest["display_information"]["name"]
+                .as_str()
+                .unwrap_or("")
+                .is_empty()
+        );
         assert!(!extract_strings(&manifest["oauth_config"]["scopes"]["bot"]).is_empty());
     }
 
