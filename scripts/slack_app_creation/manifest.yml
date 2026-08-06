@@ -1,0 +1,39 @@
+display_information:
+  name: ShipTalkers-Scraping
+  description: "scrapes"
+  background_color: "#0f0f0f"
+features:
+  bot_user:
+    display_name: Ship Talkers
+    always_online: true
+oauth_config:
+  redirect_urls: []
+  scopes:
+    bot:
+      - apps:connections:open
+      - channels:history
+      - channels:read
+      - chat:write
+      - files:write
+      - groups:history
+      - groups:read
+      - im:history
+      - mpim:history
+      - users:read
+      - users.profile:read
+    user:
+      - channels:history
+      - channels:read
+      - groups:history
+      - groups:read
+      - im:history
+      - mpim:history
+      - users:read
+      - users.profile:read
+settings:
+  event_subscriptions:
+    request_url: ""
+    bot_events:
+      - message.channels
+      - channel_created
+  socket_mode_enabled: true

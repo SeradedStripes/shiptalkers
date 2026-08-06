@@ -49,6 +49,7 @@ Scrapes every public channel and thread reply from Hack Club Slack into ClickHou
 - `templates/slack_image.html` - askama SVG template for the stats bot card (CSS inlined from `slack_image_stats.css`)
 - `src/website/static/` - style.css, time.js, admin.js, slack_image_stats.css
 - `src/formula.rs` - Slack Time formula evaluator and the `SLACK_TIME_CALCULATION_FORMULA` code constant (edit here to change the algorithm)
+- `scripts/slack_app_creation/` - standalone Rust CLI that creates a Slack app from a manifest (default `manifest.yml` in the same directory as `.env.example`, or one passed as an argument) via an app configuration token and runs a one-shot OAuth install to print the bot and user tokens; configured through env vars (`SLACK_CONFIG_TOKEN`, `SLACK_CONFIG_REFRESH_TOKEN`, `SLACK_INSTALL_PORT`), see `.env.example`
 
 ## Slack Time Formula
 
