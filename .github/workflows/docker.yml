@@ -12,6 +12,7 @@ on:
       - .dockerignore
       - compose.dev.yml
       - compose.prod.yml
+      - "**/manifest.yml"
   workflow_dispatch:
 
 env:
