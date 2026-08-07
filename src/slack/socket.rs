@@ -188,6 +188,7 @@ async fn serve_socket(
     let resp: ConnectionsOpenResponse = client
         .post("https://slack.com/api/apps.connections.open")
         .header("Authorization", format!("Bearer {}", app_token))
+        .timeout(std::time::Duration::from_secs(30))
         .send()
         .await?
         .json()
@@ -204,16 +205,34 @@ async fn serve_socket(
         num_sockets
     );
 
-    let (mut ws_stream, _) = connect_async(&ws_url).await?;
+    let (mut ws_stream, _) =
+        tokio::time::timeout(std::time::Duration::from_secs(30), connect_async(&ws_url))
+            .await
+            .map_err(|_| "Timed out connecting to Socket Mode WebSocket".to_string())??;
     tracing::info!(
         "Connected to Slack Socket Mode (app {}/{})",
         socket_idx + 1,
         num_sockets
     );
 
-    while let Some(msg) = ws_stream.next().await {
-        match msg {
-            Ok(Message::Text(text)) => {
+    loop {
+        let received =
+            tokio::time::timeout(std::time::Duration::from_secs(60), ws_stream.next()).await;
+        match received {
+            Err(_) => {
+                tracing::warn!(
+                    "Socket Mode connection idle, reconnecting (app {}/{})",
+                    socket_idx + 1,
+                    num_sockets
+                );
+                break;
+            }
+            Ok(None) => break,
+            Ok(Some(Err(e))) => {
+                tracing::error!("WebSocket error: {}", e);
+                break;
+            }
+            Ok(Some(Ok(Message::Text(text)))) => {
                 if let Ok(socket_msg) = serde_json::from_str::<SocketMessage>(&text) {
                     match socket_msg.msg_type.as_str() {
                         "hello" => {
@@ -260,14 +279,10 @@ async fn serve_socket(
                     }
                 }
             }
-            Ok(Message::Ping(_)) => {
+            Ok(Some(Ok(Message::Ping(_)))) => {
                 let _ = ws_stream.send(Message::Pong(vec![])).await;
             }
-            Err(e) => {
-                tracing::error!("WebSocket error: {}", e);
-                break;
-            }
-            _ => {}
+            Ok(Some(Ok(_))) => {}
         }
     }
 
