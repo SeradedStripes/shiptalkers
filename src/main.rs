@@ -94,12 +94,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let clickhouse_for_socket = database.clickhouse.clone();
         let auth_db_for_socket = auth_db.clone();
         let settings_for_socket = settings.clone();
+        let slack_time_for_socket = slack_time.clone();
         tokio::spawn(async move {
             if let Err(e) = slack::start_socket_mode(
                 socket_config,
                 clickhouse_for_socket,
                 auth_db_for_socket,
                 settings_for_socket,
+                slack_time_for_socket,
             )
             .await
             {

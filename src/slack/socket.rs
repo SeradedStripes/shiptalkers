@@ -76,6 +76,7 @@ pub async fn start_socket_mode(
     clickhouse: clickhouse::Client,
     auth_db: std::sync::Arc<AuthDb>,
     settings: RuntimeSettings,
+    slack_time: crate::formula::Formula,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     if config.app_tokens.is_empty() {
         return Err("No SLACK_APP_TOKENS set, Socket Mode disabled".into());
@@ -101,6 +102,7 @@ pub async fn start_socket_mode(
             clickhouse,
             auth_db,
             settings,
+            slack_time.clone(),
         ));
     }
 
@@ -125,6 +127,7 @@ async fn run_socket(
     clickhouse: clickhouse::Client,
     auth_db: std::sync::Arc<AuthDb>,
     settings: RuntimeSettings,
+    slack_time: crate::formula::Formula,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let client = Client::new();
     let mut failures = 0u32;
@@ -138,6 +141,7 @@ async fn run_socket(
             &clickhouse,
             &auth_db,
             &settings,
+            &slack_time,
         )
         .await
         {
@@ -179,6 +183,7 @@ async fn serve_socket(
     clickhouse: &clickhouse::Client,
     auth_db: &std::sync::Arc<AuthDb>,
     settings: &RuntimeSettings,
+    slack_time: &crate::formula::Formula,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let resp: ConnectionsOpenResponse = client
         .post("https://slack.com/api/apps.connections.open")
@@ -238,6 +243,7 @@ async fn serve_socket(
                                             auth_db,
                                             clickhouse,
                                             settings,
+                                            slack_time,
                                             event,
                                         )
                                         .await;
@@ -312,6 +318,7 @@ async fn handle_message(
     auth_db: &std::sync::Arc<AuthDb>,
     clickhouse: &clickhouse::Client,
     settings: &RuntimeSettings,
+    slack_time: &crate::formula::Formula,
     event: &serde_json::Value,
 ) {
     let main_channel = settings.get("SLACK_MAIN_CHANNEL");
@@ -375,7 +382,7 @@ async fn handle_message(
         return;
     }
 
-    let (slack_seconds, coding_seconds) = query_stats(clickhouse, &user, &range).await;
+    let (slack_seconds, coding_seconds) = query_stats(clickhouse, &user, &range, slack_time).await;
     let user_name = user_display_name(clickhouse, &user).await;
 
     let (percent, more, other) = if slack_seconds >= coding_seconds {
@@ -426,8 +433,13 @@ async fn handle_message(
     }
 }
 
-async fn query_stats(clickhouse: &clickhouse::Client, user: &str, range: &TimeRange) -> (u64, u64) {
-    let slack = query_slack_seconds(clickhouse, user, range).await;
+async fn query_stats(
+    clickhouse: &clickhouse::Client,
+    user: &str,
+    range: &TimeRange,
+    slack_time: &crate::formula::Formula,
+) -> (u64, u64) {
+    let slack = query_slack_seconds(clickhouse, user, range, slack_time).await;
     let coding = query_coding_seconds(clickhouse, user, range).await;
     (slack, coding)
 }
@@ -436,8 +448,9 @@ async fn query_slack_seconds(
     clickhouse: &clickhouse::Client,
     user: &str,
     range: &TimeRange,
+    slack_time: &crate::formula::Formula,
 ) -> u64 {
-    let mut sql = String::from(
+    let mut session_sql = String::from(
         "WITH
          msg AS (
              SELECT toInt64(splitByChar('.', message_ts)[1]) AS ts
@@ -445,9 +458,9 @@ async fn query_slack_seconds(
              WHERE user_id = ?",
     );
     if range.start_ts().is_some() {
-        sql.push_str(" AND ts >= ?");
+        session_sql.push_str(" AND ts >= ?");
     }
-    sql.push_str(
+    session_sql.push_str(
         "),
          flagged AS (
              SELECT ts, if(ts - lag(ts) OVER (ORDER BY ts) > 2100, 1, 0) AS boundary
@@ -462,16 +475,66 @@ async fn query_slack_seconds(
              FROM sess
              GROUP BY sid
          )
-         SELECT sum(least(end_ts + 300 - start_ts, 14400)) AS total_time
+         SELECT sum(least(end_ts + 300 - start_ts, 14400)) AS total_time,
+                count() AS sessions
          FROM sessions",
     );
 
-    let mut query = clickhouse.query(&sql);
-    query = query.bind(user);
+    let mut session_query = clickhouse.query(&session_sql);
+    session_query = session_query.bind(user);
     if let Some(start_ts) = range.start_ts() {
-        query = query.bind(start_ts);
+        session_query = session_query.bind(start_ts);
     }
-    query.fetch_one::<u64>().await.unwrap_or(0)
+
+    #[derive(clickhouse::Row, serde::Deserialize)]
+    struct SessionRow {
+        total_time: u64,
+        sessions: u64,
+    }
+
+    let session: SessionRow = session_query.fetch_one().await.unwrap_or(SessionRow {
+        total_time: 0,
+        sessions: 0,
+    });
+
+    let mut counts_sql = String::from(
+        "SELECT count() AS message_count, sum(char_length(text)) AS total_chars
+         FROM slack_messages
+         WHERE user_id = ?",
+    );
+    if range.start_ts().is_some() {
+        counts_sql.push_str(" AND toInt64(splitByChar('.', message_ts)[1]) >= ?");
+    }
+    let mut counts_query = clickhouse.query(&counts_sql);
+    counts_query = counts_query.bind(user);
+    if let Some(start_ts) = range.start_ts() {
+        counts_query = counts_query.bind(start_ts);
+    }
+
+    #[derive(clickhouse::Row, serde::Deserialize)]
+    struct CountsRow {
+        message_count: u64,
+        total_chars: u64,
+    }
+
+    let counts: CountsRow = counts_query.fetch_one().await.unwrap_or(CountsRow {
+        message_count: 0,
+        total_chars: 0,
+    });
+
+    slack_time
+        .eval(&crate::formula::Metrics {
+            message_count: counts.message_count,
+            session_seconds: session.total_time,
+            session_count: session.sessions,
+            avg_message_length: if counts.message_count > 0 {
+                counts.total_chars as f64 / counts.message_count as f64
+            } else {
+                0.0
+            },
+            total_chars: counts.total_chars,
+        })
+        .max(0.0) as u64
 }
 
 async fn query_coding_seconds(
