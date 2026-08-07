@@ -6,9 +6,34 @@ use std::collections::HashMap;
 pub struct SlackMessageRow {
     pub user_id: String,
     pub channel_id: String,
-    pub message_ts: String,
+    pub message_ts: u64,
     pub text: String,
     pub thread_ts: Option<String>,
+}
+
+/// Converts a Slack timestamp string ("seconds.microseconds") to microseconds.
+pub fn slack_ts_to_micros(ts: &str) -> u64 {
+    let (secs, frac) = match ts.split_once('.') {
+        Some((s, f)) => (s, f),
+        None => (ts, "0"),
+    };
+    let secs: u64 = secs.parse().unwrap_or(0);
+    let micros: u64 = frac.parse().unwrap_or(0);
+    secs.saturating_mul(1_000_000).saturating_add(micros)
+}
+
+/// Formats microseconds as a Slack timestamp string ("seconds.microseconds").
+pub fn micros_to_slack_ts(micros: u64) -> String {
+    format!("{}.{:06}", micros / 1_000_000, micros % 1_000_000)
+}
+
+/// Parses an ISO "YYYY-MM-DD" date string into a `time::Date`.
+pub fn parse_date(s: &str) -> Option<time::Date> {
+    let mut parts = s.split('-');
+    let year: i32 = parts.next()?.parse().ok()?;
+    let month: u8 = parts.next()?.parse().ok()?;
+    let day: u8 = parts.next()?.parse().ok()?;
+    time::Date::from_calendar_date(year, time::Month::try_from(month).ok()?, day).ok()
 }
 
 #[derive(Debug, Row, Serialize, Deserialize)]
@@ -38,7 +63,7 @@ pub async fn init_tables(client: &Client) -> Result<(), Box<dyn std::error::Erro
             "CREATE TABLE IF NOT EXISTS slack_messages (
                 user_id String,
                 channel_id String,
-                message_ts String,
+                message_ts UInt64,
                 text String,
                 thread_ts Nullable(String)
             ) ENGINE = ReplacingMergeTree()
@@ -53,6 +78,9 @@ pub async fn init_tables(client: &Client) -> Result<(), Box<dyn std::error::Erro
         .execute()
         .await
         .ok();
+
+    // Migrate message_ts from String ("seconds.microseconds") to UInt64 microseconds
+    migrate_slack_messages_ts(client).await?;
 
     client
         .query(
@@ -106,7 +134,7 @@ pub async fn init_tables(client: &Client) -> Result<(), Box<dyn std::error::Erro
         .query(
             "CREATE TABLE IF NOT EXISTS coding_activity (
                 user_id String,
-                date String,
+                date Date,
                 minutes Int64,
                 language Nullable(String)
             ) ENGINE = ReplacingMergeTree()
@@ -114,6 +142,9 @@ pub async fn init_tables(client: &Client) -> Result<(), Box<dyn std::error::Erro
         )
         .execute()
         .await?;
+
+    // Migrate date from String ("YYYY-MM-DD") to Date
+    migrate_coding_activity_date(client).await?;
 
     client
         .query(
@@ -278,6 +309,172 @@ async fn migrate_slack_messages(client: &Client) -> Result<(), Box<dyn std::erro
     Ok(())
 }
 
+async fn migrate_slack_messages_ts(client: &Client) -> Result<(), Box<dyn std::error::Error>> {
+    #[derive(Debug, Row, Deserialize)]
+    struct TypeRow {
+        type_: String,
+    }
+
+    let current: Option<TypeRow> = client
+        .query(
+            "SELECT type AS type_ FROM system.columns
+             WHERE database = currentDatabase() AND table = 'slack_messages' AND name = 'message_ts'",
+        )
+        .fetch_optional()
+        .await?;
+
+    if current
+        .as_ref()
+        .map(|r| r.type_.as_str() == "UInt64")
+        .unwrap_or(false)
+    {
+        return Ok(());
+    }
+    if current.is_none() {
+        return Ok(());
+    }
+
+    tracing::info!("Migrating slack_messages.message_ts to UInt64...");
+
+    client
+        .query("DROP TABLE IF EXISTS slack_messages_new")
+        .execute()
+        .await?;
+    client
+        .query(
+            "CREATE TABLE IF NOT EXISTS slack_messages_new (
+            user_id String,
+            channel_id String,
+            message_ts UInt64,
+            text String,
+            thread_ts Nullable(String)
+        ) ENGINE = ReplacingMergeTree()
+        ORDER BY (channel_id, message_ts)",
+        )
+        .execute()
+        .await?;
+
+    client
+        .query(
+            "INSERT INTO slack_messages_new
+             SELECT user_id,
+                    channel_id,
+                    toUInt64OrZero(splitByChar('.', message_ts)[1]) * 1000000
+                        + toUInt64OrZero(splitByChar('.', message_ts)[2]) AS message_ts,
+                    text,
+                    thread_ts
+             FROM slack_messages",
+        )
+        .execute()
+        .await?;
+
+    client
+        .query("DROP TABLE IF EXISTS slack_messages_old")
+        .execute()
+        .await?;
+    client
+        .query("RENAME TABLE slack_messages TO slack_messages_old, slack_messages_new TO slack_messages")
+        .execute()
+        .await?;
+    client
+        .query("DROP TABLE IF EXISTS slack_messages_old")
+        .execute()
+        .await?;
+    client
+        .query("OPTIMIZE TABLE slack_messages FINAL")
+        .execute()
+        .await?;
+
+    let count: u64 = client
+        .query("SELECT count() FROM slack_messages")
+        .fetch_one()
+        .await
+        .unwrap_or(0);
+    tracing::info!(
+        "slack_messages.message_ts migration complete ({} rows)",
+        count
+    );
+    Ok(())
+}
+
+async fn migrate_coding_activity_date(client: &Client) -> Result<(), Box<dyn std::error::Error>> {
+    #[derive(Debug, Row, Deserialize)]
+    struct TypeRow {
+        type_: String,
+    }
+
+    let current: Option<TypeRow> = client
+        .query(
+            "SELECT type AS type_ FROM system.columns
+             WHERE database = currentDatabase() AND table = 'coding_activity' AND name = 'date'",
+        )
+        .fetch_optional()
+        .await?;
+
+    if current
+        .as_ref()
+        .map(|r| r.type_.as_str() == "Date")
+        .unwrap_or(false)
+    {
+        return Ok(());
+    }
+    if current.is_none() {
+        return Ok(());
+    }
+
+    tracing::info!("Migrating coding_activity.date to Date...");
+
+    client
+        .query("DROP TABLE IF EXISTS coding_activity_new")
+        .execute()
+        .await?;
+    client
+        .query(
+            "CREATE TABLE IF NOT EXISTS coding_activity_new (
+            user_id String,
+            date Date,
+            minutes Int64,
+            language Nullable(String)
+        ) ENGINE = ReplacingMergeTree()
+        ORDER BY (user_id, date)",
+        )
+        .execute()
+        .await?;
+
+    client
+        .query(
+            "INSERT INTO coding_activity_new
+             SELECT user_id, toDateOrZero(date), minutes, language FROM coding_activity",
+        )
+        .execute()
+        .await?;
+
+    client
+        .query("DROP TABLE IF EXISTS coding_activity_old")
+        .execute()
+        .await?;
+    client
+        .query("RENAME TABLE coding_activity TO coding_activity_old, coding_activity_new TO coding_activity")
+        .execute()
+        .await?;
+    client
+        .query("DROP TABLE IF EXISTS coding_activity_old")
+        .execute()
+        .await?;
+    client
+        .query("OPTIMIZE TABLE coding_activity FINAL")
+        .execute()
+        .await?;
+
+    let count: u64 = client
+        .query("SELECT count() FROM coding_activity")
+        .fetch_one()
+        .await
+        .unwrap_or(0);
+    tracing::info!("coding_activity.date migration complete ({} rows)", count);
+    Ok(())
+}
+
 pub async fn insert_messages(
     client: &Client,
     messages: &[SlackMessageRow],
@@ -363,7 +560,7 @@ async fn recompute_user_scores_chunk(
         .query(&format!(
             "WITH
              msg AS (
-                 SELECT user_id, toInt64(splitByChar('.', message_ts)[1]) AS ts
+                 SELECT user_id, toInt64(message_ts / 1000000) AS ts
                  FROM slack_messages
                  {}
                  GROUP BY user_id, ts
@@ -590,21 +787,16 @@ pub async fn get_user_ids_without_pfp(
 pub async fn get_max_message_ts(
     client: &Client,
     channel_id: &str,
-) -> Result<Option<String>, Box<dyn std::error::Error>> {
-    #[derive(Debug, Row, Deserialize)]
-    struct MaxTsRow {
-        max_ts: String,
-    }
-
-    let row: Option<MaxTsRow> = client
+) -> Result<Option<u64>, Box<dyn std::error::Error>> {
+    let row: Option<u64> = client
         .query(&format!(
-            "SELECT max(message_ts) as max_ts FROM slack_messages WHERE channel_id = '{}'",
+            "SELECT max(message_ts) FROM slack_messages WHERE channel_id = '{}'",
             channel_id
         ))
         .fetch_optional()
         .await?;
 
-    Ok(row.map(|r| r.max_ts))
+    Ok(row)
 }
 
 pub async fn get_scraped_channel_ids(
@@ -769,21 +961,16 @@ pub async fn get_max_thread_reply_ts(
     client: &Client,
     channel_id: &str,
     thread_ts: &str,
-) -> Result<Option<String>, Box<dyn std::error::Error>> {
-    #[derive(Debug, Row, Deserialize)]
-    struct MaxTsRow {
-        max_ts: String,
-    }
-
-    let row: Option<MaxTsRow> = client
+) -> Result<Option<u64>, Box<dyn std::error::Error>> {
+    let row: Option<u64> = client
         .query(&format!(
-            "SELECT max(message_ts) as max_ts FROM slack_messages WHERE channel_id = '{}' AND thread_ts = '{}'",
+            "SELECT max(message_ts) FROM slack_messages WHERE channel_id = '{}' AND thread_ts = '{}'",
             channel_id, thread_ts
         ))
         .fetch_optional()
         .await?;
 
-    Ok(row.map(|r| r.max_ts))
+    Ok(row)
 }
 
 #[derive(Debug, Row, Serialize)]
@@ -902,7 +1089,8 @@ pub async fn insert_coding_activity(
 #[derive(Debug, Row, Serialize)]
 pub struct CodingActivityRow {
     pub user_id: String,
-    pub date: String,
+    #[serde(with = "clickhouse::serde::time::date")]
+    pub date: time::Date,
     pub minutes: i64,
     pub language: Option<String>,
 }

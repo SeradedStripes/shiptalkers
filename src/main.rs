@@ -598,7 +598,8 @@ async fn scrape_one_channel(
         .unwrap_or(false);
 
     let oldest = match db::clickhouse_db::get_max_message_ts(clickhouse, &channel_id).await {
-        Ok(Some(ts)) if !ts.is_empty() => {
+        Ok(Some(ts)) if ts > 0 => {
+            let ts = db::clickhouse_db::micros_to_slack_ts(ts);
             tracing::debug!(
                 "[token {}][{}/{}] Scraping channel {} (mode={}, oldest={})",
                 token_idx,
@@ -697,7 +698,7 @@ async fn scrape_one_channel(
         .map(|m| db::clickhouse_db::SlackMessageRow {
             user_id: m.user.clone(),
             channel_id: m.channel.clone(),
-            message_ts: m.ts.clone(),
+            message_ts: db::clickhouse_db::slack_ts_to_micros(&m.ts),
             text: m.text.clone(),
             thread_ts: m.thread_ts.clone(),
         })
@@ -954,6 +955,8 @@ async fn scrape_thread(
             .await
             .ok()
             .flatten()
+            .filter(|&ts| ts > 0)
+            .map(db::clickhouse_db::micros_to_slack_ts)
     } else {
         None
     };
@@ -980,7 +983,7 @@ async fn scrape_thread(
                     .map(|m| db::clickhouse_db::SlackMessageRow {
                         user_id: m.user.clone(),
                         channel_id: m.channel.clone(),
-                        message_ts: m.ts.clone(),
+                        message_ts: db::clickhouse_db::slack_ts_to_micros(&m.ts),
                         text: m.text.clone(),
                         thread_ts: m.thread_ts.clone(),
                     })

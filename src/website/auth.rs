@@ -367,6 +367,8 @@ pub async fn sync_coding_activity(
     for (date, minutes) in futures::future::join_all(fetches).await {
         let minutes = minutes.map_err(|e| format!("fetch hours for {}: {}", date, e))?;
         if let Some(minutes) = minutes.filter(|&m| m > 0) {
+            let date = clickhouse_db::parse_date(&date)
+                .ok_or_else(|| format!("invalid date from hackatime: {}", date))?;
             rows.push(clickhouse_db::CodingActivityRow {
                 user_id: slack_id.to_string(),
                 date,

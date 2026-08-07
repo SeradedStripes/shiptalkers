@@ -468,7 +468,7 @@ async fn query_slack_seconds(
     let mut session_sql = String::from(
         "WITH
          msg AS (
-             SELECT toInt64(splitByChar('.', message_ts)[1]) AS ts
+             SELECT toInt64(message_ts / 1000000) AS ts
              FROM slack_messages
              WHERE user_id = ?",
     );
@@ -518,7 +518,7 @@ async fn query_slack_seconds(
          WHERE user_id = ?",
     );
     if range.start_ts().is_some() {
-        counts_sql.push_str(" AND toInt64(splitByChar('.', message_ts)[1]) >= ?");
+        counts_sql.push_str(" AND toInt64(message_ts / 1000000) >= ?");
     }
     let mut counts_query = clickhouse.query(&counts_sql);
     counts_query = counts_query.bind(user);

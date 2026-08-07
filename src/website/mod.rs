@@ -827,19 +827,19 @@ async fn get_user_stats(
         .await
         .unwrap_or(0);
 
-    let last_ts: String = ch
+    let last_ts: u64 = ch
         .query("SELECT max(message_ts) FROM slack_messages WHERE user_id = ?")
         .bind(slack_id)
         .fetch_one()
         .await
-        .unwrap_or_default();
+        .unwrap_or(0);
 
-    let first_ts: String = ch
+    let first_ts: u64 = ch
         .query("SELECT min(message_ts) FROM slack_messages WHERE user_id = ?")
         .bind(slack_id)
         .fetch_one()
         .await
-        .unwrap_or_default();
+        .unwrap_or(0);
 
     #[derive(clickhouse::Row, serde::Deserialize)]
     struct ChannelCount {
@@ -919,7 +919,7 @@ async fn get_user_stats(
                 .query(
                     "WITH
                      msg AS (
-                         SELECT toInt64(splitByChar('.', message_ts)[1]) AS ts
+                         SELECT toInt64(message_ts / 1000000) AS ts
                          FROM slack_messages
                          WHERE user_id = ?
                      ),
@@ -972,7 +972,7 @@ async fn get_user_stats(
 
             let hour: HourRow = ch
                 .query(
-                    "SELECT toHour(toDateTime(toInt64(splitByChar('.', message_ts)[1]))) AS hour
+                    "SELECT toHour(toDateTime(message_ts / 1000000)) AS hour
                      FROM slack_messages
                      WHERE user_id = ?
                      GROUP BY hour
@@ -1050,8 +1050,8 @@ async fn get_user_stats(
         total_messages: fmt_thousands(total_messages),
         coding_hours: fmt_minutes(coding_minutes.max(0) as u64),
         channels: fmt_thousands(channels),
-        first_msg: fmt_ts_local(&first_ts),
-        last_msg: fmt_ts_local(&last_ts),
+        first_msg: fmt_ts_local(first_ts),
+        last_msg: fmt_ts_local(last_ts),
         slack_time_total,
         slack_time_avg,
         slack_time_longest,
@@ -1101,19 +1101,19 @@ async fn get_channel_stats(
         .await
         .unwrap_or(0);
 
-    let last_ts: String = ch
+    let last_ts: u64 = ch
         .query("SELECT max(message_ts) FROM slack_messages WHERE channel_id = ?")
         .bind(channel_id)
         .fetch_one()
         .await
-        .unwrap_or_default();
+        .unwrap_or(0);
 
-    let first_ts: String = ch
+    let first_ts: u64 = ch
         .query("SELECT min(message_ts) FROM slack_messages WHERE channel_id = ?")
         .bind(channel_id)
         .fetch_one()
         .await
-        .unwrap_or_default();
+        .unwrap_or(0);
 
     #[derive(clickhouse::Row, serde::Deserialize)]
     struct PosterRow {
@@ -1196,8 +1196,8 @@ async fn get_channel_stats(
         channel_id: channel_id.to_string(),
         total_messages: fmt_thousands(total_messages),
         active_users: fmt_thousands(active_users),
-        first_msg: fmt_ts_local(&first_ts),
-        last_msg: fmt_ts_local(&last_ts),
+        first_msg: fmt_ts_local(first_ts),
+        last_msg: fmt_ts_local(last_ts),
         top_posters,
         signed_in,
         is_admin: is_admin(state, headers),
@@ -1299,19 +1299,19 @@ async fn compute_stats(state: &AppState) -> StatsSnapshot {
     }
 }
 
-fn parse_ts(ts: &str) -> Option<(u32, u32, u32, u32, u32)> {
-    let secs: i64 = ts.split('.').next()?.parse().ok()?;
+fn parse_ts(micros: u64) -> Option<(u32, u32, u32, u32, u32)> {
+    let secs = micros / 1_000_000;
     if secs == 0 {
         return None;
     }
-    let (year, month, day) = crate::auth::civil_from_days(secs / 86400);
+    let (year, month, day) = crate::auth::civil_from_days((secs / 86400) as i64);
     let hour = ((secs % 86400) / 3600) as u32;
     let minute = ((secs % 3600) / 60) as u32;
     Some((year, month, day, hour, minute))
 }
 
-fn fmt_ts_local(ts: &str) -> String {
-    match parse_ts(ts) {
+fn fmt_ts_local(micros: u64) -> String {
+    match parse_ts(micros) {
         Some((year, month, day, hour, minute)) => format!(
             "<time datetime=\"{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:00Z\">\
              {year:04}-{month:02}-{day:02} {hour:02}:{minute:02} UTC</time>"
