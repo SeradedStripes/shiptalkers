@@ -60,7 +60,7 @@ Scrapes every public channel and thread reply from Hack Club Slack into ClickHou
 - ClickHouse is the only analytics datastore. The stats page reads `slack_messages`, `slack_channels`, `coding_activity`, and `user_scores`. SQLite (`src/db/sqlite.rs`) holds auth/linked-user state and the `settings` table.
 - Insert data before marking any checkpoint complete. Main channel messages are inserted before thread replies.
 - Progress tracking uses `max(message_ts)` per channel and `max(thread reply ts)` per thread.
-- Logging is `tracing` only. Per-channel, per-thread, and per-fetch work logs at debug; inserts, page progress, and 15s `Progress:` lines log at info.
+- Logging is `tracing` only. Per-channel, per-thread, and per-fetch work logs at debug; inserts and page progress log at info; `Progress:` lines log at info but only when a run actually inserts new messages, never on an idle tick.
 - Multi-token scraping round-robins channel shards across tokens and prefixes log lines with `[token k]`.
 - The website has exactly one public JavaScript file (`src/website/static/time.js`, loaded via `header.html`), which converts UTC `<time>` elements to the visitor's local timezone; `admin.js` is loaded only on the admin pages and wires the config show/hide buttons. Everything else renders server side with askama and auto refreshes via `<meta http-equiv="refresh">`. Number formatting lives in Rust (`fmt_thousands`).
 - ClickHouse row structs use `#[derive(clickhouse::Row, serde::Deserialize)]`, plus `Serialize` when inserting.

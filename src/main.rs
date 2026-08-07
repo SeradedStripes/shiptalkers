@@ -418,19 +418,21 @@ async fn scrape_channel_list(
                 }
                 let p = processed.load(Ordering::Relaxed);
                 let m = total.load(Ordering::Relaxed);
-                let dt = last_report.elapsed().as_secs_f64().max(0.001);
-                let rate = (m - last_msgs) as f64 / dt;
-                let pct = p as f64 / num_channels as f64 * 100.0;
-                tracing::info!(
-                    "Progress: {}/{} channels ({:.1}%), {} msgs inserted this run ({:.0} msg/s)",
-                    p,
-                    num_channels,
-                    pct,
-                    m,
-                    rate
-                );
-                last_msgs = m;
-                last_report = std::time::Instant::now();
+                if m > last_msgs {
+                    let dt = last_report.elapsed().as_secs_f64().max(0.001);
+                    let rate = (m - last_msgs) as f64 / dt;
+                    let pct = p as f64 / num_channels as f64 * 100.0;
+                    tracing::info!(
+                        "Progress: {}/{} channels ({:.1}%), {} msgs inserted this run ({:.0} msg/s)",
+                        p,
+                        num_channels,
+                        pct,
+                        m,
+                        rate
+                    );
+                    last_msgs = m;
+                    last_report = std::time::Instant::now();
+                }
             }
         });
     }

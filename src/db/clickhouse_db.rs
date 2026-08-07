@@ -831,7 +831,7 @@ pub async fn get_hackatime_connections(
     client: &Client,
 ) -> Result<Vec<HackatimeConnectionReadRow>, Box<dyn std::error::Error>> {
     let rows: Vec<HackatimeConnectionReadRow> = client
-        .query("SELECT slack_id, access_token FROM hackatime_connections FINAL")
+        .query("SELECT slack_id, access_token, last_synced_date FROM hackatime_connections FINAL")
         .fetch_all()
         .await?;
     Ok(rows)
