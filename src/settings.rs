@@ -58,7 +58,7 @@ fn default_value(key: &str) -> &str {
         "SLACK_MAX_INFLIGHT" => "8",
         "SLACK_CHANNEL_CONCURRENCY" => "8",
         "SLACK_USER_SYNC_DELAY_MS" => "3000",
-        "SLACK_THREAD_RESCAN_HOURS" => "168",
+        "SLACK_THREAD_RESCAN_HOURS" => "720",
         "SLACK_THREAD_RESCAN_INTERVAL_HOURS" => "6",
         "BASE_URL" => "http://localhost:3000",
         "CLICKHOUSE_URL" => "http://localhost:8123",
