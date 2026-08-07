@@ -106,7 +106,7 @@ pub struct Stats {
     pub channels_tracked: String,
     pub total_channels: String,
     pub total_users: String,
-    pub coding_minutes: String,
+    pub coding_hours: String,
     pub db_size_label: String,
     pub signed_in: bool,
     pub is_admin: bool,
@@ -119,7 +119,7 @@ pub struct UserTemplate {
     pub pfp: String,
     pub slack_id: String,
     pub total_messages: String,
-    pub coding_minutes: String,
+    pub coding_hours: String,
     pub channels: String,
     pub first_msg: String,
     pub last_msg: String,
@@ -660,7 +660,7 @@ async fn get_leaderboard_category(
                 "Coding Time".into(),
                 None,
                 false,
-                leaderboard_entries(ch, rows, |v| format!("{} min", fmt_thousands(v)), None).await,
+                leaderboard_entries(ch, rows, fmt_minutes, None).await,
             )
         }
         "combined" => ("Top Combined".into(), String::new(), None, true, Vec::new()),
@@ -747,6 +747,10 @@ fn fmt_duration(secs: u64) -> String {
     } else {
         format!("{}m", mins)
     }
+}
+
+fn fmt_minutes(minutes: u64) -> String {
+    format!("{}hrs {}min", minutes / 60, minutes % 60)
 }
 
 fn fmt_hour(hour: u8) -> String {
@@ -1044,7 +1048,7 @@ async fn get_user_stats(
         pfp,
         slack_id: slack_id.to_string(),
         total_messages: fmt_thousands(total_messages),
-        coding_minutes: fmt_thousands(coding_minutes.max(0) as u64),
+        coding_hours: fmt_minutes(coding_minutes.max(0) as u64),
         channels: fmt_thousands(channels),
         first_msg: fmt_ts_local(&first_ts),
         last_msg: fmt_ts_local(&last_ts),
@@ -1225,7 +1229,7 @@ async fn load_stats(state: &AppState, headers: &HeaderMap) -> Stats {
         channels_tracked: fmt_thousands(snapshot.channels_tracked),
         total_channels: fmt_thousands(snapshot.total_channels),
         total_users: fmt_thousands(snapshot.total_users),
-        coding_minutes: fmt_thousands(snapshot.coding_minutes),
+        coding_hours: fmt_minutes(snapshot.coding_minutes),
         db_size_label,
         signed_in: signed_in(state, headers),
         is_admin: is_admin(state, headers),
