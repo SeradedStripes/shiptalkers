@@ -493,7 +493,7 @@ async fn query_slack_seconds(
              FROM sess
              GROUP BY sid
          )
-         SELECT sum(least(end_ts + 300 - start_ts, 14400)) AS total_time,
+         SELECT sum(toUInt64(least(end_ts + 300 - start_ts, 14400))) AS total_time,
                 count() AS sessions
          FROM sessions",
     );

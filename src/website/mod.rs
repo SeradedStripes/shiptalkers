@@ -1063,7 +1063,7 @@ async fn compute_stats(state: &AppState) -> StatsSnapshot {
 
     let coding_minutes: u64 = ch
         .query(
-            "SELECT sum(minutes) FROM (
+            "SELECT sum(toUInt64(minutes)) FROM (
                  SELECT max(minutes) AS minutes
                  FROM coding_activity
                  GROUP BY user_id, date

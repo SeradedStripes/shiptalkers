@@ -222,9 +222,6 @@ pub async fn init_tables(client: &Client) -> Result<(), Box<dyn std::error::Erro
             .ok();
     }
 
-    // Fix column types on tables created before the DDL used unsigned types
-    migrate_user_scores_types(client).await?;
-
     client
         .query(
             "CREATE TABLE IF NOT EXISTS hackatime_connections (
@@ -653,35 +650,6 @@ async fn migrate_coding_activity_date(client: &Client) -> Result<(), Box<dyn std
     Ok(())
 }
 
-/// Ensures user_scores columns have the exact types the code reads and writes.
-/// Tables created before the DDL used unsigned types (e.g. Int64) need this;
-/// ALTER MODIFY COLUMN to the declared type is a no-op on already-correct tables.
-async fn migrate_user_scores_types(client: &Client) -> Result<(), Box<dyn std::error::Error>> {
-    for column in [
-        "score Int64",
-        "total_time UInt64",
-        "messages UInt64",
-        "sessions UInt64",
-        "total_chars UInt64",
-        "longest UInt64",
-        "days UInt64",
-        "channels UInt64",
-        "first_ts UInt64",
-        "last_ts UInt64",
-        "active_hour UInt8",
-        "updated UInt64",
-    ] {
-        client
-            .query(&format!(
-                "ALTER TABLE user_scores MODIFY COLUMN {column} SETTINGS mutations_sync = 2"
-            ))
-            .execute()
-            .await?;
-    }
-    tracing::info!("user_scores column types aligned with the DDL");
-    Ok(())
-}
-
 pub async fn insert_messages(
     client: &Client,
     messages: &[SlackMessageRow],
@@ -790,10 +758,10 @@ async fn recompute_user_scores_chunk(
                  GROUP BY user_id, sid
              )
              SELECT user_id,
-                    sum(least(end_ts + 300 - start_ts, 14400)) AS total_time,
-                    max(least(end_ts + 300 - start_ts, 14400)) AS longest,
+                    sum(toUInt64(least(end_ts + 300 - start_ts, 14400))) AS total_time,
+                    max(toUInt64(least(end_ts + 300 - start_ts, 14400))) AS longest,
                     count() AS sessions,
-                    greatest(dateDiff('day', toDateTime(min(start_ts)), toDateTime(max(start_ts))) + 1, 1) AS days
+                    greatest(toUInt64(dateDiff('day', toDateTime(min(start_ts)), toDateTime(max(start_ts))) + 1), 1) AS days
              FROM sessions
              GROUP BY user_id
              SETTINGS max_bytes_before_external_sort = 268435456",
