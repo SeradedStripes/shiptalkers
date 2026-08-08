@@ -65,7 +65,7 @@ pub struct AppCache {
 impl AppCache {
     fn new() -> Self {
         Self {
-            stats: Arc::new(TtlCache::new(Duration::from_secs(60))),
+            stats: Arc::new(TtlCache::new(Duration::from_secs(300))),
         }
     }
 }
@@ -793,7 +793,7 @@ async fn get_user_stats(
     let pfp = local_pfp(slack_id, &pfp_url);
 
     let total_messages: u64 = ch
-        .query("SELECT count() FROM slack_messages WHERE user_id = ?")
+        .query("SELECT count() FROM slack_messages_by_user WHERE user_id = ?")
         .bind(slack_id)
         .fetch_one()
         .await
@@ -814,28 +814,28 @@ async fn get_user_stats(
         .unwrap_or(0);
 
     let channels: u64 = ch
-        .query("SELECT uniqExact(channel_id) FROM slack_messages WHERE user_id = ?")
+        .query("SELECT uniqExact(channel_id) FROM slack_messages_by_user WHERE user_id = ?")
         .bind(slack_id)
         .fetch_one()
         .await
         .unwrap_or(0);
 
     let total_chars: u64 = ch
-        .query("SELECT sum(char_length(text)) FROM slack_messages WHERE user_id = ?")
+        .query("SELECT sum(char_length(text)) FROM slack_messages_by_user WHERE user_id = ?")
         .bind(slack_id)
         .fetch_one()
         .await
         .unwrap_or(0);
 
     let last_ts: u64 = ch
-        .query("SELECT max(message_ts) FROM slack_messages WHERE user_id = ?")
+        .query("SELECT max(message_ts) FROM slack_messages_by_user WHERE user_id = ?")
         .bind(slack_id)
         .fetch_one()
         .await
         .unwrap_or(0);
 
     let first_ts: u64 = ch
-        .query("SELECT min(message_ts) FROM slack_messages WHERE user_id = ?")
+        .query("SELECT min(message_ts) FROM slack_messages_by_user WHERE user_id = ?")
         .bind(slack_id)
         .fetch_one()
         .await
@@ -850,7 +850,7 @@ async fn get_user_stats(
     let counts: Vec<ChannelCount> = ch
         .query(
             "SELECT channel_id, count() as messages
-             FROM slack_messages
+             FROM slack_messages_by_user
              WHERE user_id = ?
              GROUP BY channel_id
              ORDER BY messages DESC
@@ -920,7 +920,7 @@ async fn get_user_stats(
                     "WITH
                      msg AS (
                          SELECT toInt64(message_ts / 1000000) AS ts
-                         FROM slack_messages
+                         FROM slack_messages_by_user
                          WHERE user_id = ?
                      ),
                      flagged AS (
@@ -973,7 +973,7 @@ async fn get_user_stats(
             let hour: HourRow = ch
                 .query(
                     "SELECT toHour(toDateTime(message_ts / 1000000)) AS hour
-                     FROM slack_messages
+                     FROM slack_messages_by_user
                      WHERE user_id = ?
                      GROUP BY hour
                      ORDER BY count() DESC
@@ -1246,14 +1246,14 @@ async fn compute_stats(state: &AppState) -> StatsSnapshot {
 
     let active_users: u64 = ch
         .query(&format!(
-            "SELECT uniqExact(user_id) FROM slack_messages WHERE {EXCLUDE_BOTS_DELETED}"
+            "SELECT count() FROM user_scores FINAL WHERE {EXCLUDE_BOTS_DELETED}"
         ))
         .fetch_one()
         .await
         .unwrap_or(0);
 
     let channels_tracked: u64 = ch
-        .query("SELECT uniqExact(channel_id) FROM slack_messages")
+        .query("SELECT count() FROM scraped_channels FINAL")
         .fetch_one()
         .await
         .unwrap_or(0);

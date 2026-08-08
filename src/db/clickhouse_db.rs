@@ -218,6 +218,44 @@ pub async fn init_tables(client: &Client) -> Result<(), Box<dyn std::error::Erro
         .await
         .ok();
 
+    // Secondary copy of slack_messages sorted by user so per-user reads (stats
+    // pages and score recompute) only touch that user's granules instead of
+    // scanning the whole table. Kept in sync by the materialized view plus a
+    // one-time backfill at startup.
+    client
+        .query(
+            "CREATE TABLE IF NOT EXISTS slack_messages_by_user (
+                user_id String,
+                channel_id String,
+                message_ts UInt64,
+                text String,
+                thread_ts Nullable(String)
+            ) ENGINE = ReplacingMergeTree()
+            ORDER BY (user_id, message_ts)",
+        )
+        .execute()
+        .await?;
+
+    client
+        .query(
+            "CREATE MATERIALIZED VIEW IF NOT EXISTS slack_messages_by_user_mv
+             TO slack_messages_by_user
+             AS SELECT user_id, channel_id, message_ts, text, thread_ts FROM slack_messages",
+        )
+        .execute()
+        .await?;
+
+    client
+        .query(
+            "CREATE TABLE IF NOT EXISTS score_meta (
+                id UInt8,
+                formula String
+            ) ENGINE = ReplacingMergeTree()
+            ORDER BY id",
+        )
+        .execute()
+        .await?;
+
     Ok(())
 }
 
@@ -226,7 +264,116 @@ pub async fn optimize_slack_messages(client: &Client) -> Result<(), Box<dyn std:
         .query("OPTIMIZE TABLE slack_messages")
         .execute()
         .await?;
+    client
+        .query("OPTIMIZE TABLE slack_messages_by_user")
+        .execute()
+        .await?;
     Ok(())
+}
+
+/// Copies existing rows from slack_messages into slack_messages_by_user once.
+/// The materialized view keeps new inserts in sync, so this only needs to run
+/// when the secondary table is empty (first deploy or after a recreate).
+pub async fn backfill_slack_messages_by_user(
+    client: &Client,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let count: u64 = client
+        .query("SELECT count() FROM slack_messages_by_user")
+        .fetch_one()
+        .await
+        .unwrap_or(0);
+    if count > 0 {
+        return Ok(());
+    }
+    tracing::info!("Backfilling slack_messages_by_user from slack_messages...");
+    client
+        .query(
+            "INSERT INTO slack_messages_by_user
+             SELECT user_id, channel_id, message_ts, text, thread_ts FROM slack_messages",
+        )
+        .execute()
+        .await?;
+    tracing::info!("slack_messages_by_user backfill complete");
+    Ok(())
+}
+
+/// Recomputes scores only for users who are missing from `user_scores` or have
+/// messages newer than their last recompute, so a restart doesn't trigger a full
+/// recompute over every user (hours of full-table scans on slow hardware). A full
+/// recompute still runs when the Slack Time formula changed since the last one.
+pub async fn backfill_stale_user_scores(
+    client: &Client,
+    formula: &crate::formula::Formula,
+) -> Result<usize, Box<dyn std::error::Error>> {
+    #[derive(Debug, Row, Deserialize)]
+    struct UserRow {
+        user_id: String,
+    }
+
+    #[derive(Debug, Row, Deserialize)]
+    struct ScoreMetaRead {
+        formula: String,
+    }
+
+    #[derive(Debug, Row, Serialize)]
+    struct ScoreMetaRow {
+        id: u8,
+        formula: String,
+    }
+
+    let source = formula.source();
+    let stored: Option<ScoreMetaRead> = client
+        .query("SELECT formula FROM score_meta FINAL WHERE id = 1")
+        .fetch_optional()
+        .await?;
+    if stored.as_ref().map(|m| m.formula.as_str()) != Some(source) {
+        tracing::info!("Slack Time formula changed, recomputing scores for all users");
+        let ids: Vec<String> = client
+            .query("SELECT DISTINCT user_id FROM slack_messages_by_user")
+            .fetch_all::<UserRow>()
+            .await?
+            .into_iter()
+            .map(|r| r.user_id)
+            .collect();
+        recompute_user_scores(client, &ids, formula).await?;
+        let mut insert = client.insert("score_meta")?;
+        insert
+            .write(&ScoreMetaRow {
+                id: 1,
+                formula: source.to_string(),
+            })
+            .await?;
+        insert.end().await?;
+        return Ok(ids.len());
+    }
+
+    let ids: Vec<String> = client
+        .query(
+            "SELECT msg.user_id FROM (
+                 SELECT user_id, max(message_ts) AS last_ts
+                 FROM slack_messages_by_user
+                 GROUP BY user_id
+             ) msg
+             LEFT JOIN (SELECT user_id, updated FROM user_scores FINAL) sc
+               ON msg.user_id = sc.user_id
+             WHERE sc.user_id IS NULL OR toUInt64(msg.last_ts / 1000000) > sc.updated",
+        )
+        .fetch_all::<UserRow>()
+        .await?
+        .into_iter()
+        .map(|r| r.user_id)
+        .collect();
+
+    if ids.is_empty() {
+        tracing::info!("All users already have fresh Slack Time scores, skipping backfill");
+        return Ok(0);
+    }
+    tracing::info!(
+        "Backfilling Slack Time scores for {} stale/missing users",
+        ids.len()
+    );
+    recompute_user_scores(client, &ids, formula).await?;
+    Ok(ids.len())
 }
 
 async fn migrate_slack_messages(client: &Client) -> Result<(), Box<dyn std::error::Error>> {
@@ -509,7 +656,7 @@ pub async fn recompute_user_scores(
         }
 
         let ids = client
-            .query("SELECT DISTINCT user_id FROM slack_messages")
+            .query("SELECT DISTINCT user_id FROM slack_messages_by_user")
             .fetch_all::<UserRow>()
             .await?
             .into_iter()
@@ -561,7 +708,7 @@ async fn recompute_user_scores_chunk(
             "WITH
              msg AS (
                  SELECT user_id, toInt64(message_ts / 1000000) AS ts
-                 FROM slack_messages
+                 FROM slack_messages_by_user
                  {}
                  GROUP BY user_id, ts
              ),
@@ -600,7 +747,7 @@ async fn recompute_user_scores_chunk(
     let counts: Vec<CountRow> = client
         .query(&format!(
             "SELECT user_id, count() AS messages
-             FROM slack_messages
+             FROM slack_messages_by_user
              {}
              GROUP BY user_id",
             where_clause
@@ -622,7 +769,7 @@ async fn recompute_user_scores_chunk(
     let chars: Vec<CharRow> = client
         .query(&format!(
             "SELECT user_id, sum(char_length(text)) AS total_chars
-             FROM slack_messages
+             FROM slack_messages_by_user
              {}
              GROUP BY user_id",
             where_clause

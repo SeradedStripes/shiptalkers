@@ -469,7 +469,7 @@ async fn query_slack_seconds(
         "WITH
          msg AS (
              SELECT toInt64(message_ts / 1000000) AS ts
-             FROM slack_messages
+             FROM slack_messages_by_user
              WHERE user_id = ?",
     );
     if range.start_ts().is_some() {
@@ -514,7 +514,7 @@ async fn query_slack_seconds(
 
     let mut counts_sql = String::from(
         "SELECT count() AS message_count, sum(char_length(text)) AS total_chars
-         FROM slack_messages
+         FROM slack_messages_by_user
          WHERE user_id = ?",
     );
     if range.start_ts().is_some() {

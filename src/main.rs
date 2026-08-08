@@ -279,8 +279,11 @@ async fn run_scraper(
     settings: settings::RuntimeSettings,
     slack_time: formula::Formula,
 ) -> Result<(), String> {
-    match db::clickhouse_db::recompute_user_scores(&clickhouse, &[], &slack_time).await {
-        Ok(()) => tracing::info!("Startup Slack Time score backfill complete"),
+    if let Err(e) = db::clickhouse_db::backfill_slack_messages_by_user(&clickhouse).await {
+        tracing::warn!("Failed to backfill slack_messages_by_user: {}", e);
+    }
+    match db::clickhouse_db::backfill_stale_user_scores(&clickhouse, &slack_time).await {
+        Ok(n) => tracing::info!("Startup Slack Time score backfill done ({} users)", n),
         Err(e) => tracing::warn!("Failed to backfill user scores: {}", e),
     }
 
@@ -372,9 +375,11 @@ async fn scrape_all_messages(
         check_channels.len()
     );
 
+    let touched_users = Arc::new(Mutex::new(std::collections::HashSet::new()));
+
     if !new_channels.is_empty() {
         tracing::info!("Full-scraping {} new channels...", new_channels.len());
-        scrape_channel_list(settings, clickhouse, &new_channels, slack_time).await;
+        scrape_channel_list(settings, clickhouse, &new_channels, touched_users.clone()).await;
     }
 
     if !check_channels.is_empty() {
@@ -382,7 +387,21 @@ async fn scrape_all_messages(
             "Checking {} already-scraped channels for new messages...",
             check_channels.len()
         );
-        scrape_channel_list(settings, clickhouse, &check_channels, slack_time).await;
+        scrape_channel_list(settings, clickhouse, &check_channels, touched_users.clone()).await;
+    }
+
+    // Recompute scores once per pass for every user whose messages changed,
+    // instead of after each channel.
+    let users: Vec<String> = touched_users.lock().unwrap().iter().cloned().collect();
+    if !users.is_empty()
+        && let Err(e) =
+            db::clickhouse_db::recompute_user_scores(clickhouse, &users, slack_time).await
+    {
+        tracing::warn!(
+            "Failed to recompute scores for {} users this pass: {}",
+            users.len(),
+            e
+        );
     }
 
     tracing::info!("Message scrape pass complete");
@@ -392,7 +411,7 @@ async fn scrape_channel_list(
     settings: &settings::RuntimeSettings,
     clickhouse: &clickhouse::Client,
     channels: &[String],
-    slack_time: &formula::Formula,
+    touched_users: Arc<Mutex<std::collections::HashSet<String>>>,
 ) {
     let request_delay = Duration::from_millis(settings.get_u64("SLACK_REQUEST_DELAY_MS"));
     let max_inflight = settings.get_u64("SLACK_MAX_INFLIGHT") as usize;
@@ -464,7 +483,7 @@ async fn scrape_channel_list(
             total: total.clone(),
             processed: processed.clone(),
             tx,
-            slack_time: slack_time.clone(),
+            touched_users: touched_users.clone(),
         };
         let clickhouse = clickhouse.clone();
         workers.push(tokio::spawn(async move {
@@ -494,7 +513,7 @@ struct ShardCtx {
     total: Arc<AtomicU64>,
     processed: Arc<AtomicU64>,
     tx: tokio::sync::mpsc::Sender<usize>,
-    slack_time: formula::Formula,
+    touched_users: Arc<Mutex<std::collections::HashSet<String>>>,
 }
 
 async fn scrape_shard(
@@ -850,27 +869,16 @@ async fn scrape_one_channel(
         }
     }
 
-    let mut users_to_recompute: Vec<String> = messages.iter().map(|m| m.user.clone()).collect();
-    users_to_recompute.extend(thread_users);
-    users_to_recompute.sort();
-    users_to_recompute.dedup();
-    if !users_to_recompute.is_empty()
-        && let Err(e) = db::clickhouse_db::recompute_user_scores(
-            clickhouse,
-            &users_to_recompute,
-            &ctx.slack_time,
-        )
-        .await
+    // Collect everyone who posted so scores can be recomputed once at the end of
+    // the pass instead of per channel.
     {
-        tracing::warn!(
-            "[token {}][{}/{}] Failed to recompute scores for {} users in {}: {}",
-            token_idx,
-            idx,
-            total_channels,
-            users_to_recompute.len(),
-            channel_id,
-            e
-        );
+        let mut set = ctx.touched_users.lock().unwrap();
+        for m in &messages {
+            set.insert(m.user.clone());
+        }
+        for u in thread_users {
+            set.insert(u);
+        }
     }
 
     if !fully_scraped
