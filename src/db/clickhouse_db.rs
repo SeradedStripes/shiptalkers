@@ -189,12 +189,38 @@ pub async fn init_tables(client: &Client) -> Result<(), Box<dyn std::error::Erro
                 messages UInt64,
                 sessions UInt64,
                 total_chars UInt64,
+                longest UInt64,
+                days UInt64,
+                channels UInt64,
+                first_ts UInt64,
+                last_ts UInt64,
+                active_hour UInt8,
                 updated UInt64
             ) ENGINE = ReplacingMergeTree(updated)
             ORDER BY user_id",
         )
         .execute()
         .await?;
+
+    // Migration for existing deployments: the columns below were added later, so
+    // they arrive as zeros; backfill_stale_user_scores recomputes any user with
+    // longest = 0 (real users always have a session of at least 300s).
+    for column in [
+        "longest UInt64",
+        "days UInt64",
+        "channels UInt64",
+        "first_ts UInt64",
+        "last_ts UInt64",
+        "active_hour UInt8",
+    ] {
+        client
+            .query(&format!(
+                "ALTER TABLE user_scores ADD COLUMN IF NOT EXISTS {column}"
+            ))
+            .execute()
+            .await
+            .ok();
+    }
 
     client
         .query(
@@ -300,7 +326,9 @@ pub async fn backfill_slack_messages_by_user(
 /// Recomputes scores only for users who are missing from `user_scores` or have
 /// messages newer than their last recompute, so a restart doesn't trigger a full
 /// recompute over every user (hours of full-table scans on slow hardware). A full
-/// recompute still runs when the Slack Time formula changed since the last one.
+/// recompute still runs when the Slack Time formula changed since the last one,
+/// and once after a migration to fill in columns added to `user_scores` (marked
+/// by `longest = 0`, since real users always have a session of at least 300s).
 pub async fn backfill_stale_user_scores(
     client: &Client,
     formula: &crate::formula::Formula,
@@ -356,7 +384,7 @@ pub async fn backfill_stale_user_scores(
              ) msg
              LEFT JOIN (SELECT user_id, updated FROM user_scores FINAL) sc
                ON msg.user_id = sc.user_id
-             WHERE sc.user_id IS NULL OR toUInt64(msg.last_ts / 1000000) > sc.updated",
+             WHERE sc.user_id IS NULL OR toUInt64(msg.last_ts / 1000000) > sc.updated OR sc.longest = 0",
         )
         .fetch_all::<UserRow>()
         .await?
@@ -700,7 +728,9 @@ async fn recompute_user_scores_chunk(
     struct MetricsRow {
         user_id: String,
         total_time: u64,
+        longest: u64,
         sessions: u64,
+        days: u64,
     }
 
     let metrics: Vec<MetricsRow> = client
@@ -729,7 +759,9 @@ async fn recompute_user_scores_chunk(
              )
              SELECT user_id,
                     sum(least(end_ts + 300 - start_ts, 14400)) AS total_time,
-                    count() AS sessions
+                    max(least(end_ts + 300 - start_ts, 14400)) AS longest,
+                    count() AS sessions,
+                    greatest(dateDiff('day', toDateTime(min(start_ts)), toDateTime(max(start_ts))) + 1, 1) AS days
              FROM sessions
              GROUP BY user_id
              SETTINGS max_bytes_before_external_sort = 268435456",
@@ -738,15 +770,21 @@ async fn recompute_user_scores_chunk(
         .fetch_all()
         .await?;
 
-    #[derive(Debug, Row, Deserialize)]
+    #[derive(Debug, Clone, Row, Deserialize)]
     struct CountRow {
         user_id: String,
         messages: u64,
+        channels: u64,
+        first_ts: u64,
+        last_ts: u64,
     }
 
     let counts: Vec<CountRow> = client
         .query(&format!(
-            "SELECT user_id, count() AS messages
+            "SELECT user_id, count() AS messages,
+                    uniqExact(channel_id) AS channels,
+                    min(message_ts) AS first_ts,
+                    max(message_ts) AS last_ts
              FROM slack_messages_by_user
              {}
              GROUP BY user_id",
@@ -755,10 +793,8 @@ async fn recompute_user_scores_chunk(
         .fetch_all()
         .await?;
 
-    let count_map: HashMap<String, u64> = counts
-        .into_iter()
-        .map(|r| (r.user_id, r.messages))
-        .collect();
+    let count_map: HashMap<String, CountRow> =
+        counts.into_iter().map(|r| (r.user_id.clone(), r)).collect();
 
     #[derive(Debug, Row, Deserialize)]
     struct CharRow {
@@ -782,6 +818,33 @@ async fn recompute_user_scores_chunk(
         .map(|r| (r.user_id, r.total_chars))
         .collect();
 
+    #[derive(Debug, Row, Deserialize)]
+    struct HourRow {
+        user_id: String,
+        active_hour: u8,
+    }
+
+    let hours: Vec<HourRow> = client
+        .query(&format!(
+            "SELECT user_id, argMax(hour, cnt) AS active_hour
+             FROM (
+                 SELECT user_id, toHour(toDateTime(message_ts / 1000000)) AS hour,
+                        count() AS cnt
+                 FROM slack_messages_by_user
+                 {}
+                 GROUP BY user_id, hour
+             )
+             GROUP BY user_id",
+            where_clause
+        ))
+        .fetch_all()
+        .await?;
+
+    let hour_map: HashMap<String, u8> = hours
+        .into_iter()
+        .map(|r| (r.user_id, r.active_hour))
+        .collect();
+
     let updated = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -795,35 +858,54 @@ async fn recompute_user_scores_chunk(
         messages: u64,
         sessions: u64,
         total_chars: u64,
+        longest: u64,
+        days: u64,
+        channels: u64,
+        first_ts: u64,
+        last_ts: u64,
+        active_hour: u8,
         updated: u64,
     }
 
     let rows: Vec<ScoreRow> = metrics
         .into_iter()
         .map(|m| {
-            let messages = count_map.get(&m.user_id).copied().unwrap_or(0);
+            let count = count_map.get(&m.user_id).cloned().unwrap_or(CountRow {
+                user_id: String::new(),
+                messages: 0,
+                channels: 0,
+                first_ts: 0,
+                last_ts: 0,
+            });
             let total_chars = char_map.get(&m.user_id).copied().unwrap_or(0);
-            let avg_length = if messages > 0 {
-                total_chars as f64 / messages as f64
+            let avg_length = if count.messages > 0 {
+                total_chars as f64 / count.messages as f64
             } else {
                 0.0
             };
             let score = formula
                 .eval(&crate::formula::Metrics {
-                    message_count: messages,
+                    message_count: count.messages,
                     session_seconds: m.total_time,
                     session_count: m.sessions,
                     avg_message_length: avg_length,
                     total_chars,
                 })
                 .max(0.0) as i64;
+            let active_hour = hour_map.get(&m.user_id).copied().unwrap_or(0);
             ScoreRow {
                 user_id: m.user_id,
                 score,
                 total_time: m.total_time,
-                messages,
+                messages: count.messages,
                 sessions: m.sessions,
                 total_chars,
+                longest: m.longest,
+                days: m.days,
+                channels: count.channels,
+                first_ts: count.first_ts,
+                last_ts: count.last_ts,
+                active_hour,
                 updated,
             }
         })

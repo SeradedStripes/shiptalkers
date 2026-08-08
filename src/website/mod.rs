@@ -673,12 +673,31 @@ async fn get_user_stats(
     let pfp_url = info.as_ref().map(|i| i.pfp.clone()).unwrap_or_default();
     let pfp = local_pfp(slack_id, &pfp_url);
 
-    let total_messages: u64 = ch
-        .query("SELECT count() FROM slack_messages_by_user WHERE user_id = ?")
+    #[derive(clickhouse::Row, serde::Deserialize)]
+    struct ScoreRow {
+        score: i64,
+        total_time: u64,
+        messages: u64,
+        sessions: u64,
+        total_chars: u64,
+        longest: u64,
+        days: u64,
+        channels: u64,
+        first_ts: u64,
+        last_ts: u64,
+        active_hour: u8,
+    }
+
+    let scores: Option<ScoreRow> = ch
+        .query(
+            "SELECT score, total_time, messages, sessions, total_chars, longest,
+                    days, channels, first_ts, last_ts, active_hour
+             FROM user_scores FINAL WHERE user_id = ?",
+        )
         .bind(slack_id)
-        .fetch_one()
+        .fetch_optional()
         .await
-        .unwrap_or(0);
+        .unwrap_or(None);
 
     let coding_minutes: i64 = ch
         .query(
@@ -689,34 +708,6 @@ async fn get_user_stats(
                  GROUP BY date
              )",
         )
-        .bind(slack_id)
-        .fetch_one()
-        .await
-        .unwrap_or(0);
-
-    let channels: u64 = ch
-        .query("SELECT uniqExact(channel_id) FROM slack_messages_by_user WHERE user_id = ?")
-        .bind(slack_id)
-        .fetch_one()
-        .await
-        .unwrap_or(0);
-
-    let total_chars: u64 = ch
-        .query("SELECT sum(char_length(text)) FROM slack_messages_by_user WHERE user_id = ?")
-        .bind(slack_id)
-        .fetch_one()
-        .await
-        .unwrap_or(0);
-
-    let last_ts: u64 = ch
-        .query("SELECT max(message_ts) FROM slack_messages_by_user WHERE user_id = ?")
-        .bind(slack_id)
-        .fetch_one()
-        .await
-        .unwrap_or(0);
-
-    let first_ts: u64 = ch
-        .query("SELECT min(message_ts) FROM slack_messages_by_user WHERE user_id = ?")
         .bind(slack_id)
         .fetch_one()
         .await
@@ -779,107 +770,39 @@ async fn get_user_stats(
         })
         .collect();
 
+    let total_messages = scores.as_ref().map(|s| s.messages).unwrap_or(0);
     let found = total_messages > 0 || coding_minutes > 0 || !display_name.is_empty();
 
     let (slack_time_total, slack_time_avg, slack_time_longest, slack_time_per_day, active_hour) =
-        if total_messages > 0 {
-            #[derive(clickhouse::Row, serde::Deserialize)]
-            struct SlackTimeRow {
-                total_time: u64,
-                longest: u64,
-                sessions: u64,
-                days: u64,
-            }
-
-            #[derive(clickhouse::Row, serde::Deserialize)]
-            struct HourRow {
-                hour: u8,
-            }
-
-            let report: SlackTimeRow = ch
-                .query(
-                    "WITH
-                     msg AS (
-                         SELECT toInt64(message_ts / 1000000) AS ts
-                         FROM slack_messages_by_user
-                         WHERE user_id = ?
-                     ),
-                     flagged AS (
-                         SELECT ts,
-                             if(ts - lag(ts) OVER (ORDER BY ts) > 2100, 1, 0) AS boundary
-                         FROM msg
-                     ),
-                     sess AS (
-                         SELECT ts, sum(boundary) OVER (ORDER BY ts) AS sid
-                         FROM flagged
-                     ),
-                     sessions AS (
-                         SELECT min(ts) AS start_ts, max(ts) AS end_ts
-                         FROM sess
-                         GROUP BY sid
-                     )
-                     SELECT sum(least(end_ts + 300 - start_ts, 14400)) AS total_time,
-                            max(least(end_ts + 300 - start_ts, 14400)) AS longest,
-                            count() AS sessions,
-                            greatest(dateDiff('day', toDateTime(min(start_ts)), toDateTime(max(start_ts))) + 1, 1) AS days
-                     FROM sessions",
+        match scores.as_ref() {
+            Some(s) if s.messages > 0 => {
+                let total = state
+                    .slack_time
+                    .eval(&crate::formula::Metrics {
+                        message_count: s.messages,
+                        session_seconds: s.total_time,
+                        session_count: s.sessions,
+                        avg_message_length: s.total_chars as f64 / s.messages as f64,
+                        total_chars: s.total_chars,
+                    })
+                    .max(0.0) as u64;
+                let avg_session = total.checked_div(s.sessions).unwrap_or(0);
+                let per_day = s.sessions as f64 / s.days.max(1) as f64;
+                (
+                    fmt_duration(total),
+                    fmt_duration(avg_session),
+                    fmt_duration(s.longest),
+                    format!("{:.1} / day", per_day),
+                    fmt_hour(s.active_hour),
                 )
-                .bind(slack_id)
-                .fetch_one()
-                .await
-                .unwrap_or(SlackTimeRow {
-                    total_time: 0,
-                    longest: 0,
-                    sessions: 0,
-                    days: 1,
-                });
-
-            let total = state
-                .slack_time
-                .eval(&crate::formula::Metrics {
-                    message_count: total_messages,
-                    session_seconds: report.total_time,
-                    session_count: report.sessions,
-                    avg_message_length: if total_messages > 0 {
-                        total_chars as f64 / total_messages as f64
-                    } else {
-                        0.0
-                    },
-                    total_chars,
-                })
-                .max(0.0) as u64;
-            let avg_session = total.checked_div(report.sessions).unwrap_or(0);
-            let per_day = report.sessions as f64 / report.days as f64;
-
-            let hour: HourRow = ch
-                .query(
-                    "SELECT toHour(toDateTime(message_ts / 1000000)) AS hour
-                     FROM slack_messages_by_user
-                     WHERE user_id = ?
-                     GROUP BY hour
-                     ORDER BY count() DESC
-                     LIMIT 1",
-                )
-                .bind(slack_id)
-                .fetch_one()
-                .await
-                .unwrap_or(HourRow { hour: 0 });
-
-            (
-                fmt_duration(total),
-                fmt_duration(avg_session),
-                fmt_duration(report.longest),
-                format!("{:.1} / day", per_day),
-                fmt_hour(hour.hour),
-            )
-        } else {
-            (
+            }
+            _ => (
                 "0m".into(),
                 "0m".into(),
                 "0m".into(),
                 "0 / day".into(),
                 String::new(),
-            )
+            ),
         };
 
     let leaderboard_rank: String = {
@@ -891,24 +814,16 @@ async fn get_user_stats(
         if is_bot || is_deleted {
             String::new()
         } else {
-            let score: Option<i64> = ch
-                .query("SELECT score FROM user_scores FINAL WHERE user_id = ? LIMIT 1")
-                .bind(slack_id)
-                .fetch_optional()
-                .await
-                .unwrap_or(None);
-            match score {
-                Some(_) => ch
+            match scores.as_ref() {
+                Some(s) => ch
                     .query(&format!(
-                        "SELECT count() + 1
+                        "SELECT count()
                          FROM (
                              SELECT user_id FROM user_scores FINAL
-                             WHERE {EXCLUDE_BOTS_DELETED} AND score > (
-                                 SELECT score FROM user_scores FINAL WHERE user_id = ? LIMIT 1
-                             )
+                             WHERE {EXCLUDE_BOTS_DELETED} AND score > ?
                          )"
                     ))
-                    .bind(slack_id)
+                    .bind(s.score)
                     .fetch_one::<RankRow>()
                     .await
                     .map(|r| format!("#{}", fmt_thousands(r.rank)))
@@ -930,9 +845,9 @@ async fn get_user_stats(
         slack_id: slack_id.to_string(),
         total_messages: fmt_thousands(total_messages),
         coding_hours: fmt_minutes(coding_minutes.max(0) as u64),
-        channels: fmt_thousands(channels),
-        first_msg: fmt_ts_local(first_ts),
-        last_msg: fmt_ts_local(last_ts),
+        channels: fmt_thousands(scores.as_ref().map(|s| s.channels).unwrap_or(0)),
+        first_msg: fmt_ts_local(scores.as_ref().map(|s| s.first_ts).unwrap_or(0)),
+        last_msg: fmt_ts_local(scores.as_ref().map(|s| s.last_ts).unwrap_or(0)),
         slack_time_total,
         slack_time_avg,
         slack_time_longest,
