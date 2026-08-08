@@ -1102,7 +1102,7 @@ async fn load_stats(state: &AppState, headers: &HeaderMap) -> Stats {
     let db_size_label = format!(
         "{:.prec$} GiB",
         db_size_gib,
-        prec = if db_size_gib < 1.0 { 5 } else { 2 }
+        prec = if db_size_gib < 10.0 { 5 } else { 3 }
     );
 
     Stats {
