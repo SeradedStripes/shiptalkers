@@ -23,7 +23,7 @@
                 <thead>
                     <tr>
                         <th>#</th>
-                        <th>User</th>
+                        <th>{{ entity }}</th>
                         <th>{{ unit }}</th>
                         {% if extra_unit.is_some() %}
                         <th>{{ extra_unit.as_deref().unwrap_or("") }}</th>

@@ -175,6 +175,7 @@ pub struct LeaderboardTemplate {
 #[template(path = "leaderboard_category.html")]
 pub struct LeaderboardCategoryTemplate {
     pub title: String,
+    pub entity: String,
     pub unit: String,
     pub extra_unit: Option<String>,
     pub rows: Vec<LeaderboardEntry>,
@@ -506,7 +507,14 @@ async fn get_leaderboard_category(
                 "Slack Time".into(),
                 Some("Messages".into()),
                 false,
-                leaderboard_entries(ch, ranked, fmt_duration, Some(fmt_thousands)).await,
+                leaderboard_entries(
+                    ch,
+                    ranked,
+                    LeaderboardSource::Users,
+                    fmt_duration,
+                    Some(fmt_thousands),
+                )
+                .await,
             )
         }
         "coders" => {
@@ -538,7 +546,50 @@ async fn get_leaderboard_category(
                 "Coding Time".into(),
                 None,
                 false,
-                leaderboard_entries(ch, rows, fmt_minutes, None).await,
+                leaderboard_entries(ch, rows, LeaderboardSource::Users, fmt_minutes, None).await,
+            )
+        }
+        "channels" => {
+            #[derive(clickhouse::Row, serde::Deserialize)]
+            struct ChannelRow {
+                channel_id: String,
+                total_time: u64,
+                messages: u64,
+            }
+
+            let rows: Vec<ChannelRow> = match ch
+                .query(
+                    "SELECT channel_id, total_time, messages
+                     FROM channel_scores FINAL
+                     ORDER BY total_time DESC
+                     LIMIT 100",
+                )
+                .fetch_all()
+                .await
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::error!("channels leaderboard query failed: {}", e);
+                    Vec::new()
+                }
+            };
+            let ranked: Vec<(String, i64, Option<i64>)> = rows
+                .into_iter()
+                .map(|r| (r.channel_id, r.total_time as i64, Some(r.messages as i64)))
+                .collect();
+            (
+                "Top Channels".into(),
+                "Slack Time".into(),
+                Some("Messages".into()),
+                false,
+                leaderboard_entries(
+                    ch,
+                    ranked,
+                    LeaderboardSource::Channels,
+                    fmt_duration,
+                    Some(fmt_thousands),
+                )
+                .await,
             )
         }
         "combined" => ("Top Combined".into(), String::new(), None, true, Vec::new()),
@@ -549,6 +600,11 @@ async fn get_leaderboard_category(
 
     let template = LeaderboardCategoryTemplate {
         title,
+        entity: if category == "channels" {
+            "Channel".into()
+        } else {
+            "User".into()
+        },
         unit,
         extra_unit,
         rows,
@@ -562,51 +618,79 @@ async fn get_leaderboard_category(
     Ok(Html(html))
 }
 
+enum LeaderboardSource {
+    Users,
+    Channels,
+}
+
 async fn leaderboard_entries(
     ch: &Client,
     rows: Vec<(String, i64, Option<i64>)>,
+    source: LeaderboardSource,
     format_value: impl Fn(u64) -> String,
     format_extra: Option<fn(u64) -> String>,
 ) -> Vec<LeaderboardEntry> {
-    let mut name_ids: Vec<String> = rows.iter().map(|(user_id, _, _)| user_id.clone()).collect();
+    let mut name_ids: Vec<String> = rows.iter().map(|(id, _, _)| id.clone()).collect();
     name_ids.sort();
     name_ids.dedup();
-
-    #[derive(clickhouse::Row, serde::Deserialize)]
-    struct NameRow {
-        user_id: String,
-        display_name: String,
-        pfp: String,
-    }
 
     let names: std::collections::HashMap<String, (String, String)> = if name_ids.is_empty() {
         std::collections::HashMap::new()
     } else {
         let in_list = name_ids.join("', '");
-        ch.query(&format!(
-            "SELECT user_id, display_name, pfp FROM users FINAL WHERE user_id IN ('{}')",
-            in_list
-        ))
-        .fetch_all::<NameRow>()
-        .await
-        .unwrap_or_default()
-        .into_iter()
-        .map(|r| (r.user_id, (r.display_name, r.pfp)))
-        .collect()
+        match source {
+            LeaderboardSource::Users => {
+                #[derive(clickhouse::Row, serde::Deserialize)]
+                struct NameRow {
+                    user_id: String,
+                    display_name: String,
+                    pfp: String,
+                }
+
+                ch.query(&format!(
+                    "SELECT user_id, display_name, pfp FROM users FINAL WHERE user_id IN ('{}')",
+                    in_list
+                ))
+                .fetch_all::<NameRow>()
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .map(|r| (r.user_id, (r.display_name, r.pfp)))
+                .collect()
+            }
+            LeaderboardSource::Channels => {
+                #[derive(clickhouse::Row, serde::Deserialize)]
+                struct NameRow {
+                    channel_id: String,
+                    name: String,
+                }
+
+                ch.query(&format!(
+                    "SELECT channel_id, name FROM slack_channels FINAL WHERE channel_id IN ('{}')",
+                    in_list
+                ))
+                .fetch_all::<NameRow>()
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .map(|r| (r.channel_id, (r.name, String::new())))
+                .collect()
+            }
+        }
     };
 
     rows.into_iter()
-        .map(|(user_id, value, extra)| {
+        .map(|(id, value, extra)| {
             let value = value.max(0) as u64;
-            let (display_name, pfp) = names.get(&user_id).cloned().unwrap_or_default();
+            let (display_name, pfp) = names.get(&id).cloned().unwrap_or_default();
             LeaderboardEntry {
-                user_id: user_id.clone(),
+                user_id: id.clone(),
                 display_name: if display_name.is_empty() {
-                    user_id.clone()
+                    id.clone()
                 } else {
                     display_name
                 },
-                pfp: local_pfp(&user_id, &pfp),
+                pfp: local_pfp(&id, &pfp),
                 value: format_value(value),
                 extra: extra
                     .map(|v| v.max(0) as u64)

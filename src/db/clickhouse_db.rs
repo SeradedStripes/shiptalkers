@@ -273,6 +273,19 @@ pub async fn init_tables(client: &Client) -> Result<(), Box<dyn std::error::Erro
 
     client
         .query(
+            "CREATE TABLE IF NOT EXISTS channel_scores (
+                channel_id String,
+                total_time UInt64,
+                messages UInt64,
+                updated UInt64
+            ) ENGINE = ReplacingMergeTree(updated)
+            ORDER BY channel_id",
+        )
+        .execute()
+        .await?;
+
+    client
+        .query(
             "CREATE TABLE IF NOT EXISTS score_meta (
                 id UInt8,
                 formula String
@@ -402,6 +415,41 @@ pub async fn backfill_stale_user_scores(
     );
     recompute_user_scores(client, &ids, formula).await?;
     Ok(ids.len())
+}
+
+pub async fn backfill_stale_channel_scores(
+    client: &Client,
+) -> Result<usize, Box<dyn std::error::Error>> {
+    #[derive(Debug, Row, Deserialize)]
+    struct ChannelRow {
+        channel_id: String,
+    }
+
+    let ids: Vec<String> = client
+        .query(
+            "SELECT msg.channel_id FROM (
+                 SELECT channel_id, max(message_ts) AS last_ts
+                 FROM slack_messages_by_user
+                 GROUP BY channel_id
+             ) msg
+             LEFT JOIN (SELECT channel_id, updated FROM channel_scores FINAL) sc
+               ON msg.channel_id = sc.channel_id
+             WHERE sc.channel_id IS NULL OR toUInt64(msg.last_ts / 1000000) > sc.updated",
+        )
+        .fetch_all::<ChannelRow>()
+        .await?
+        .into_iter()
+        .map(|r| r.channel_id)
+        .collect();
+
+    if ids.is_empty() {
+        return Ok(0);
+    }
+    tracing::info!(
+        "Backfilling Slack Time scores for {} stale/missing channels",
+        ids.len()
+    );
+    recompute_channel_scores(client, &ids).await
 }
 
 async fn migrate_slack_messages(client: &Client) -> Result<(), Box<dyn std::error::Error>> {
@@ -916,6 +964,167 @@ async fn recompute_user_scores_chunk(
     }
 
     let mut insert = client.insert::<ScoreRow>("user_scores").await?;
+    for r in &rows {
+        insert.write(r).await?;
+    }
+    insert.end().await?;
+    Ok(rows.len())
+}
+
+pub async fn recompute_channel_scores(
+    client: &Client,
+    channel_ids: &[String],
+) -> Result<usize, Box<dyn std::error::Error>> {
+    let full = channel_ids.is_empty();
+    let ids: Vec<String> = if full {
+        #[derive(Debug, Row, Deserialize)]
+        struct ChannelRow {
+            channel_id: String,
+        }
+
+        let ids = client
+            .query("SELECT DISTINCT channel_id FROM slack_messages_by_user")
+            .fetch_all::<ChannelRow>()
+            .await?
+            .into_iter()
+            .map(|r| r.channel_id)
+            .collect::<Vec<String>>();
+        tracing::info!(
+            "Backfilling Slack Time scores for all {} channels",
+            ids.len()
+        );
+        ids
+    } else {
+        let mut ids: Vec<String> = channel_ids.to_vec();
+        ids.sort();
+        ids.dedup();
+        ids
+    };
+
+    let start = std::time::Instant::now();
+    let mut done = 0usize;
+    for chunk in ids.chunks(SCORE_RECOMPUTE_CHUNK) {
+        done += recompute_channel_scores_chunk(client, chunk).await?;
+        if full {
+            tracing::debug!(
+                "Channel score backfill progress: {}/{} channels",
+                done,
+                ids.len()
+            );
+        }
+    }
+    if done > 0 {
+        tracing::info!(
+            "Recomputed Slack Time scores for {} channels in {:.1}s",
+            done,
+            start.elapsed().as_secs_f64()
+        );
+    }
+    Ok(done)
+}
+
+async fn recompute_channel_scores_chunk(
+    client: &Client,
+    ids: &[String],
+) -> Result<usize, Box<dyn std::error::Error>> {
+    if ids.is_empty() {
+        return Ok(0);
+    }
+    let in_list = format!("'{}'", ids.join("', '"));
+    let scope = format!("channel_id IN ({})", in_list);
+    let exclude_bots_deleted =
+        "user_id NOT IN (SELECT user_id FROM users FINAL WHERE is_bot = 1 OR is_deleted = 1)";
+
+    #[derive(Debug, Row, Deserialize)]
+    struct SessionRow {
+        channel_id: String,
+        total_time: u64,
+    }
+
+    #[derive(Debug, Row, Deserialize)]
+    struct CountRow {
+        channel_id: String,
+        messages: u64,
+    }
+
+    let sessions: Vec<SessionRow> = client
+        .query(&format!(
+            "WITH
+             msg AS (
+                 SELECT channel_id, toInt64(message_ts / 1000000) AS ts
+                 FROM slack_messages_by_user
+                 WHERE {scope} AND {exclude_bots_deleted}
+                 GROUP BY channel_id, ts
+             ),
+             flagged AS (
+                 SELECT channel_id, ts,
+                        if(ts - lag(ts) OVER (PARTITION BY channel_id ORDER BY ts) > 2100, 1, 0) AS boundary
+                 FROM msg
+             ),
+             sess AS (
+                 SELECT channel_id, ts,
+                        sum(boundary) OVER (PARTITION BY channel_id ORDER BY ts) AS sid
+                 FROM flagged
+             ),
+             sessions AS (
+                 SELECT channel_id, sid, min(ts) AS start_ts, max(ts) AS end_ts
+                 FROM sess
+                 GROUP BY channel_id, sid
+             )
+             SELECT channel_id,
+                    sum(toUInt64(least(end_ts + 300 - start_ts, 14400))) AS total_time
+             FROM sessions
+             GROUP BY channel_id
+             SETTINGS max_bytes_before_external_sort = 268435456"
+        ))
+        .fetch_all()
+        .await?;
+
+    let counts: Vec<CountRow> = client
+        .query(&format!(
+            "SELECT channel_id, count() AS messages
+             FROM slack_messages_by_user
+             WHERE {scope} AND {exclude_bots_deleted}
+             GROUP BY channel_id"
+        ))
+        .fetch_all()
+        .await?;
+    let count_map: std::collections::HashMap<String, u64> = counts
+        .into_iter()
+        .map(|r| (r.channel_id, r.messages))
+        .collect();
+
+    let updated = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    #[derive(Debug, Row, Serialize)]
+    struct ChannelScoreRow {
+        channel_id: String,
+        total_time: u64,
+        messages: u64,
+        updated: u64,
+    }
+
+    let rows: Vec<ChannelScoreRow> = sessions
+        .into_iter()
+        .map(|r| {
+            let channel_id = r.channel_id;
+            ChannelScoreRow {
+                channel_id: channel_id.clone(),
+                total_time: r.total_time,
+                messages: count_map.get(&channel_id).copied().unwrap_or(0),
+                updated,
+            }
+        })
+        .collect();
+
+    if rows.is_empty() {
+        return Ok(0);
+    }
+
+    let mut insert = client.insert::<ChannelScoreRow>("channel_scores").await?;
     for r in &rows {
         insert.write(r).await?;
     }

@@ -24,7 +24,12 @@ fn app() -> axum::Router {
 #[tokio::test]
 async fn stats_routes_match() {
     let app = app();
-    for uri in ["/stats/U01MPHKFZ7S", "/stats/C0123456789", "/search"] {
+    for uri in [
+        "/stats/U01MPHKFZ7S",
+        "/stats/C0123456789",
+        "/search",
+        "/leaderboard/channels",
+    ] {
         let res = app
             .clone()
             .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())

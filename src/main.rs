@@ -280,6 +280,10 @@ async fn run_scraper(
         Ok(n) => tracing::info!("Startup Slack Time score backfill done ({} users)", n),
         Err(e) => tracing::warn!("Failed to backfill user scores: {}", e),
     }
+    match db::clickhouse_db::backfill_stale_channel_scores(&clickhouse).await {
+        Ok(n) => tracing::info!("Startup channel score backfill done ({} channels)", n),
+        Err(e) => tracing::warn!("Failed to backfill channel scores: {}", e),
+    }
 
     let cycle = Duration::from_secs(30 * 60);
     let mut last_optimize = std::time::Instant::now();
@@ -370,10 +374,18 @@ async fn scrape_all_messages(
     );
 
     let touched_users = Arc::new(Mutex::new(std::collections::HashSet::new()));
+    let touched_channels = Arc::new(Mutex::new(std::collections::HashSet::new()));
 
     if !new_channels.is_empty() {
         tracing::info!("Full-scraping {} new channels...", new_channels.len());
-        scrape_channel_list(settings, clickhouse, &new_channels, touched_users.clone()).await;
+        scrape_channel_list(
+            settings,
+            clickhouse,
+            &new_channels,
+            touched_users.clone(),
+            touched_channels.clone(),
+        )
+        .await;
     }
 
     if !check_channels.is_empty() {
@@ -381,7 +393,14 @@ async fn scrape_all_messages(
             "Checking {} already-scraped channels for new messages...",
             check_channels.len()
         );
-        scrape_channel_list(settings, clickhouse, &check_channels, touched_users.clone()).await;
+        scrape_channel_list(
+            settings,
+            clickhouse,
+            &check_channels,
+            touched_users.clone(),
+            touched_channels.clone(),
+        )
+        .await;
     }
 
     // Recompute scores once per pass for every user whose messages changed,
@@ -398,6 +417,17 @@ async fn scrape_all_messages(
         );
     }
 
+    let channels: Vec<String> = touched_channels.lock().unwrap().iter().cloned().collect();
+    if !channels.is_empty()
+        && let Err(e) = db::clickhouse_db::recompute_channel_scores(clickhouse, &channels).await
+    {
+        tracing::warn!(
+            "Failed to recompute scores for {} channels this pass: {}",
+            channels.len(),
+            e
+        );
+    }
+
     tracing::info!("Message scrape pass complete");
 }
 
@@ -406,6 +436,7 @@ async fn scrape_channel_list(
     clickhouse: &clickhouse::Client,
     channels: &[String],
     touched_users: Arc<Mutex<std::collections::HashSet<String>>>,
+    touched_channels: Arc<Mutex<std::collections::HashSet<String>>>,
 ) {
     let request_delay = Duration::from_millis(settings.get_u64("SLACK_REQUEST_DELAY_MS"));
     let max_inflight = settings.get_u64("SLACK_MAX_INFLIGHT") as usize;
@@ -478,6 +509,7 @@ async fn scrape_channel_list(
             processed: processed.clone(),
             tx,
             touched_users: touched_users.clone(),
+            touched_channels: touched_channels.clone(),
         };
         let clickhouse = clickhouse.clone();
         workers.push(tokio::spawn(async move {
@@ -508,6 +540,7 @@ struct ShardCtx {
     processed: Arc<AtomicU64>,
     tx: tokio::sync::mpsc::Sender<usize>,
     touched_users: Arc<Mutex<std::collections::HashSet<String>>>,
+    touched_channels: Arc<Mutex<std::collections::HashSet<String>>>,
 }
 
 async fn scrape_shard(
@@ -872,6 +905,12 @@ async fn scrape_one_channel(
         }
         for u in thread_users {
             set.insert(u);
+        }
+        if inserted > 0 || thread_replies > 0 {
+            ctx.touched_channels
+                .lock()
+                .unwrap()
+                .insert(channel_id.clone());
         }
     }
 
