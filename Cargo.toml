@@ -18,7 +18,7 @@ dotenvy = "0.15"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 axum = "0.8"
-tower-http = { version = "0.6", features = ["fs"] }
+tower-http = { version = "0.7", features = ["fs"] }
 askama = "0.16"
 tokio-tungstenite = { version = "0.30", features = ["native-tls"] }
 futures = "0.3"
