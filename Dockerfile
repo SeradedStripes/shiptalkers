@@ -1,9 +1,6 @@
 FROM rust:1.95-alpine3.22 AS dev
 
-RUN apk add --no-cache \
-    build-base \
-    pkgconfig \
-    openssl-dev
+RUN apk add --no-cache build-base
 
 RUN cargo install cargo-watch
 
@@ -17,10 +14,7 @@ CMD ["cargo", "watch", "-w", "src", "-x", "run"]
 
 FROM rust:1.95-alpine3.22 AS builder
 
-RUN apk add --no-cache \
-    build-base \
-    pkgconfig \
-    openssl-dev
+RUN apk add --no-cache build-base
 
 WORKDIR /app
 
@@ -38,7 +32,6 @@ FROM alpine:3.22 AS runtime
 
 RUN apk add --no-cache \
     ca-certificates \
-    openssl \
     curl \
     && addgroup -S app \
     && adduser -S -G app app \

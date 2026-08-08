@@ -20,7 +20,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 axum = "0.8"
 tower-http = { version = "0.7", features = ["fs"] }
 askama = "0.16"
-tokio-tungstenite = { version = "0.30", features = ["native-tls"] }
+tokio-tungstenite = { version = "0.30", features = ["rustls-tls-native-roots"] }
 futures = "0.3"
 rusqlite = { version = "0.40", features = ["bundled"] }
 resvg = "0.48"
