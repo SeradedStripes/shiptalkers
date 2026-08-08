@@ -291,7 +291,7 @@ async fn get_pfp(State(state): State<AppState>, Path(user_id): Path<String>) -> 
     Redirect::temporary(&url).into_response()
 }
 
-fn fmt_thousands(n: u64) -> String {
+pub fn fmt_thousands(n: u64) -> String {
     let s = n.to_string();
     let mut out = String::with_capacity(s.len() + s.len() / 3);
     for (i, c) in s.chars().enumerate() {
@@ -619,7 +619,7 @@ async fn leaderboard_entries(
         .collect()
 }
 
-fn fmt_duration(secs: u64) -> String {
+pub fn fmt_duration(secs: u64) -> String {
     let hours = secs / 3600;
     let mins = (secs % 3600) / 60;
     if hours > 0 {
@@ -629,11 +629,11 @@ fn fmt_duration(secs: u64) -> String {
     }
 }
 
-fn fmt_minutes(minutes: u64) -> String {
+pub fn fmt_minutes(minutes: u64) -> String {
     format!("{}hrs {}min", minutes / 60, minutes % 60)
 }
 
-fn fmt_hour(hour: u8) -> String {
+pub fn fmt_hour(hour: u8) -> String {
     let ampm = if hour < 12 { "AM" } else { "PM" };
     let mut hour = hour % 12;
     if hour == 0 {
@@ -1096,7 +1096,7 @@ async fn compute_stats(state: &AppState) -> StatsSnapshot {
     }
 }
 
-fn parse_ts(micros: u64) -> Option<(u32, u32, u32, u32, u32)> {
+pub fn parse_ts(micros: u64) -> Option<(u32, u32, u32, u32, u32)> {
     let secs = micros / 1_000_000;
     if secs == 0 {
         return None;
@@ -1114,45 +1114,5 @@ fn fmt_ts_local(micros: u64) -> String {
              {year:04}-{month:02}-{day:02} {hour:02}:{minute:02} UTC</time>"
         ),
         None => String::new(),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use axum::body::Body;
-    use axum::http::Request;
-    use tower::ServiceExt;
-
-    #[tokio::test]
-    async fn user_stats_route_matches() {
-        let ch = Client::default()
-            .with_url("http://localhost:8123")
-            .with_user("ship_talkers")
-            .with_password("ship_talkers")
-            .with_database("ship_talkers");
-        let settings = crate::settings::RuntimeSettings::load();
-        let app = router(
-            ch,
-            settings,
-            crate::formula::Formula::parse(crate::formula::SLACK_TIME_CALCULATION_FORMULA).unwrap(),
-            std::sync::Arc::new(
-                crate::db::sqlite::AuthDb::open(":memory:").expect("open in-memory auth db"),
-            ),
-        );
-        for uri in ["/stats/U01MPHKFZ7S", "/stats/C0123456789"] {
-            let res = app
-                .clone()
-                .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
-                .await
-                .unwrap();
-            let status = res.status();
-            eprintln!("status for {}: {}", uri, status);
-            assert_ne!(
-                status,
-                axum::http::StatusCode::NOT_FOUND,
-                "route must match"
-            );
-        }
     }
 }

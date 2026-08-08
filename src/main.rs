@@ -1,10 +1,4 @@
-mod auth;
-mod bot_image;
-mod db;
-mod formula;
-mod settings;
-mod slack;
-mod website;
+use ship_talkers::{db, formula, settings, slack, website};
 
 use dotenvy::dotenv;
 use std::collections::HashMap;

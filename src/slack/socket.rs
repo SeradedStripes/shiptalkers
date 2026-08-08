@@ -741,14 +741,14 @@ fn start_of_year(ts: i64) -> i64 {
     days_from_civil(year as i64, 1, 1) * 86400
 }
 
-enum TimeRange {
+pub enum TimeRange {
     AllTime,
     Since(i64),
     Between(i64, i64),
 }
 
 impl TimeRange {
-    fn start_ts(&self) -> Option<i64> {
+    pub fn start_ts(&self) -> Option<i64> {
         match self {
             TimeRange::AllTime => None,
             TimeRange::Since(ts) => Some(*ts),
@@ -756,21 +756,21 @@ impl TimeRange {
         }
     }
 
-    fn end_ts(&self) -> Option<i64> {
+    pub fn end_ts(&self) -> Option<i64> {
         match self {
             TimeRange::Between(_, end) => Some(*end),
             _ => None,
         }
     }
 
-    fn start_date(&self) -> Option<String> {
+    pub fn start_date(&self) -> Option<String> {
         self.start_ts().map(|ts| {
             let (year, month, day) = crate::auth::civil_from_days(ts / 86400);
             format!("{year:04}-{month:02}-{day:02}")
         })
     }
 
-    fn end_date(&self) -> Option<String> {
+    pub fn end_date(&self) -> Option<String> {
         self.end_ts().map(|ts| {
             let (year, month, day) = crate::auth::civil_from_days(ts / 86400);
             format!("{year:04}-{month:02}-{day:02}")
@@ -782,7 +782,7 @@ fn parse_time_range(text: &str) -> Option<TimeRange> {
     parse_time_range_at(text, now_unix())
 }
 
-fn parse_time_range_at(text: &str, now: i64) -> Option<TimeRange> {
+pub fn parse_time_range_at(text: &str, now: i64) -> Option<TimeRange> {
     let normalized: String = text
         .to_lowercase()
         .chars()
@@ -871,64 +871,4 @@ async fn post_reply(
         ));
     }
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // 2026-08-15 00:00:00 UTC
-    const NOW: i64 = 1_786_752_000;
-
-    fn ts(year: i64, month: i64, day: i64) -> i64 {
-        days_from_civil(year, month, day) * 86400
-    }
-
-    fn range(text: &str) -> (Option<i64>, Option<i64>) {
-        let r = parse_time_range_at(text, NOW).expect("keyword should parse");
-        (r.start_ts(), r.end_ts())
-    }
-
-    #[test]
-    fn calendar_ranges_are_exact() {
-        assert_eq!(range("today"), (Some(ts(2026, 8, 15)), None));
-        assert_eq!(
-            range("yesterday"),
-            (Some(ts(2026, 8, 14)), Some(ts(2026, 8, 15)))
-        );
-        assert_eq!(range("this week"), (Some(ts(2026, 8, 10)), None));
-        assert_eq!(
-            range("last week"),
-            (Some(ts(2026, 8, 3)), Some(ts(2026, 8, 10)))
-        );
-        assert_eq!(range("this month"), (Some(ts(2026, 8, 1)), None));
-        assert_eq!(
-            range("last month"),
-            (Some(ts(2026, 7, 1)), Some(ts(2026, 8, 1)))
-        );
-        assert_eq!(range("this year"), (Some(ts(2026, 1, 1)), None));
-        assert_eq!(
-            range("last year"),
-            (Some(ts(2025, 1, 1)), Some(ts(2026, 1, 1)))
-        );
-    }
-
-    #[test]
-    fn rolling_ranges() {
-        assert_eq!(range("one second"), (Some(NOW - 1), None));
-        assert_eq!(range("oneday"), (Some(NOW - 86400), None));
-        assert_eq!(range("one day"), (Some(NOW - 86400), None));
-        assert_eq!(range("this hour"), (Some(start_of_hour(NOW)), None));
-        assert_eq!(range("last hour"), (Some(NOW - 3600), None));
-        assert_eq!(range("all time"), (None, None));
-        assert_eq!(range("alltime"), (None, None));
-    }
-
-    #[test]
-    fn keywords_match_inside_sentences() {
-        assert!(parse_time_range_at("show me last month", NOW).is_some());
-        assert!(parse_time_range_at("stats for yesterday", NOW).is_some());
-        assert!(parse_time_range_at("one second of stats", NOW).is_some());
-        assert!(parse_time_range_at("no keyword here", NOW).is_none());
-    }
 }

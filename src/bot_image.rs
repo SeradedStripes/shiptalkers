@@ -5,7 +5,7 @@ const FONT: &[u8] = include_bytes!("assets/fonts/DejaVuSans.ttf");
 const FONT_BOLD: &[u8] = include_bytes!("assets/fonts/DejaVuSans-Bold.ttf");
 const CSS: &str = include_str!("website/static/slack_image_stats.css");
 
-const NAME_FONT_SIZE: f32 = 40.0;
+pub const NAME_FONT_SIZE: f32 = 40.0;
 const NAME_MAX_WIDTH: f32 = 580.0;
 const IMAGE_SCALE: f32 = 1.2;
 
@@ -44,7 +44,7 @@ fn text_width_px(text: &str, font_size: f32, font_data: &[u8]) -> f32 {
         .sum()
 }
 
-fn fit_font_size(text: &str) -> u32 {
+pub fn fit_font_size(text: &str) -> u32 {
     let base = NAME_FONT_SIZE;
     let width = text_width_px(text, base, FONT_BOLD);
     if width <= NAME_MAX_WIDTH {
@@ -86,54 +86,4 @@ pub fn render_stats_image(s: &StatsImage) -> Result<Vec<u8>, String> {
     pixmap
         .encode_png()
         .map_err(|e| format!("png encode error: {e}"))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn fit_font_size_fits_long_names() {
-        assert_eq!(fit_font_size("Samy"), NAME_FONT_SIZE as u32);
-        let long = "A".repeat(50);
-        let fs = fit_font_size(&long);
-        assert!(fs < NAME_FONT_SIZE as u32);
-        assert!(text_width_px(&long, fs as f32, FONT_BOLD) <= NAME_MAX_WIDTH);
-    }
-
-    #[test]
-    fn renders_valid_png() {
-        let s = StatsImage {
-            user: "Samy",
-            percent: 42,
-            more: "Slack",
-            other: "Coding",
-            slack_time: "12h 30m",
-            coding_time: "8h 45m",
-        };
-        let png = render_stats_image(&s).expect("render");
-        assert!(png.starts_with(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]));
-        assert!(png.len() > 1000);
-        if let Ok(path) = std::env::var("STATS_SAMPLE_OUT") {
-            std::fs::write(&path, &png).expect("write sample");
-        }
-    }
-
-    #[test]
-    fn renders_valid_png_with_long_name() {
-        let s = StatsImage {
-            user: "This is a really quite long Slack display name",
-            percent: 42,
-            more: "Slack",
-            other: "Coding",
-            slack_time: "12h 30m",
-            coding_time: "8h 45m",
-        };
-        let png = render_stats_image(&s).expect("render");
-        assert!(png.starts_with(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]));
-        assert!(png.len() > 1000);
-        if let Ok(path) = std::env::var("STATS_SAMPLE_OUT") {
-            std::fs::write(&path, &png).expect("write sample");
-        }
-    }
 }

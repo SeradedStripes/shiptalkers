@@ -55,9 +55,13 @@ pub struct RuntimeSettings {
 
 impl RuntimeSettings {
     pub fn load() -> Self {
+        Self::from_env(|key| std::env::var(key).ok())
+    }
+
+    pub fn from_env(env: impl Fn(&str) -> Option<String>) -> Self {
         let mut map = HashMap::new();
         for key in SETTING_KEYS {
-            let value = std::env::var(key).unwrap_or_else(|_| default_value(key).to_string());
+            let value = env(key).unwrap_or_else(|| default_value(key).to_string());
             map.insert((*key).to_string(), value);
         }
         Self {
