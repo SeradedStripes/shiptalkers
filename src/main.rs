@@ -722,6 +722,19 @@ async fn scrape_one_channel(
         );
     }
 
+    // Mark the channel as scraped as soon as its messages are stored, so a timeout
+    // later in the thread phase doesn't force a full re-scrape next pass.
+    if let Err(e) = db::clickhouse_db::mark_channel_scraped(clickhouse, &channel_id).await {
+        tracing::warn!(
+            "[token {}][{}/{}] Failed to record {} as scraped: {}",
+            token_idx,
+            idx,
+            total_channels,
+            channel_id,
+            e
+        );
+    }
+
     // Collect unique thread parents from replies
     let mut thread_parents: Vec<String> = Vec::new();
     for msg in &messages {
@@ -750,6 +763,9 @@ async fn scrape_one_channel(
         let window_ts = now
             .saturating_sub(ctx.thread_rescan_window_hours * 3600)
             .to_string();
+        // Record the attempt up front so a rescan that hangs or fails retries at
+        // most every interval instead of on every pass.
+        record_thread_rescan(&channel_id);
         match user_client
             .get_channel_history(&channel_id, Some(&window_ts))
             .await
@@ -765,7 +781,6 @@ async fn scrape_one_channel(
                         found += 1;
                     }
                 }
-                record_thread_rescan(&channel_id);
                 if found > 0 {
                     tracing::info!(
                         "[token {}][{}/{}] Thread re-scan of {} found {} new thread roots",
@@ -870,17 +885,6 @@ async fn scrape_one_channel(
 
     processed.fetch_add(1, Ordering::Relaxed);
     let _ = tx.send(idx).await;
-
-    if let Err(e) = db::clickhouse_db::mark_channel_scraped(clickhouse, &channel_id).await {
-        tracing::warn!(
-            "[token {}][{}/{}] Failed to record {} as scraped: {}",
-            token_idx,
-            idx,
-            total_channels,
-            channel_id,
-            e
-        );
-    }
 
     let elapsed = start.elapsed().as_secs_f64();
     let mut summary = Vec::new();

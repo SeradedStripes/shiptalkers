@@ -248,10 +248,21 @@ impl SlackClient {
     ) -> Result<Vec<SlackMessage>, Box<dyn std::error::Error + Send + Sync>> {
         let mut messages = Vec::new();
         let mut cursor: Option<String> = None;
+        let mut seen_cursors = std::collections::HashSet::new();
         let mut page = 0u32;
         let start = Instant::now();
 
         loop {
+            if let Some(c) = &cursor
+                && !seen_cursors.insert(c.clone())
+            {
+                tracing::warn!(
+                    "{}: pagination cursor {} repeated, stopping to avoid a loop",
+                    channel_id,
+                    c
+                );
+                break;
+            }
             page += 1;
             if page == 1 {
                 match oldest {
