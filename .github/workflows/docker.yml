@@ -3,17 +3,13 @@ name: Build and publish Docker image
 on:
   push:
     branches: [main]
-    paths-ignore:
-      - "**/*.md"
-      - .env.example
-      - clippy.toml
-      - justfile
-      - .gitignore
-      - .dockerignore
-      - compose.dev.yml
-      - compose.prod.yml
-      - "**/manifest.yml"
-      - ".github/**"
+    paths:
+      - "src/**"
+      - "templates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "Dockerfile"
+      - ".github/workflows/docker.yml"
   workflow_dispatch:
 
 env:
