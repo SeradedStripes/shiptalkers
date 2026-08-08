@@ -8,6 +8,7 @@ use axum::response::{Html, IntoResponse, Redirect};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
+use std::time::Instant;
 
 use super::AppState;
 
@@ -76,6 +77,7 @@ pub async fn get_link(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Html<String>, StatusCode> {
+    let started = Instant::now();
     let session = session_from_request(&headers, &auth_config(&state));
     let hackatime_connected = match &session {
         Some(s) => clickhouse_db::is_hackatime_connected(&state.clickhouse, &s.slack_id)
@@ -108,6 +110,7 @@ pub async fn get_link(
             .map(|s| s.slack_id.clone())
             .unwrap_or_default(),
         hackatime_connected,
+        page_load_ms: format!("{}ms", started.elapsed().as_millis()),
     };
     let html = template
         .render()
@@ -122,6 +125,7 @@ struct LinkTemplate {
     name: String,
     slack_id: String,
     hackatime_connected: bool,
+    page_load_ms: String,
 }
 
 pub async fn auth_hackclub_login(

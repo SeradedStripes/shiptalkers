@@ -95,6 +95,7 @@ pub struct AppState {
 #[template(path = "index.html")]
 pub struct IndexTemplate {
     pub signed_in: bool,
+    pub page_load_ms: String,
 }
 
 #[derive(Template)]
@@ -108,6 +109,7 @@ pub struct Stats {
     pub coding_hours: String,
     pub db_size_label: String,
     pub signed_in: bool,
+    pub page_load_ms: String,
 }
 
 #[derive(Template)]
@@ -130,6 +132,7 @@ pub struct UserTemplate {
     pub top_channels: Vec<ChannelStats>,
     pub signed_in: bool,
     pub found: bool,
+    pub page_load_ms: String,
 }
 
 pub struct ChannelStats {
@@ -150,6 +153,7 @@ pub struct ChannelTemplate {
     pub top_posters: Vec<UserStats>,
     pub signed_in: bool,
     pub found: bool,
+    pub page_load_ms: String,
 }
 
 #[derive(Template)]
@@ -159,12 +163,14 @@ pub struct SearchTemplate {
     pub results: Vec<SearchResult>,
     pub channels: Vec<SearchResult>,
     pub signed_in: bool,
+    pub page_load_ms: String,
 }
 
 #[derive(Template)]
 #[template(path = "leaderboard.html")]
 pub struct LeaderboardTemplate {
     pub signed_in: bool,
+    pub page_load_ms: String,
 }
 
 #[derive(Template)]
@@ -176,6 +182,7 @@ pub struct LeaderboardCategoryTemplate {
     pub rows: Vec<LeaderboardEntry>,
     pub coming_soon: bool,
     pub signed_in: bool,
+    pub page_load_ms: String,
 }
 
 pub struct LeaderboardEntry {
@@ -300,8 +307,12 @@ async fn get_index(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Html<String>, StatusCode> {
+    let started = Instant::now();
     let signed_in = signed_in(&state, &headers);
-    let template = IndexTemplate { signed_in };
+    let template = IndexTemplate {
+        signed_in,
+        page_load_ms: format!("{}ms", started.elapsed().as_millis()),
+    };
     let html = template
         .render()
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -312,7 +323,11 @@ async fn get_stats_page(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Html<String>, StatusCode> {
-    let stats = load_stats(&state, &headers).await;
+    let started = Instant::now();
+    let stats = Stats {
+        page_load_ms: format!("{}ms", started.elapsed().as_millis()),
+        ..load_stats(&state, &headers).await
+    };
     let html = stats
         .render()
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -324,6 +339,7 @@ async fn get_search(
     headers: HeaderMap,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<Html<String>, StatusCode> {
+    let started = Instant::now();
     let signed_in = signed_in(&state, &headers);
     let query = params.get("q").cloned().unwrap_or_default();
 
@@ -400,6 +416,7 @@ async fn get_search(
         results,
         channels,
         signed_in,
+        page_load_ms: format!("{}ms", started.elapsed().as_millis()),
     };
     let html = template
         .render()
@@ -423,8 +440,12 @@ async fn get_leaderboard(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Html<String>, StatusCode> {
+    let started = Instant::now();
     let signed_in = signed_in(&state, &headers);
-    let template = LeaderboardTemplate { signed_in };
+    let template = LeaderboardTemplate {
+        signed_in,
+        page_load_ms: format!("{}ms", started.elapsed().as_millis()),
+    };
     let html = template
         .render()
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -436,6 +457,7 @@ async fn get_leaderboard_category(
     headers: HeaderMap,
     Path(category): Path<String>,
 ) -> Result<Html<String>, StatusCode> {
+    let started = Instant::now();
     let ch = &state.clickhouse;
     let signed_in = signed_in(&state, &headers);
 
@@ -534,6 +556,7 @@ async fn get_leaderboard_category(
         rows,
         coming_soon,
         signed_in,
+        page_load_ms: format!("{}ms", started.elapsed().as_millis()),
     };
     let html = template
         .render()
@@ -624,6 +647,7 @@ async fn get_user_stats(
     headers: &HeaderMap,
     slack_id: &str,
 ) -> Result<Html<String>, StatusCode> {
+    let started = Instant::now();
     let ch = &state.clickhouse;
     let signed_in = signed_in(state, headers);
 
@@ -918,6 +942,7 @@ async fn get_user_stats(
         top_channels,
         signed_in,
         found,
+        page_load_ms: format!("{}ms", started.elapsed().as_millis()),
     };
     let html = template
         .render()
@@ -930,6 +955,7 @@ async fn get_channel_stats(
     headers: &HeaderMap,
     channel_id: &str,
 ) -> Result<Html<String>, StatusCode> {
+    let started = Instant::now();
     let ch = &state.clickhouse;
     let signed_in = signed_in(state, headers);
 
@@ -1057,6 +1083,7 @@ async fn get_channel_stats(
         top_posters,
         signed_in,
         found,
+        page_load_ms: format!("{}ms", started.elapsed().as_millis()),
     };
     let html = template
         .render()
@@ -1087,6 +1114,7 @@ async fn load_stats(state: &AppState, headers: &HeaderMap) -> Stats {
         coding_hours: fmt_minutes(snapshot.coding_minutes),
         db_size_label,
         signed_in: signed_in(state, headers),
+        page_load_ms: String::new(),
     }
 }
 
