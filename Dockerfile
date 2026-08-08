@@ -1,12 +1,9 @@
-FROM rust:1.89-slim AS dev
+FROM rust:1.95-alpine3.22 AS dev
 
-RUN apt-get update && apt-get install -y \
-    pkg-config \
-    libssl-dev \
-    libfontconfig1-dev \
-    g++ \
-    wget \
-    && rm -rf /var/lib/apt/lists/*
+RUN apk add --no-cache \
+    build-base \
+    pkgconfig \
+    openssl-dev
 
 RUN cargo install cargo-watch
 
@@ -16,16 +13,14 @@ CMD ["cargo", "watch", "-w", "src", "-x", "run"]
 
 # ---------------------------------------------------------------------------
 # Production build. The default target is the `runtime` stage, so a plain
-# `docker build .` / the CI workflow produce the slim production image.
+# `docker build .` / the CI workflow produce the production image.
 
-FROM rust:1.89-slim AS builder
+FROM rust:1.95-alpine3.22 AS builder
 
-RUN apt-get update && apt-get install -y \
-    pkg-config \
-    libssl-dev \
-    libfontconfig1-dev \
-    g++ \
-    && rm -rf /var/lib/apt/lists/*
+RUN apk add --no-cache \
+    build-base \
+    pkgconfig \
+    openssl-dev
 
 WORKDIR /app
 
@@ -39,18 +34,16 @@ COPY src ./src
 COPY templates ./templates
 RUN cargo build --release --locked
 
-FROM debian:bookworm-slim AS runtime
+FROM alpine:3.22 AS runtime
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apk add --no-cache \
     ca-certificates \
-    libssl3 \
-    libfontconfig1 \
-    libfreetype6 \
+    openssl \
     curl \
-    && rm -rf /var/lib/apt/lists/*
-
-RUN groupadd -r app && useradd -r -g app app \
-    && mkdir -p /data && chown app:app /data
+    && addgroup -S app \
+    && adduser -S -G app app \
+    && mkdir -p /data \
+    && chown app:app /data
 
 WORKDIR /app
 
