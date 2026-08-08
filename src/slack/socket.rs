@@ -475,6 +475,9 @@ async fn query_slack_seconds(
     if range.start_ts().is_some() {
         session_sql.push_str(" AND ts >= ?");
     }
+    if range.end_ts().is_some() {
+        session_sql.push_str(" AND ts < ?");
+    }
     session_sql.push_str(
         "),
          flagged AS (
@@ -500,6 +503,9 @@ async fn query_slack_seconds(
     if let Some(start_ts) = range.start_ts() {
         session_query = session_query.bind(start_ts);
     }
+    if let Some(end_ts) = range.end_ts() {
+        session_query = session_query.bind(end_ts);
+    }
 
     #[derive(clickhouse::Row, serde::Deserialize)]
     struct SessionRow {
@@ -520,10 +526,16 @@ async fn query_slack_seconds(
     if range.start_ts().is_some() {
         counts_sql.push_str(" AND toInt64(message_ts / 1000000) >= ?");
     }
+    if range.end_ts().is_some() {
+        counts_sql.push_str(" AND toInt64(message_ts / 1000000) < ?");
+    }
     let mut counts_query = clickhouse.query(&counts_sql);
     counts_query = counts_query.bind(user);
     if let Some(start_ts) = range.start_ts() {
         counts_query = counts_query.bind(start_ts);
+    }
+    if let Some(end_ts) = range.end_ts() {
+        counts_query = counts_query.bind(end_ts);
     }
 
     #[derive(clickhouse::Row, serde::Deserialize)]
@@ -566,11 +578,17 @@ async fn query_coding_seconds(
     if range.start_date().is_some() {
         sql.push_str(" AND date >= ?");
     }
+    if range.end_date().is_some() {
+        sql.push_str(" AND date < ?");
+    }
     sql.push_str(" GROUP BY date )");
     let mut query = clickhouse.query(&sql);
     query = query.bind(user);
     if let Some(start_date) = range.start_date() {
         query = query.bind(&start_date);
+    }
+    if let Some(end_date) = range.end_date() {
+        query = query.bind(&end_date);
     }
     let minutes: i64 = query.fetch_one().await.unwrap_or(0);
     minutes.max(0) as u64 * 60
@@ -701,6 +719,10 @@ fn start_of_day(ts: i64) -> i64 {
     ts / 86400 * 86400
 }
 
+fn start_of_hour(ts: i64) -> i64 {
+    ts / 3600 * 3600
+}
+
 fn start_of_week(ts: i64) -> i64 {
     let day = ts / 86400;
     let offset = (day + 3).rem_euclid(7);
@@ -722,6 +744,7 @@ fn start_of_year(ts: i64) -> i64 {
 enum TimeRange {
     AllTime,
     Since(i64),
+    Between(i64, i64),
 }
 
 impl TimeRange {
@@ -729,21 +752,37 @@ impl TimeRange {
         match self {
             TimeRange::AllTime => None,
             TimeRange::Since(ts) => Some(*ts),
+            TimeRange::Between(start, _) => Some(*start),
+        }
+    }
+
+    fn end_ts(&self) -> Option<i64> {
+        match self {
+            TimeRange::Between(_, end) => Some(*end),
+            _ => None,
         }
     }
 
     fn start_date(&self) -> Option<String> {
-        match self {
-            TimeRange::AllTime => None,
-            TimeRange::Since(ts) => {
-                let (year, month, day) = crate::auth::civil_from_days(ts / 86400);
-                Some(format!("{year:04}-{month:02}-{day:02}"))
-            }
-        }
+        self.start_ts().map(|ts| {
+            let (year, month, day) = crate::auth::civil_from_days(ts / 86400);
+            format!("{year:04}-{month:02}-{day:02}")
+        })
+    }
+
+    fn end_date(&self) -> Option<String> {
+        self.end_ts().map(|ts| {
+            let (year, month, day) = crate::auth::civil_from_days(ts / 86400);
+            format!("{year:04}-{month:02}-{day:02}")
+        })
     }
 }
 
 fn parse_time_range(text: &str) -> Option<TimeRange> {
+    parse_time_range_at(text, now_unix())
+}
+
+fn parse_time_range_at(text: &str, now: i64) -> Option<TimeRange> {
     let normalized: String = text
         .to_lowercase()
         .chars()
@@ -753,11 +792,15 @@ fn parse_time_range(text: &str) -> Option<TimeRange> {
         .collect::<Vec<_>>()
         .join(" ");
 
-    let now = now_unix();
+    let today_start = start_of_day(now);
+    let this_week_start = start_of_week(now);
+    let this_month_start = start_of_month(now);
+    let this_year_start = start_of_year(now);
     let ranges: Vec<(&str, TimeRange)> = vec![
         ("all time", TimeRange::AllTime),
         ("alltime", TimeRange::AllTime),
         ("last 24 hours", TimeRange::Since(now - 86400)),
+        ("last 12 hours", TimeRange::Since(now - 12 * 3600)),
         ("last 7 days", TimeRange::Since(now - 7 * 86400)),
         ("last 14 days", TimeRange::Since(now - 14 * 86400)),
         ("last 2 weeks", TimeRange::Since(now - 14 * 86400)),
@@ -765,14 +808,31 @@ fn parse_time_range(text: &str) -> Option<TimeRange> {
         ("last 90 days", TimeRange::Since(now - 90 * 86400)),
         ("last 3 months", TimeRange::Since(now - 90 * 86400)),
         ("last 365 days", TimeRange::Since(now - 365 * 86400)),
-        ("last year", TimeRange::Since(now - 365 * 86400)),
-        ("last month", TimeRange::Since(now - 30 * 86400)),
-        ("last week", TimeRange::Since(now - 7 * 86400)),
-        ("this year", TimeRange::Since(start_of_year(now))),
-        ("this month", TimeRange::Since(start_of_month(now))),
-        ("this week", TimeRange::Since(start_of_week(now))),
-        ("yesterday", TimeRange::Since(start_of_day(now - 86400))),
-        ("today", TimeRange::Since(start_of_day(now))),
+        ("last hour", TimeRange::Since(now - 3600)),
+        ("one day", TimeRange::Since(now - 86400)),
+        ("oneday", TimeRange::Since(now - 86400)),
+        ("one second", TimeRange::Since(now - 1)),
+        (
+            "last year",
+            TimeRange::Between(start_of_year(this_year_start - 1), this_year_start),
+        ),
+        ("this year", TimeRange::Since(this_year_start)),
+        (
+            "last month",
+            TimeRange::Between(start_of_month(this_month_start - 1), this_month_start),
+        ),
+        ("this month", TimeRange::Since(this_month_start)),
+        (
+            "last week",
+            TimeRange::Between(start_of_week(this_week_start - 86400), this_week_start),
+        ),
+        ("this week", TimeRange::Since(this_week_start)),
+        ("this hour", TimeRange::Since(start_of_hour(now))),
+        (
+            "yesterday",
+            TimeRange::Between(today_start - 86400, today_start),
+        ),
+        ("today", TimeRange::Since(today_start)),
     ];
 
     ranges
@@ -811,4 +871,64 @@ async fn post_reply(
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // 2026-08-15 00:00:00 UTC
+    const NOW: i64 = 1_786_752_000;
+
+    fn ts(year: i64, month: i64, day: i64) -> i64 {
+        days_from_civil(year, month, day) * 86400
+    }
+
+    fn range(text: &str) -> (Option<i64>, Option<i64>) {
+        let r = parse_time_range_at(text, NOW).expect("keyword should parse");
+        (r.start_ts(), r.end_ts())
+    }
+
+    #[test]
+    fn calendar_ranges_are_exact() {
+        assert_eq!(range("today"), (Some(ts(2026, 8, 15)), None));
+        assert_eq!(
+            range("yesterday"),
+            (Some(ts(2026, 8, 14)), Some(ts(2026, 8, 15)))
+        );
+        assert_eq!(range("this week"), (Some(ts(2026, 8, 10)), None));
+        assert_eq!(
+            range("last week"),
+            (Some(ts(2026, 8, 3)), Some(ts(2026, 8, 10)))
+        );
+        assert_eq!(range("this month"), (Some(ts(2026, 8, 1)), None));
+        assert_eq!(
+            range("last month"),
+            (Some(ts(2026, 7, 1)), Some(ts(2026, 8, 1)))
+        );
+        assert_eq!(range("this year"), (Some(ts(2026, 1, 1)), None));
+        assert_eq!(
+            range("last year"),
+            (Some(ts(2025, 1, 1)), Some(ts(2026, 1, 1)))
+        );
+    }
+
+    #[test]
+    fn rolling_ranges() {
+        assert_eq!(range("one second"), (Some(NOW - 1), None));
+        assert_eq!(range("oneday"), (Some(NOW - 86400), None));
+        assert_eq!(range("one day"), (Some(NOW - 86400), None));
+        assert_eq!(range("this hour"), (Some(start_of_hour(NOW)), None));
+        assert_eq!(range("last hour"), (Some(NOW - 3600), None));
+        assert_eq!(range("all time"), (None, None));
+        assert_eq!(range("alltime"), (None, None));
+    }
+
+    #[test]
+    fn keywords_match_inside_sentences() {
+        assert!(parse_time_range_at("show me last month", NOW).is_some());
+        assert!(parse_time_range_at("stats for yesterday", NOW).is_some());
+        assert!(parse_time_range_at("one second of stats", NOW).is_some());
+        assert!(parse_time_range_at("no keyword here", NOW).is_none());
+    }
 }
