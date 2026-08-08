@@ -339,9 +339,6 @@ pub async fn sync_coding_activity(
     let lock = coding_sync_lock(slack_id);
     let _guard = lock.lock().await;
     let today = auth::today_utc();
-    clickhouse_db::clear_coding_activity_from(clickhouse, slack_id, start_date)
-        .await
-        .map_err(|e| e.to_string())?;
 
     let mut dates = Vec::new();
     let mut date = start_date.to_string();
@@ -365,7 +362,23 @@ pub async fn sync_coding_activity(
 
     let mut rows = Vec::new();
     for (date, minutes) in futures::future::join_all(fetches).await {
-        let minutes = minutes.map_err(|e| format!("fetch hours for {}: {}", date, e))?;
+        let minutes = match minutes {
+            Ok(m) => m,
+            Err((status, message)) => {
+                if matches!(status, Some(401 | 403)) {
+                    tracing::warn!(
+                        "Hackatime token for {} is invalid ({}), removing link",
+                        slack_id,
+                        message
+                    );
+                    clickhouse_db::delete_hackatime_connection(clickhouse, slack_id)
+                        .await
+                        .map_err(|e| format!("delete stale hackatime connection: {}", e))?;
+                    return Ok(());
+                }
+                return Err(format!("fetch hours for {}: {}", date, message));
+            }
+        };
         if let Some(minutes) = minutes.filter(|&m| m > 0) {
             let date = clickhouse_db::parse_date(&date)
                 .ok_or_else(|| format!("invalid date from hackatime: {}", date))?;
@@ -378,6 +391,9 @@ pub async fn sync_coding_activity(
         }
     }
 
+    clickhouse_db::clear_coding_activity_from(clickhouse, slack_id, start_date)
+        .await
+        .map_err(|e| e.to_string())?;
     clickhouse_db::insert_coding_activity(clickhouse, &rows)
         .await
         .map_err(|e| e.to_string())?;
@@ -391,12 +407,20 @@ pub async fn sync_coding_activity(
         .await
         .map_err(|e| e.to_string())?;
 
-    tracing::info!(
-        "Synced {} days of coding activity for {} from {}",
-        rows.len(),
-        slack_id,
-        start_date
-    );
+    if rows.is_empty() {
+        tracing::debug!(
+            "Synced 0 days of coding activity for {} from {}",
+            slack_id,
+            start_date
+        );
+    } else {
+        tracing::info!(
+            "Synced {} days of coding activity for {} from {}",
+            rows.len(),
+            slack_id,
+            start_date
+        );
+    }
     Ok(())
 }
 

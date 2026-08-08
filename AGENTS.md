@@ -92,7 +92,7 @@ All settings below are runtime-editable from `/admin/config` and persisted to th
 - Socket Mode opens one connection per `SLACK_APP_TOKENS` app. Slack delivers every event to every app, so message events are sharded (FNV hash of `ts`) and only the owning socket replies. Duplicate `channel_created` events are harmless because `insert_new_channels` is idempotent.
 - The rate limiter is a FIFO ticket queue that paces at exactly 1 request per delay, so one huge channel cannot stall the pass.
 - Scrape passes split into full-scrape (new channels) and incremental check (already-scraped channels) using `scraped_channels`.
-- `coding_activity` is `ReplacingMergeTree` on new deployments but reads must not rely on `FINAL` (it errors on tables still created as plain `MergeTree`). Reads dedup with `max(minutes)` per `(user_id, date)` in SQL. Coding syncs are serialized per user (`CODING_SYNC_LOCKS` in `auth.rs`) and the clear-then-insert uses `SETTINGS mutations_sync = 2`, because concurrent syncs used to insert duplicate day rows that inflated coding time sums.
+- `coding_activity` is `ReplacingMergeTree` on new deployments but reads must not rely on `FINAL` (it errors on tables still created as plain `MergeTree`). Reads dedup with `max(minutes)` per `(user_id, date)` in SQL. Coding syncs are serialized per user (`CODING_SYNC_LOCKS` in `auth.rs`) and the clear-then-insert uses `SETTINGS mutations_sync = 2`, because concurrent syncs used to insert duplicate day rows that inflated coding time sums. Fetches run before any DB write, so a failed sync leaves the old rows intact; a 401/403 from the hours endpoint means the stored hackatime token died, so the connection is deleted and the user re-links from `/link`.
 
 ## Finally
 

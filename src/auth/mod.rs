@@ -201,23 +201,30 @@ pub async fn fetch_hackatime_me(
     Ok(me.slack_id)
 }
 
+/// First tuple element is the HTTP status when the failure was an HTTP error,
+/// None for transport or parse failures.
 pub async fn fetch_hours_for_day(
     client: &reqwest::Client,
     access_token: &str,
     date: &str,
-) -> Result<Option<u64>, String> {
-    let hours: HoursResponse = client
+) -> Result<Option<u64>, (Option<u16>, String)> {
+    let response = client
         .get(HACKATIME_HOURS_URL)
         .bearer_auth(access_token)
         .query(&[("start_date", date), ("end_date", date)])
         .send()
         .await
-        .map_err(|e| e.to_string())?
-        .error_for_status()
-        .map_err(|e| e.to_string())?
-        .json()
+        .map_err(|e| (None, e.to_string()))?;
+    let status = response.status();
+    let body = response
+        .text()
         .await
-        .map_err(|e| e.to_string())?;
+        .unwrap_or_else(|e| format!("(no body: {e})"));
+    if !status.is_success() {
+        return Err((Some(status.as_u16()), body));
+    }
+    let hours: HoursResponse =
+        serde_json::from_str(&body).map_err(|e| (None, format!("bad JSON ({body:?}): {e}")))?;
     let seconds = hours.total_seconds.unwrap_or(0.0);
     Ok(Some((seconds / 60.0).round() as u64))
 }
