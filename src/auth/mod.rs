@@ -1,7 +1,8 @@
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use hmac::{Hmac, Mac};
-use rand::RngCore;
+use hmac::{Hmac, KeyInit, Mac};
+use rand::Rng;
+use rand::rng;
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 
@@ -58,7 +59,7 @@ struct HoursResponse {
 }
 
 fn sign(data: &str, secret: &[u8]) -> String {
-    let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(secret).expect("hmac key");
+    let mut mac = <Hmac<Sha256> as KeyInit>::new_from_slice(secret).expect("hmac key");
     mac.update(data.as_bytes());
     let sig = mac.finalize().into_bytes();
     URL_SAFE_NO_PAD.encode(sig)
@@ -83,7 +84,7 @@ pub fn parse_session(cookie: Option<&str>, secret: &str) -> Option<Session> {
 
 pub fn random_state() -> String {
     let mut bytes = [0u8; 16];
-    rand::thread_rng().fill_bytes(&mut bytes);
+    rng().fill_bytes(&mut bytes);
     URL_SAFE_NO_PAD.encode(bytes)
 }
 

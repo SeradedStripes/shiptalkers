@@ -243,7 +243,7 @@ async fn serve_socket(
                                 let ack = serde_json::json!({
                                     "envelope_id": envelope_id
                                 });
-                                let _ = ws_stream.send(Message::Text(ack.to_string())).await;
+                                let _ = ws_stream.send(Message::Text(ack.to_string().into())).await;
                             }
 
                             if let Some(payload) = &socket_msg.payload
@@ -280,7 +280,7 @@ async fn serve_socket(
                 }
             }
             Ok(Some(Ok(Message::Ping(_)))) => {
-                let _ = ws_stream.send(Message::Pong(vec![])).await;
+                let _ = ws_stream.send(Message::Pong(vec![].into())).await;
             }
             Ok(Some(Ok(_))) => {}
         }

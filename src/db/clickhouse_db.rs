@@ -364,7 +364,7 @@ pub async fn backfill_stale_user_scores(
             .map(|r| r.user_id)
             .collect();
         recompute_user_scores(client, &ids, formula).await?;
-        let mut insert = client.insert("score_meta")?;
+        let mut insert = client.insert::<ScoreMetaRow>("score_meta").await?;
         insert
             .write(&ScoreMetaRow {
                 id: 1,
@@ -658,7 +658,7 @@ pub async fn insert_messages(
         return Ok(0);
     }
     let count = messages.len() as u64;
-    let mut insert = client.insert("slack_messages")?;
+    let mut insert = client.insert::<SlackMessageRow>("slack_messages").await?;
     for msg in messages {
         insert.write(msg).await?;
     }
@@ -915,7 +915,7 @@ async fn recompute_user_scores_chunk(
         return Ok(0);
     }
 
-    let mut insert = client.insert("user_scores")?;
+    let mut insert = client.insert::<ScoreRow>("user_scores").await?;
     for r in &rows {
         insert.write(r).await?;
     }
@@ -949,7 +949,7 @@ pub async fn insert_new_channels(
     }
 
     let count = new_channels.len() as u64;
-    let mut insert = client.insert("slack_channels")?;
+    let mut insert = client.insert::<SlackChannelRow>("slack_channels").await?;
     for ch in new_channels {
         insert.write(ch).await?;
     }
@@ -976,7 +976,7 @@ pub async fn upsert_users(
     if users.is_empty() {
         return Ok(());
     }
-    let mut insert = client.insert("users")?;
+    let mut insert = client.insert::<SlackUserRow>("users").await?;
     for u in users {
         insert.write(u).await?;
     }
@@ -1052,7 +1052,7 @@ pub async fn mark_channels_scraped(
         channel_id: String,
     }
 
-    let mut insert = client.insert("scraped_channels")?;
+    let mut insert = client.insert::<ScrapedRow>("scraped_channels").await?;
     for id in channel_ids {
         insert
             .write(&ScrapedRow {
@@ -1075,7 +1075,7 @@ pub async fn mark_channel_scraped(
         channel_id: String,
     }
 
-    let mut insert = client.insert("scraped_channels")?;
+    let mut insert = client.insert::<ScrapedRow>("scraped_channels").await?;
     insert
         .write(&ScrapedRow {
             channel_id: channel_id.to_string(),
@@ -1136,7 +1136,7 @@ pub async fn mark_fully_scraped(
         fully_scraped: u8,
     }
 
-    let mut insert = client.insert("scrape_checkpoints")?;
+    let mut insert = client.insert::<CheckpointRow>("scrape_checkpoints").await?;
     insert
         .write(&CheckpointRow {
             channel_id: channel_id.to_string(),
@@ -1174,7 +1174,9 @@ pub async fn mark_thread_fully_scraped(
         fully_scraped: u8,
     }
 
-    let mut insert = client.insert("thread_checkpoints")?;
+    let mut insert = client
+        .insert::<ThreadCheckpointRow>("thread_checkpoints")
+        .await?;
     insert
         .write(&ThreadCheckpointRow {
             channel_id: channel_id.to_string(),
@@ -1221,7 +1223,9 @@ pub async fn upsert_hackatime_connection(
     slack_id: &str,
     access_token: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut insert = client.insert("hackatime_connections")?;
+    let mut insert = client
+        .insert::<HackatimeConnectionRow>("hackatime_connections")
+        .await?;
     insert
         .write(&HackatimeConnectionRow {
             slack_id: slack_id.to_string(),
@@ -1237,7 +1241,9 @@ pub async fn update_hackatime_connection(
     client: &Client,
     row: &HackatimeConnectionRow,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut insert = client.insert("hackatime_connections")?;
+    let mut insert = client
+        .insert::<HackatimeConnectionRow>("hackatime_connections")
+        .await?;
     insert.write(row).await?;
     insert.end().await?;
     Ok(())
@@ -1307,7 +1313,9 @@ pub async fn insert_coding_activity(
     if rows.is_empty() {
         return Ok(());
     }
-    let mut insert = client.insert("coding_activity")?;
+    let mut insert = client
+        .insert::<CodingActivityRow>("coding_activity")
+        .await?;
     for row in rows {
         insert.write(row).await?;
     }
