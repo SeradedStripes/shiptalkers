@@ -462,6 +462,7 @@ impl SlackClientPool {
         let mut total = 0;
         let mut cursor: Option<String> = None;
         let mut page = 0u32;
+        let mut batch = Vec::new();
 
         loop {
             page += 1;
@@ -521,11 +522,14 @@ impl SlackClientPool {
             }
 
             total += page_users.len();
+            batch.extend(page_users);
+            if page.is_multiple_of(10) {
+                on_page(std::mem::take(&mut batch)).await;
+            }
+
             if page.is_multiple_of(25) {
                 tracing::info!("users.list: fetched {} users so far (page {})", total, page);
             }
-
-            on_page(page_users).await;
 
             cursor = resp
                 .get("response_metadata")
@@ -537,6 +541,10 @@ impl SlackClientPool {
             if cursor.is_none() {
                 break;
             }
+        }
+
+        if !batch.is_empty() {
+            on_page(batch).await;
         }
 
         tracing::info!("Fetched {} users from Slack", total);

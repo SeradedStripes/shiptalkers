@@ -214,13 +214,13 @@ async fn sync_users(slack_pool: &slack::SlackClientPool, clickhouse: &clickhouse
     let missing_pfps = Arc::new(missing_pfps);
     let changed_total = Arc::new(AtomicU64::new(0));
     let result = slack_pool
-        .fetch_users(|page| {
+        .fetch_users(|batch| {
             let clickhouse = clickhouse.clone();
             let existing = existing.clone();
             let missing_pfps = missing_pfps.clone();
             let changed_total = changed_total.clone();
             Box::pin(async move {
-                let changed: Vec<db::clickhouse_db::SlackUserRow> = page
+                let changed: Vec<db::clickhouse_db::SlackUserRow> = batch
                     .into_iter()
                     .filter(|u| {
                         u.is_deleted
@@ -244,7 +244,6 @@ async fn sync_users(slack_pool: &slack::SlackClientPool, clickhouse: &clickhouse
                 match db::clickhouse_db::upsert_users(&clickhouse, &changed).await {
                     Ok(()) => {
                         changed_total.fetch_add(changed.len() as u64, Ordering::Relaxed);
-                        tracing::info!("Upserted {} users so far", changed.len());
                     }
                     Err(e) => tracing::warn!("Failed to upsert users: {}", e),
                 }
@@ -259,8 +258,13 @@ async fn sync_users(slack_pool: &slack::SlackClientPool, clickhouse: &clickhouse
             }
             if changed_total.load(Ordering::Relaxed) == 0 {
                 tracing::info!("No user changes since last sync, skipping upsert");
+            } else {
+                tracing::info!(
+                    "Synced {} users from Slack ({} upserted)",
+                    total,
+                    changed_total.load(Ordering::Relaxed)
+                );
             }
-            tracing::info!("Synced {} users from Slack", total);
             true
         }
         Err(e) => {
