@@ -121,8 +121,6 @@ pub struct UserTemplate {
     pub total_messages: String,
     pub coding_hours: String,
     pub channels: String,
-    pub first_msg: String,
-    pub last_msg: String,
     pub slack_time_total: String,
     pub slack_time_avg: String,
     pub slack_time_longest: String,
@@ -683,15 +681,13 @@ async fn get_user_stats(
         longest: u64,
         days: u64,
         channels: u64,
-        first_ts: u64,
-        last_ts: u64,
         active_hour: u8,
     }
 
     let scores: Option<ScoreRow> = ch
         .query(
             "SELECT score, total_time, messages, sessions, total_chars, longest,
-                    days, channels, first_ts, last_ts, active_hour
+                    days, channels, active_hour
              FROM user_scores FINAL WHERE user_id = ?",
         )
         .bind(slack_id)
@@ -846,8 +842,6 @@ async fn get_user_stats(
         total_messages: fmt_thousands(total_messages),
         coding_hours: fmt_minutes(coding_minutes.max(0) as u64),
         channels: fmt_thousands(scores.as_ref().map(|s| s.channels).unwrap_or(0)),
-        first_msg: fmt_ts_local(scores.as_ref().map(|s| s.first_ts).unwrap_or(0)),
-        last_msg: fmt_ts_local(scores.as_ref().map(|s| s.last_ts).unwrap_or(0)),
         slack_time_total,
         slack_time_avg,
         slack_time_longest,

@@ -382,7 +382,7 @@ pub async fn backfill_stale_user_scores(
                  FROM slack_messages_by_user
                  GROUP BY user_id
              ) msg
-             LEFT JOIN (SELECT user_id, updated FROM user_scores FINAL) sc
+             LEFT JOIN (SELECT user_id, updated, longest FROM user_scores FINAL) sc
                ON msg.user_id = sc.user_id
              WHERE sc.user_id IS NULL OR toUInt64(msg.last_ts / 1000000) > sc.updated OR sc.longest = 0",
         )
