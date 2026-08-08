@@ -1,9 +1,7 @@
-use crate::db::sqlite::AuthDb;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 pub const SETTING_KEYS: &[&str] = &[
-    "ADMIN_SLACK_IDS",
     "BASE_URL",
     "CLICKHOUSE_DB",
     "CLICKHOUSE_PASSWORD",
@@ -29,29 +27,6 @@ pub const SETTING_KEYS: &[&str] = &[
     "SQLITE_DB_PATH",
 ];
 
-const SECRET_KEYS: &[&str] = &[
-    "CLICKHOUSE_PASSWORD",
-    "HACKATIME_CLIENT_SECRET",
-    "HCA_CLIENT_SECRET",
-    "SESSION_SECRET",
-    "SLACK_APP_TOKENS",
-    "SLACK_BOT_TOKENS",
-    "SLACK_USER_TOKENS",
-];
-
-const RESTART_KEYS: &[&str] = &[
-    "CLICKHOUSE_DB",
-    "CLICKHOUSE_PASSWORD",
-    "CLICKHOUSE_URL",
-    "CLICKHOUSE_USER",
-    "HOST",
-    "PORT",
-    "SLACK_APP_TOKENS",
-    "SQLITE_DB_PATH",
-];
-
-const READONLY_KEYS: &[&str] = &["SQLITE_DB_PATH"];
-
 fn default_value(key: &str) -> &str {
     match key {
         "SLACK_REQUEST_DELAY_MS" => "1200",
@@ -71,36 +46,18 @@ fn default_value(key: &str) -> &str {
     }
 }
 
-pub fn is_secret(key: &str) -> bool {
-    SECRET_KEYS.contains(&key)
-}
-
-pub fn is_restart(key: &str) -> bool {
-    RESTART_KEYS.contains(&key)
-}
-
-pub fn is_readonly(key: &str) -> bool {
-    READONLY_KEYS.contains(&key)
-}
-
-/// Runtime-editable settings. Seeded from the SQLite settings table, falling
-/// back to environment variables (with defaults) for keys never saved before.
-/// All runtime subsystems read their knobs from here so admin edits apply
-/// without a restart.
+/// Settings read from environment variables at startup, with defaults for keys
+/// that are unset. All subsystems read their knobs from here.
 #[derive(Clone)]
 pub struct RuntimeSettings {
     inner: Arc<RwLock<HashMap<String, String>>>,
 }
 
 impl RuntimeSettings {
-    pub async fn load(auth_db: &AuthDb) -> Self {
+    pub fn load() -> Self {
         let mut map = HashMap::new();
         for key in SETTING_KEYS {
-            let value = auth_db
-                .get_setting(key)
-                .await
-                .or_else(|| std::env::var(key).ok())
-                .unwrap_or_else(|| default_value(key).to_string());
+            let value = std::env::var(key).unwrap_or_else(|_| default_value(key).to_string());
             map.insert((*key).to_string(), value);
         }
         Self {
@@ -138,65 +95,5 @@ impl RuntimeSettings {
             base_url: self.get("BASE_URL"),
             session_secret: self.get("SESSION_SECRET"),
         }
-    }
-
-    pub fn all(&self) -> Vec<(String, String)> {
-        let mut rows: Vec<(String, String)> = self
-            .inner
-            .read()
-            .unwrap()
-            .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
-        rows.sort_by(|a, b| a.0.cmp(&b.0));
-        rows
-    }
-
-    pub async fn update(
-        &self,
-        auth_db: &AuthDb,
-        entries: &[(String, String)],
-    ) -> Result<(), String> {
-        for (key, value) in entries {
-            if is_readonly(key) {
-                continue;
-            }
-            auth_db.set_setting(key, value).await?;
-        }
-        let mut guard = self.inner.write().unwrap();
-        for (key, value) in entries {
-            if !is_readonly(key) {
-                guard.insert(key.clone(), value.clone());
-            }
-        }
-        Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::sync::Arc;
-
-    #[tokio::test]
-    async fn update_applies_immediately() {
-        let db = Arc::new(crate::db::sqlite::AuthDb::open(":memory:").unwrap());
-        let settings = RuntimeSettings::load(&db).await;
-        settings
-            .update(&db, &[("SLACK_REQUEST_DELAY_MS".into(), "777".into())])
-            .await
-            .unwrap();
-        assert_eq!(settings.get("SLACK_REQUEST_DELAY_MS"), "777");
-    }
-
-    #[tokio::test]
-    async fn readonly_keys_are_ignored() {
-        let db = Arc::new(crate::db::sqlite::AuthDb::open(":memory:").unwrap());
-        let settings = RuntimeSettings::load(&db).await;
-        settings
-            .update(&db, &[("SQLITE_DB_PATH".into(), "changed".into())])
-            .await
-            .unwrap();
-        assert_eq!(settings.get("SQLITE_DB_PATH"), "data/auth.db");
     }
 }

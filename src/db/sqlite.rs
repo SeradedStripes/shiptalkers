@@ -22,10 +22,6 @@ impl AuthDb {
                 slack_id TEXT PRIMARY KEY,
                 display_name TEXT NOT NULL,
                 linked_at TEXT NOT NULL DEFAULT (datetime('now'))
-             );
-             CREATE TABLE IF NOT EXISTS settings (
-                key TEXT PRIMARY KEY,
-                value TEXT NOT NULL
              );",
         )?;
         Ok(Self {
@@ -52,26 +48,5 @@ impl AuthDb {
             |_| Ok(()),
         )
         .is_ok()
-    }
-
-    pub async fn get_setting(&self, key: &str) -> Option<String> {
-        let conn = self.conn.lock().await;
-        conn.query_row(
-            "SELECT value FROM settings WHERE key = ?1",
-            rusqlite::params![key],
-            |row| row.get(0),
-        )
-        .ok()
-    }
-
-    pub async fn set_setting(&self, key: &str, value: &str) -> Result<(), String> {
-        let conn = self.conn.lock().await;
-        conn.execute(
-            "INSERT INTO settings (key, value) VALUES (?1, ?2)
-             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            rusqlite::params![key, value],
-        )
-        .map(|_| ())
-        .map_err(|e| e.to_string())
     }
 }

@@ -116,27 +116,3 @@ table a:hover { text-decoration: underline; }
 .table-card h2 { font-size: 1.25rem; margin-bottom: 1rem; display: flex; align-items: center; gap: 0.5rem; }
 .empty { text-align: center; color: #666; }
 
-body.admin .container { max-width: 800px; }
-
-.admin-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 1rem; margin-top: 2rem; }
-.admin-card { background: #1a1a1a; border-radius: 12px; padding: 1.5rem; text-decoration: none; display: block; }
-.admin-card:hover { background: #202020; }
-.admin-card h2 { color: #fff; margin-bottom: 0.5rem; }
-.admin-card p { margin-bottom: 1.25rem; }
-
-.setting-block { background: #1a1a1a; border: 1px solid #262626; border-radius: 12px; padding: 1rem 1.25rem; margin-bottom: 1rem; }
-.setting-head { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.6rem; flex-wrap: wrap; row-gap: 0.4rem; }
-.setting-key { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.875rem; color: #fff; }
-.setting-block input,
-.setting-block textarea { width: 100%; background: #0f0f0f; border: 1px solid #333; color: #eee; border-radius: 8px; padding: 0.6rem 0.75rem; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
-.setting-block textarea { resize: vertical; min-height: 3rem; }
-.setting-block input:focus,
-.setting-block textarea:focus { outline: none; border-color: #f472b6; }
-.setting-block input:disabled,
-.setting-block textarea:disabled { opacity: 0.5; }
-.badge { display: inline-flex; align-items: center; white-space: nowrap; line-height: 1; font-size: 0.6875rem; text-transform: uppercase; letter-spacing: 0.03em; color: #fbbf24; border: 1px solid currentColor; border-radius: 999px; padding: 0.3rem 0.55rem; }
-.badge-live { color: #22c55e; }
-.badge-restart { color: #fbbf24; }
-.badge-readonly { color: #888; border-color: #555; }
-.reveal-btn { margin-left: auto; background: #262626; border: 1px solid #333; color: #aaa; border-radius: 8px; padding: 0.25rem 0.75rem; font-size: 0.75rem; cursor: pointer; }
-.reveal-btn:hover { color: #fff; border-color: #555; }

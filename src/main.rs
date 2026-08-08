@@ -35,7 +35,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     tracing::info!("Auth DB at {}", auth_db_path);
 
-    let settings = settings::RuntimeSettings::load(&auth_db).await;
+    let settings = settings::RuntimeSettings::load();
 
     let clickhouse_url = settings.get("CLICKHOUSE_URL");
     let clickhouse_user = settings.get("CLICKHOUSE_USER");

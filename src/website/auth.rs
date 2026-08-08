@@ -108,15 +108,6 @@ pub async fn get_link(
             .map(|s| s.slack_id.clone())
             .unwrap_or_default(),
         hackatime_connected,
-        is_admin: session
-            .as_ref()
-            .map(|s| {
-                state
-                    .settings
-                    .get_list("ADMIN_SLACK_IDS")
-                    .contains(&s.slack_id)
-            })
-            .unwrap_or(false),
     };
     let html = template
         .render()
@@ -131,7 +122,6 @@ struct LinkTemplate {
     name: String,
     slack_id: String,
     hackatime_connected: bool,
-    is_admin: bool,
 }
 
 pub async fn auth_hackclub_login(

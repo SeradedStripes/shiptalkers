@@ -1,9 +1,9 @@
 use askama::Template;
 use axum::Router;
-use axum::extract::{Form, Path, Query, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Redirect, Response};
-use axum::routing::{get, post};
+use axum::routing::get;
 use clickhouse::Client;
 use std::collections::HashMap;
 use std::future::Future;
@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 use tower_http::services::ServeDir;
 
-use crate::settings::{self, RuntimeSettings};
+use crate::settings::RuntimeSettings;
 
 const EXCLUDE_BOTS_DELETED: &str =
     "user_id NOT IN (SELECT user_id FROM users FINAL WHERE is_bot = 1 OR is_deleted = 1)";
@@ -95,7 +95,6 @@ pub struct AppState {
 #[template(path = "index.html")]
 pub struct IndexTemplate {
     pub signed_in: bool,
-    pub is_admin: bool,
 }
 
 #[derive(Template)]
@@ -109,7 +108,6 @@ pub struct Stats {
     pub coding_hours: String,
     pub db_size_label: String,
     pub signed_in: bool,
-    pub is_admin: bool,
 }
 
 #[derive(Template)]
@@ -131,7 +129,6 @@ pub struct UserTemplate {
     pub active_hour: String,
     pub top_channels: Vec<ChannelStats>,
     pub signed_in: bool,
-    pub is_admin: bool,
     pub found: bool,
 }
 
@@ -152,7 +149,6 @@ pub struct ChannelTemplate {
     pub last_msg: String,
     pub top_posters: Vec<UserStats>,
     pub signed_in: bool,
-    pub is_admin: bool,
     pub found: bool,
 }
 
@@ -163,14 +159,12 @@ pub struct SearchTemplate {
     pub results: Vec<SearchResult>,
     pub channels: Vec<SearchResult>,
     pub signed_in: bool,
-    pub is_admin: bool,
 }
 
 #[derive(Template)]
 #[template(path = "leaderboard.html")]
 pub struct LeaderboardTemplate {
     pub signed_in: bool,
-    pub is_admin: bool,
 }
 
 #[derive(Template)]
@@ -182,30 +176,6 @@ pub struct LeaderboardCategoryTemplate {
     pub rows: Vec<LeaderboardEntry>,
     pub coming_soon: bool,
     pub signed_in: bool,
-    pub is_admin: bool,
-}
-
-#[derive(Template)]
-#[template(path = "admin.html")]
-pub struct AdminTemplate {
-    pub signed_in: bool,
-    pub is_admin: bool,
-}
-
-#[derive(Template)]
-#[template(path = "admin_config.html")]
-pub struct ConfigTemplate {
-    pub signed_in: bool,
-    pub is_admin: bool,
-    pub fields: Vec<SettingField>,
-}
-
-pub struct SettingField {
-    pub key: String,
-    pub value: String,
-    pub secret: bool,
-    pub readonly: bool,
-    pub live: bool,
 }
 
 pub struct LeaderboardEntry {
@@ -248,9 +218,6 @@ pub fn router(
         .route("/health", get(|| async { "ok" }))
         .route("/", get(get_index))
         .route("/link", get(auth::get_link))
-        .route("/admin", get(get_admin))
-        .route("/admin/config", get(get_admin_config))
-        .route("/admin/settings", post(post_admin_settings))
         .route("/stats", get(get_stats_page))
         .route("/stats/:id", get(get_stats_for_id))
         .route("/leaderboard", get(get_leaderboard))
@@ -287,15 +254,6 @@ pub fn router(
                     .unwrap()
             }),
         )
-        .route(
-            "/admin.js",
-            get(|| async {
-                axum::response::Response::builder()
-                    .header(axum::http::header::CONTENT_TYPE, "application/javascript")
-                    .body(axum::body::Body::from(include_str!("static/admin.js")))
-                    .unwrap()
-            }),
-        )
         .fallback_service(ServeDir::new("static"))
         .with_state(state)
 }
@@ -310,99 +268,6 @@ fn local_pfp(user_id: &str, pfp_url: &str) -> String {
 
 fn signed_in(state: &AppState, headers: &HeaderMap) -> bool {
     auth::session_from_request(headers, &state.settings.auth_config()).is_some()
-}
-
-fn is_admin(state: &AppState, headers: &HeaderMap) -> bool {
-    auth::session_from_request(headers, &state.settings.auth_config())
-        .map(|s| {
-            state
-                .settings
-                .get_list("ADMIN_SLACK_IDS")
-                .contains(&s.slack_id)
-        })
-        .unwrap_or(false)
-}
-
-async fn get_admin(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-) -> Result<Html<String>, StatusCode> {
-    if !is_admin(&state, &headers) {
-        return Err(StatusCode::FORBIDDEN);
-    }
-    let template = AdminTemplate {
-        signed_in: signed_in(&state, &headers),
-        is_admin: true,
-    };
-    let html = template
-        .render()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    Ok(Html(html))
-}
-
-async fn get_admin_config(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-) -> Result<Html<String>, StatusCode> {
-    if !is_admin(&state, &headers) {
-        return Err(StatusCode::FORBIDDEN);
-    }
-    let fields = state
-        .settings
-        .all()
-        .into_iter()
-        .map(|(key, value)| {
-            let secret = settings::is_secret(&key);
-            let restart = settings::is_restart(&key);
-            let readonly = settings::is_readonly(&key);
-            SettingField {
-                key,
-                value,
-                secret,
-                readonly,
-                live: !restart,
-            }
-        })
-        .collect();
-    let template = ConfigTemplate {
-        signed_in: signed_in(&state, &headers),
-        is_admin: true,
-        fields,
-    };
-    let html = template
-        .render()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    Ok(Html(html))
-}
-
-async fn post_admin_settings(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Form(form): Form<HashMap<String, String>>,
-) -> Result<Redirect, StatusCode> {
-    if !is_admin(&state, &headers) {
-        return Err(StatusCode::FORBIDDEN);
-    }
-    let entries: Vec<(String, String)> = settings::SETTING_KEYS
-        .iter()
-        .filter_map(|key| {
-            form.get(*key).map(|v| {
-                (
-                    (*key).to_string(),
-                    v.lines()
-                        .map(str::trim)
-                        .filter(|line| !line.is_empty())
-                        .collect::<Vec<_>>()
-                        .join(", "),
-                )
-            })
-        })
-        .collect();
-    if let Err(e) = state.settings.update(&state.auth_db, &entries).await {
-        tracing::error!("Failed to update settings: {}", e);
-        return Err(StatusCode::INTERNAL_SERVER_ERROR);
-    }
-    Ok(Redirect::to("/admin/config"))
 }
 
 async fn get_pfp(State(state): State<AppState>, Path(user_id): Path<String>) -> Response {
@@ -436,10 +301,7 @@ async fn get_index(
     headers: HeaderMap,
 ) -> Result<Html<String>, StatusCode> {
     let signed_in = signed_in(&state, &headers);
-    let template = IndexTemplate {
-        signed_in,
-        is_admin: is_admin(&state, &headers),
-    };
+    let template = IndexTemplate { signed_in };
     let html = template
         .render()
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -538,7 +400,6 @@ async fn get_search(
         results,
         channels,
         signed_in,
-        is_admin: is_admin(&state, &headers),
     };
     let html = template
         .render()
@@ -563,10 +424,7 @@ async fn get_leaderboard(
     headers: HeaderMap,
 ) -> Result<Html<String>, StatusCode> {
     let signed_in = signed_in(&state, &headers);
-    let template = LeaderboardTemplate {
-        signed_in,
-        is_admin: is_admin(&state, &headers),
-    };
+    let template = LeaderboardTemplate { signed_in };
     let html = template
         .render()
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -676,7 +534,6 @@ async fn get_leaderboard_category(
         rows,
         coming_soon,
         signed_in,
-        is_admin: is_admin(&state, &headers),
     };
     let html = template
         .render()
@@ -1060,7 +917,6 @@ async fn get_user_stats(
         active_hour,
         top_channels,
         signed_in,
-        is_admin: is_admin(state, headers),
         found,
     };
     let html = template
@@ -1200,7 +1056,6 @@ async fn get_channel_stats(
         last_msg: fmt_ts_local(last_ts),
         top_posters,
         signed_in,
-        is_admin: is_admin(state, headers),
         found,
     };
     let html = template
@@ -1232,7 +1087,6 @@ async fn load_stats(state: &AppState, headers: &HeaderMap) -> Stats {
         coding_hours: fmt_minutes(snapshot.coding_minutes),
         db_size_label,
         signed_in: signed_in(state, headers),
-        is_admin: is_admin(state, headers),
     }
 }
 
@@ -1334,10 +1188,7 @@ mod tests {
             .with_user("ship_talkers")
             .with_password("ship_talkers")
             .with_database("ship_talkers");
-        let settings = crate::settings::RuntimeSettings::load(&std::sync::Arc::new(
-            crate::db::sqlite::AuthDb::open(":memory:").expect("open in-memory auth db"),
-        ))
-        .await;
+        let settings = crate::settings::RuntimeSettings::load();
         let app = router(
             ch,
             settings,
