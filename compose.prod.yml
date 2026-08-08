@@ -32,19 +32,6 @@ services:
       - CLICKHOUSE_DB=ship_talkers
       - CLICKHOUSE_USER=ship_talkers
       - CLICKHOUSE_PASSWORD=ship_talkers
-    # Merge tuning lives in a config.d file so it survives on a single-file compose deploy.
-    # Writes it, then hands back to the image entrypoint (which execs clickhouse-server).
-    command:
-      - sh
-      - -c
-      - |
-        cat > /etc/clickhouse-server/config.d/merge-tuning.xml <<'EOF'
-        <clickhouse>
-          <background_pool_size>1</background_pool_size>
-          <background_schedule_pool_size>4</background_schedule_pool_size>
-        </clickhouse>
-        EOF
-        exec /entrypoint.sh
     volumes:
       - clickhouse-data:/var/lib/clickhouse
     healthcheck:
