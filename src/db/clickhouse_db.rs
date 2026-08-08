@@ -222,6 +222,9 @@ pub async fn init_tables(client: &Client) -> Result<(), Box<dyn std::error::Erro
             .ok();
     }
 
+    // Fix column types on tables created before the DDL used unsigned types
+    migrate_user_scores_types(client).await?;
+
     client
         .query(
             "CREATE TABLE IF NOT EXISTS hackatime_connections (
@@ -647,6 +650,57 @@ async fn migrate_coding_activity_date(client: &Client) -> Result<(), Box<dyn std
         .await
         .unwrap_or(0);
     tracing::info!("coding_activity.date migration complete ({} rows)", count);
+    Ok(())
+}
+
+/// Migrates existing user_scores tables whose columns were created with signed
+/// types (Int64) to the unsigned types the code reads and writes.
+async fn migrate_user_scores_types(client: &Client) -> Result<(), Box<dyn std::error::Error>> {
+    #[derive(Debug, Row, Deserialize)]
+    struct TypeRow {
+        name: String,
+        type_: String,
+    }
+
+    let columns: Vec<TypeRow> = client
+        .query(
+            "SELECT name, type AS type_ FROM system.columns
+             WHERE database = currentDatabase() AND table = 'user_scores'",
+        )
+        .fetch_all()
+        .await?;
+
+    let existing: HashMap<String, String> =
+        columns.into_iter().map(|c| (c.name, c.type_)).collect();
+
+    let expected = [
+        ("score", "Int64"),
+        ("total_time", "UInt64"),
+        ("messages", "UInt64"),
+        ("sessions", "UInt64"),
+        ("total_chars", "UInt64"),
+        ("longest", "UInt64"),
+        ("days", "UInt64"),
+        ("channels", "UInt64"),
+        ("first_ts", "UInt64"),
+        ("last_ts", "UInt64"),
+        ("active_hour", "UInt8"),
+        ("updated", "UInt64"),
+    ];
+
+    for &(name, ty) in &expected {
+        if let Some(actual) = existing.get(name)
+            && actual != ty
+        {
+            tracing::info!("Migrating user_scores.{name} from {actual} to {ty}...");
+            client
+                .query(&format!(
+                    "ALTER TABLE user_scores MODIFY COLUMN {name} {ty} SETTINGS mutations_sync = 2"
+                ))
+                .execute()
+                .await?;
+        }
+    }
     Ok(())
 }
 
