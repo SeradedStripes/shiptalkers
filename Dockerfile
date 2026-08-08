@@ -33,8 +33,8 @@ FROM alpine:3.22 AS runtime
 RUN apk add --no-cache \
     ca-certificates \
     curl \
-    && addgroup -S app \
-    && adduser -S -G app app \
+    && addgroup -S -g 10001 app \
+    && adduser -S -G app -u 10001 app \
     && mkdir -p /data \
     && chown app:app /data
 
