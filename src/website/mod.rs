@@ -813,7 +813,7 @@ async fn get_user_stats(
             match scores.as_ref() {
                 Some(s) => ch
                     .query(&format!(
-                        "SELECT count()
+                        "SELECT count() AS rank
                          FROM (
                              SELECT user_id FROM user_scores FINAL
                              WHERE {EXCLUDE_BOTS_DELETED} AND score > ?
@@ -822,7 +822,7 @@ async fn get_user_stats(
                     .bind(s.score)
                     .fetch_one::<RankRow>()
                     .await
-                    .map(|r| format!("#{}", fmt_thousands(r.rank)))
+                    .map(|r| format!("#{}", fmt_thousands(r.rank + 1)))
                     .unwrap_or_default(),
                 None => String::new(),
             }
