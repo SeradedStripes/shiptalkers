@@ -262,10 +262,19 @@ pub async fn init_tables(client: &Client) -> Result<(), Box<dyn std::error::Erro
         ) ENGINE = ReplacingMergeTree()
         ORDER BY (user_id, message_ts)
         SETTINGS max_suspicious_broken_parts = 1000";
-    if let Err(e) = client.query(create_by_user_table).execute().await {
-        // If the table still cannot attach (e.g. a power loss beat the setting's
-        // sweep), recreate it on the spot: it is derived data, so the startup
-        // backfill rebuilds it and the service comes back up on its own.
+    let create_by_user_mv = "CREATE MATERIALIZED VIEW IF NOT EXISTS slack_messages_by_user_mv
+             TO slack_messages_by_user
+             AS SELECT user_id, channel_id, message_ts, text, thread_ts FROM slack_messages";
+    let ensure_slack_messages_by_user = || async {
+        client.query(create_by_user_table).execute().await?;
+        client.query(create_by_user_mv).execute().await?;
+        Ok::<(), Box<dyn std::error::Error>>(())
+    };
+    if let Err(e) = ensure_slack_messages_by_user().await {
+        // Either create can fail when the table is stuck in a failed attach
+        // (e.g. a power loss beat the setting's sweep). Recreate on the spot:
+        // it is derived data, so the startup backfill rebuilds it and the
+        // service comes back up on its own.
         tracing::warn!(
             "slack_messages_by_user failed to attach ({}), dropping and recreating",
             e
@@ -273,22 +282,13 @@ pub async fn init_tables(client: &Client) -> Result<(), Box<dyn std::error::Erro
         client
             .query("DROP TABLE IF EXISTS slack_messages_by_user_mv")
             .execute()
-            .await
-            .ok();
+            .await?;
         client
             .query("DROP TABLE IF EXISTS slack_messages_by_user")
             .execute()
             .await?;
-        client.query(create_by_user_table).execute().await?;
+        ensure_slack_messages_by_user().await?;
     }
-    client
-        .query(
-            "CREATE MATERIALIZED VIEW IF NOT EXISTS slack_messages_by_user_mv
-             TO slack_messages_by_user
-             AS SELECT user_id, channel_id, message_ts, text, thread_ts FROM slack_messages",
-        )
-        .execute()
-        .await?;
 
     client
         .query(
