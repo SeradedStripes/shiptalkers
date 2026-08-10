@@ -248,26 +248,39 @@ pub async fn init_tables(client: &Client) -> Result<(), Box<dyn std::error::Erro
     // Secondary copy of slack_messages sorted by user so per-user reads (stats
     // pages and score recompute) only touch that user's granules instead of
     // scanning the whole table. Kept in sync by the materialized view plus a
-    // Derived table (see MV below), so it tolerates a higher broken-parts limit:
-    // after an unclean shutdown ClickHouse refuses to attach a table with more than
-    // 100 broken parts, and since this table is rebuilt from slack_messages anyway,
-    // letting it sweep empty broken parts keeps a power loss from taking the whole
-    // service down. slack_messages keeps the default guard.
-    client
-        .query(
-            "CREATE TABLE IF NOT EXISTS slack_messages_by_user (
-                user_id String,
-                channel_id String,
-                message_ts UInt64,
-                text String,
-                thread_ts Nullable(String)
-            ) ENGINE = ReplacingMergeTree()
-            ORDER BY (user_id, message_ts)
-            SETTINGS max_suspicious_broken_parts = 1000",
-        )
-        .execute()
-        .await?;
-
+    // one-time backfill at startup. It tolerates a higher broken-parts limit:
+    // after an unclean shutdown ClickHouse refuses to attach a table with more
+    // than 100 broken parts, and since this table is rebuilt from slack_messages
+    // anyway, letting it sweep empty broken parts keeps a power loss from taking
+    // the whole service down. slack_messages keeps the default guard.
+    let create_by_user_table = "CREATE TABLE IF NOT EXISTS slack_messages_by_user (
+            user_id String,
+            channel_id String,
+            message_ts UInt64,
+            text String,
+            thread_ts Nullable(String)
+        ) ENGINE = ReplacingMergeTree()
+        ORDER BY (user_id, message_ts)
+        SETTINGS max_suspicious_broken_parts = 1000";
+    if let Err(e) = client.query(create_by_user_table).execute().await {
+        // If the table still cannot attach (e.g. a power loss beat the setting's
+        // sweep), recreate it on the spot: it is derived data, so the startup
+        // backfill rebuilds it and the service comes back up on its own.
+        tracing::warn!(
+            "slack_messages_by_user failed to attach ({}), dropping and recreating",
+            e
+        );
+        client
+            .query("DROP TABLE IF EXISTS slack_messages_by_user_mv")
+            .execute()
+            .await
+            .ok();
+        client
+            .query("DROP TABLE IF EXISTS slack_messages_by_user")
+            .execute()
+            .await?;
+        client.query(create_by_user_table).execute().await?;
+    }
     client
         .query(
             "CREATE MATERIALIZED VIEW IF NOT EXISTS slack_messages_by_user_mv
