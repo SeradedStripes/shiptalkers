@@ -248,7 +248,11 @@ pub async fn init_tables(client: &Client) -> Result<(), Box<dyn std::error::Erro
     // Secondary copy of slack_messages sorted by user so per-user reads (stats
     // pages and score recompute) only touch that user's granules instead of
     // scanning the whole table. Kept in sync by the materialized view plus a
-    // one-time backfill at startup.
+    // Derived table (see MV below), so it tolerates a higher broken-parts limit:
+    // after an unclean shutdown ClickHouse refuses to attach a table with more than
+    // 100 broken parts, and since this table is rebuilt from slack_messages anyway,
+    // letting it sweep empty broken parts keeps a power loss from taking the whole
+    // service down. slack_messages keeps the default guard.
     client
         .query(
             "CREATE TABLE IF NOT EXISTS slack_messages_by_user (
@@ -258,7 +262,8 @@ pub async fn init_tables(client: &Client) -> Result<(), Box<dyn std::error::Erro
                 text String,
                 thread_ts Nullable(String)
             ) ENGINE = ReplacingMergeTree()
-            ORDER BY (user_id, message_ts)",
+            ORDER BY (user_id, message_ts)
+            SETTINGS max_suspicious_broken_parts = 1000",
         )
         .execute()
         .await?;
