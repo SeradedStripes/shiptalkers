@@ -4,13 +4,14 @@
 /// everywhere it is displayed. Invalid formulas fail at startup.
 ///
 /// Variables (all per user):
-/// - `SESSION_SECONDS`: total active time from the sessionizer. Every message opens
-///   a 5 minute window; a gap of more than 30 minutes between messages starts a new
-///   session; each session is capped at 4 hours. This is the raw "time in Slack"
-///   estimate, computed in the website's ClickHouse query.
+/// - `SESSION_SECONDS`: total active time from the sessionizer: the sum of the gaps
+///   between consecutive messages when the gap is at most 5 minutes. A gap longer
+///   than 5 minutes means the user stepped away, so it is not counted (no per-session
+///   grace or cap). This is the raw "time in Slack" estimate, computed in ClickHouse.
 /// - `MESSAGE_COUNT`: total number of messages sent (main channel messages and
 ///   thread replies, from `slack_messages`).
-/// - `SESSION_COUNT`: total number of sessions from the sessionizer.
+/// - `SESSION_COUNT`: total number of sessions from the sessionizer (each run of
+///   messages with no gap longer than 5 minutes).
 /// - `TOTAL_CHARS`: total characters typed across all messages, from
 ///   `sum(char_length(text))`.
 /// - `AVG_MESSAGE_LENGTH`: average characters per message (`TOTAL_CHARS` /
@@ -19,15 +20,15 @@
 /// Functions: `log10`, `ln`, `sqrt`, `exp`, `abs`, `pow`. Supports `+ - * / ()`,
 /// decimals, and implicit multiplication, e.g. `2MESSAGE_COUNT` or `log10(TOTAL_CHARS)`.
 ///
-/// Default formula: `SESSION_SECONDS + 0.08 * TOTAL_CHARS + 2 * MESSAGE_COUNT`.
-/// Session time is the core estimate; the second term adds 0.08 seconds per
-/// character typed plus a flat 2 seconds per message. It is linear, so the same
-/// amount of text scores the same however it is divided across messages: a
-/// logarithmic per-message term inflated the score for short fragmented replies,
-/// and this formula avoids that. The coefficients can be calibrated later.
+/// Default formula: `SESSION_SECONDS + TOTAL_CHARS / 3 + 2 * MESSAGE_COUNT`.
+/// Session time is the core estimate; the second term credits typing at 1/3 second
+/// per character (~3 chars/s, deliberately slow so it includes time spent thinking),
+/// and the flat 2 seconds per message covers opening the Slack window and reading
+/// context. It is linear, so the same amount of text scores the same however it is
+/// divided across messages.
 pub const SLACK_TIME_CALCULATION_FORMULA: &str = "\
     SESSION_SECONDS \
-    + 0.08 * TOTAL_CHARS \
+    + TOTAL_CHARS / 3 \
     + 2 * MESSAGE_COUNT \
 ";
 

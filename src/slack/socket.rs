@@ -481,7 +481,7 @@ async fn query_slack_seconds(
     session_sql.push_str(
         "),
          flagged AS (
-             SELECT ts, if(ts - lag(ts) OVER (ORDER BY ts) > 2100, 1, 0) AS boundary
+             SELECT ts, if(ts - lag(ts) OVER (ORDER BY ts) > 300, 1, 0) AS boundary
              FROM msg
          ),
          sess AS (
@@ -493,7 +493,7 @@ async fn query_slack_seconds(
              FROM sess
              GROUP BY sid
          )
-         SELECT sum(toUInt64(least(end_ts + 300 - start_ts, 14400))) AS total_time,
+         SELECT sum(toUInt64(end_ts - start_ts)) AS total_time,
                 count() AS sessions
          FROM sessions",
     );

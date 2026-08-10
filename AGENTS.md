@@ -52,7 +52,7 @@ Scrapes every public channel and thread reply from Hack Club Slack into ClickHou
 
 ## Slack Time Formula
 
-`SLACK_TIME_CALCULATION_FORMULA` in `src/formula.rs` drives Top Talkers ranking (computed per user into `user_scores`, ranked by `score`), the per-user Slack Time report, and the Slack stats bot card (`src/slack/socket.rs` evaluates the same formula over the same per-user metrics). Variables: `SESSION_SECONDS` (sessionizer output, 5 min windows split after 30 min inactivity, capped at 4 h), `MESSAGE_COUNT`, `SESSION_COUNT`, `TOTAL_CHARS`, `AVG_MESSAGE_LENGTH`. Functions: `log10`, `ln`, `sqrt`, `exp`, `abs`, `pow`. Supports `+ - * / ()` and implicit multiplication like `2MESSAGE_COUNT`. Invalid formulas fail at startup. Comments above the constant document each variable's source.
+`SLACK_TIME_CALCULATION_FORMULA` in `src/formula.rs` drives Top Talkers ranking (computed per user into `user_scores`, ranked by `score`), the per-user Slack Time report, and the Slack stats bot card (`src/slack/socket.rs` evaluates the same formula over the same per-user metrics). Variables: `SESSION_SECONDS` (sessionizer output: the sum of gaps between consecutive messages up to 5 minutes; longer gaps are treated as stepping away and count 0, with no per-session grace or cap), `MESSAGE_COUNT`, `SESSION_COUNT`, `TOTAL_CHARS`, `AVG_MESSAGE_LENGTH`. Functions: `log10`, `ln`, `sqrt`, `exp`, `abs`, `pow`. Supports `+ - * / ()` and implicit multiplication like `2MESSAGE_COUNT`. Invalid formulas fail at startup. Comments above the constant document each variable's source.
 
 ## Conventions
 

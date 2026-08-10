@@ -276,13 +276,15 @@ async fn run_scraper(
     if let Err(e) = db::clickhouse_db::backfill_slack_messages_by_user(&clickhouse).await {
         tracing::warn!("Failed to backfill slack_messages_by_user: {}", e);
     }
+    // Channel backfill first: it uses score_meta to detect a formula change, and
+    // the user backfill below writes score_meta after a full recompute.
+    match db::clickhouse_db::backfill_stale_channel_scores(&clickhouse, slack_time.source()).await {
+        Ok(n) => tracing::info!("Startup channel score backfill done ({} channels)", n),
+        Err(e) => tracing::warn!("Failed to backfill channel scores: {}", e),
+    }
     match db::clickhouse_db::backfill_stale_user_scores(&clickhouse, &slack_time).await {
         Ok(n) => tracing::info!("Startup Slack Time score backfill done ({} users)", n),
         Err(e) => tracing::warn!("Failed to backfill user scores: {}", e),
-    }
-    match db::clickhouse_db::backfill_stale_channel_scores(&clickhouse).await {
-        Ok(n) => tracing::info!("Startup channel score backfill done ({} channels)", n),
-        Err(e) => tracing::warn!("Failed to backfill channel scores: {}", e),
     }
 
     let cycle = Duration::from_secs(30 * 60);
