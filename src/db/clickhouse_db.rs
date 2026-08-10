@@ -342,18 +342,33 @@ pub async fn backfill_slack_messages_by_user(
 /// recompute still runs when the Slack Time formula changed since the last one,
 /// and once after a migration to fill in columns added to `user_scores` (marked
 /// by `longest = 0`, since real users always have a session of at least 300s).
+/// Reads `score_meta` once so both startup backfills can decide a full recompute
+/// up front; the user backfill writes the row after it finishes, so the check must
+/// happen before either backfill runs.
+pub async fn formula_changed(
+    client: &Client,
+    source: &str,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    #[derive(Debug, Row, Deserialize)]
+    struct ScoreMetaRead {
+        formula: String,
+    }
+
+    let stored: Option<ScoreMetaRead> = client
+        .query("SELECT formula FROM score_meta FINAL WHERE id = 1")
+        .fetch_optional()
+        .await?;
+    Ok(stored.as_ref().map(|m| m.formula.as_str()) != Some(source))
+}
+
 pub async fn backfill_stale_user_scores(
     client: &Client,
     formula: &crate::formula::Formula,
+    force_full: bool,
 ) -> Result<usize, Box<dyn std::error::Error>> {
     #[derive(Debug, Row, Deserialize)]
     struct UserRow {
         user_id: String,
-    }
-
-    #[derive(Debug, Row, Deserialize)]
-    struct ScoreMetaRead {
-        formula: String,
     }
 
     #[derive(Debug, Row, Serialize)]
@@ -363,11 +378,7 @@ pub async fn backfill_stale_user_scores(
     }
 
     let source = formula.source();
-    let stored: Option<ScoreMetaRead> = client
-        .query("SELECT formula FROM score_meta FINAL WHERE id = 1")
-        .fetch_optional()
-        .await?;
-    if stored.as_ref().map(|m| m.formula.as_str()) != Some(source) {
+    if force_full {
         tracing::info!("Slack Time formula changed, recomputing scores for all users");
         let ids: Vec<String> = client
             .query("SELECT DISTINCT user_id FROM slack_messages_by_user")
@@ -419,23 +430,14 @@ pub async fn backfill_stale_user_scores(
 
 pub async fn backfill_stale_channel_scores(
     client: &Client,
-    formula_source: &str,
+    force_full: bool,
 ) -> Result<usize, Box<dyn std::error::Error>> {
     #[derive(Debug, Row, Deserialize)]
     struct ChannelRow {
         channel_id: String,
     }
 
-    #[derive(Debug, Row, Deserialize)]
-    struct ScoreMetaRead {
-        formula: String,
-    }
-
-    let stored: Option<ScoreMetaRead> = client
-        .query("SELECT formula FROM score_meta FINAL WHERE id = 1")
-        .fetch_optional()
-        .await?;
-    if stored.as_ref().map(|m| m.formula.as_str()) != Some(formula_source) {
+    if force_full {
         tracing::info!("Slack Time formula changed, recomputing channel scores for all channels");
         return recompute_channel_scores(client, &[]).await;
     }

@@ -276,13 +276,29 @@ async fn run_scraper(
     if let Err(e) = db::clickhouse_db::backfill_slack_messages_by_user(&clickhouse).await {
         tracing::warn!("Failed to backfill slack_messages_by_user: {}", e);
     }
-    // Channel backfill first: it uses score_meta to detect a formula change, and
-    // the user backfill below writes score_meta after a full recompute.
-    match db::clickhouse_db::backfill_stale_channel_scores(&clickhouse, slack_time.source()).await {
+    // Resolve the formula-change flag once so the backfills can run in parallel:
+    // the user backfill writes score_meta after it finishes, so checking it first
+    // means the channel backfill can't see a stale row mid-recompute.
+    let formula_changed = db::clickhouse_db::formula_changed(&clickhouse, slack_time.source())
+        .await
+        .unwrap_or(false);
+    let (channels, users) = tokio::join!(
+        async {
+            db::clickhouse_db::backfill_stale_channel_scores(&clickhouse, formula_changed)
+                .await
+                .map_err(|e| e.to_string())
+        },
+        async {
+            db::clickhouse_db::backfill_stale_user_scores(&clickhouse, &slack_time, formula_changed)
+                .await
+                .map_err(|e| e.to_string())
+        },
+    );
+    match channels {
         Ok(n) => tracing::info!("Startup channel score backfill done ({} channels)", n),
         Err(e) => tracing::warn!("Failed to backfill channel scores: {}", e),
     }
-    match db::clickhouse_db::backfill_stale_user_scores(&clickhouse, &slack_time).await {
+    match users {
         Ok(n) => tracing::info!("Startup Slack Time score backfill done ({} users)", n),
         Err(e) => tracing::warn!("Failed to backfill user scores: {}", e),
     }
