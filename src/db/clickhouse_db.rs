@@ -55,6 +55,31 @@ pub async fn init_tables(client: &Client) -> Result<(), Box<dyn std::error::Erro
         .execute()
         .await?;
 
+    // A broken slack_messages_by_user (e.g. too many empty broken parts after a
+    // power loss) poisons slack_messages too: slack_messages's startup load job
+    // waits on the materialized view, which waits on this table, so the first
+    // query touching slack_messages below would fail. Probe this table first and
+    // drop it when it cannot load. It is derived from slack_messages, so the
+    // startup backfill rebuilds it and the service comes back up on its own.
+    if let Err(e) = client
+        .query("SELECT count() FROM slack_messages_by_user")
+        .execute()
+        .await
+    {
+        tracing::warn!(
+            "slack_messages_by_user cannot load ({}), dropping it for recreate",
+            e
+        );
+        client
+            .query("DROP TABLE IF EXISTS slack_messages_by_user_mv")
+            .execute()
+            .await?;
+        client
+            .query("DROP TABLE IF EXISTS slack_messages_by_user")
+            .execute()
+            .await?;
+    }
+
     // Migrate existing MergeTree to ReplacingMergeTree if needed
     migrate_slack_messages(client).await?;
 
