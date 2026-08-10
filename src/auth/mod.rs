@@ -179,26 +179,32 @@ pub async fn exchange_hackatime_code(
     Ok(token.access_token)
 }
 
+/// First tuple element is the HTTP status when the failure was an HTTP error,
+/// None for transport or parse failures.
 pub async fn fetch_hackatime_me(
     client: &reqwest::Client,
     access_token: &str,
-) -> Result<Option<String>, String> {
+) -> Result<Option<String>, (Option<u16>, String)> {
     let response = client
         .get(HACKATIME_ME_URL)
         .bearer_auth(access_token)
         .send()
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| (None, e.to_string()))?;
     let status = response.status();
     let body = response
         .text()
         .await
         .unwrap_or_else(|e| format!("(no body: {e})"));
     if !status.is_success() {
-        return Err(format!("me endpoint {}: {}", status, body));
+        return Err((Some(status.as_u16()), body));
     }
-    let me: HackatimeMeResponse = serde_json::from_str(&body)
-        .map_err(|e| format!("me endpoint returned bad JSON ({body:?}): {e}"))?;
+    let me: HackatimeMeResponse = serde_json::from_str(&body).map_err(|e| {
+        (
+            None,
+            format!("me endpoint returned bad JSON ({body:?}): {e}"),
+        )
+    })?;
     Ok(me.slack_id)
 }
 

@@ -258,8 +258,8 @@ pub async fn auth_hackatime_callback(
     };
     let me_slack_id = match auth::fetch_hackatime_me(&state.http, &token).await {
         Ok(s) => s,
-        Err(e) => {
-            tracing::warn!("hackatime me fetch failed: {}", e);
+        Err((_, message)) => {
+            tracing::warn!("hackatime me fetch failed: {}", message);
             return Err(StatusCode::BAD_REQUEST);
         }
     };
@@ -359,18 +359,41 @@ pub async fn sync_coding_activity(
         let minutes = match minutes {
             Ok(m) => m,
             Err((status, message)) => {
+                // A 401/403 can mean a dead token or an outage in front of
+                // hackatime (maintenance, auth proxy). Confirm the token is
+                // really dead with the me endpoint before removing the link;
+                // otherwise keep it and let the next sync retry. Any other
+                // failure (HTTP 5xx, or no response at all) means hackatime is
+                // simply down, so the link is kept.
                 if matches!(status, Some(401 | 403)) {
-                    tracing::warn!(
-                        "Hackatime token for {} is invalid ({}), removing link",
-                        slack_id,
-                        message
-                    );
-                    clickhouse_db::delete_hackatime_connection(clickhouse, slack_id)
-                        .await
-                        .map_err(|e| format!("delete stale hackatime connection: {}", e))?;
-                    return Ok(());
+                    match auth::fetch_hackatime_me(http, access_token).await {
+                        Err((Some(401 | 403), _)) => {
+                            tracing::warn!(
+                                "Hackatime token for {} is invalid, removing link",
+                                slack_id
+                            );
+                            clickhouse_db::delete_hackatime_connection(clickhouse, slack_id)
+                                .await
+                                .map_err(|e| format!("delete stale hackatime connection: {}", e))?;
+                            return Ok(());
+                        }
+                        _ => {
+                            return Err(format!(
+                                "hackatime returned 401/403 for {} but the me check did not confirm \
+                                 a dead token (likely down), keeping link: {}",
+                                date, message
+                            ));
+                        }
+                    }
                 }
-                return Err(format!("fetch hours for {}: {}", date, message));
+                let reason = match status {
+                    Some(code) => format!("HTTP {code}"),
+                    None => "unreachable".to_string(),
+                };
+                return Err(format!(
+                    "hackatime {reason} for {} (down, keeping link): {}",
+                    date, message
+                ));
             }
         };
         if let Some(minutes) = minutes.filter(|&m| m > 0) {
