@@ -31,6 +31,82 @@ pub const SLACK_TIME_CALCULATION_FORMULA: &str = "\
     + 2 * MESSAGE_COUNT \
 ";
 
+/// Sessionizer parameters shared by the ClickHouse queries and the Rust reference
+/// in `sessionize`. Each SQL site injects these via named format args, so changing
+/// a value here updates production queries and the reference at once. The tests in
+/// `tests/sessionizer.rs` pin the exact semantics.
+pub const SESSION_GAP_BOUNDARY_SECS: u64 = 2100;
+pub const SESSION_GRACE_SECS: u64 = 300;
+pub const SESSION_MAX_SECS: u64 = 14400;
+
+/// Per-user metrics produced by `sessionize`, mirroring the sessionizer columns
+/// that `user_scores` stores.
+pub struct SessionStats {
+    pub total_seconds: u64,
+    pub longest_seconds: u64,
+    pub session_count: u64,
+    pub day_count: u64,
+}
+
+/// Reference implementation of the Slack Time sessionizer. It matches the `WITH`
+/// sessionizer blocks in `recompute_user_scores_chunk`, `recompute_channel_scores_chunk`,
+/// and `query_slack_seconds` exactly, so the tests here double as the spec for the SQL.
+///
+/// Input is message timestamps in seconds. A gap longer than
+/// `SESSION_GAP_BOUNDARY_SECS` between consecutive messages starts a new session;
+/// each session is credited `min(end - start + SESSION_GRACE_SECS, SESSION_MAX_SECS)`
+/// seconds, so every session earns at least the grace. `day_count` is the number of
+/// calendar days from the first session's start to the last session's start.
+pub fn sessionize(timestamps: &[u64]) -> SessionStats {
+    let mut ts = timestamps.to_vec();
+    ts.sort_unstable();
+    ts.dedup();
+
+    let mut sessions: Vec<(u64, u64)> = Vec::new();
+    let mut start = None;
+    let mut prev = 0;
+    for &t in &ts {
+        match start {
+            None => start = Some(t),
+            Some(s) => {
+                if t - prev > SESSION_GAP_BOUNDARY_SECS {
+                    sessions.push((s, prev));
+                    start = Some(t);
+                }
+            }
+        }
+        prev = t;
+    }
+    if let Some(s) = start {
+        sessions.push((s, prev));
+    }
+
+    let mut total_seconds = 0u64;
+    let mut longest_seconds = 0u64;
+    let mut min_start = u64::MAX;
+    let mut max_start = 0u64;
+    for &(s, e) in &sessions {
+        let secs = (e + SESSION_GRACE_SECS - s).min(SESSION_MAX_SECS);
+        total_seconds += secs;
+        longest_seconds = longest_seconds.max(secs);
+        min_start = min_start.min(s);
+        max_start = max_start.max(s);
+    }
+
+    let day_count = if sessions.is_empty() {
+        0
+    } else {
+        (max_start / 86400).saturating_sub(min_start / 86400) + 1
+    };
+
+    SessionStats {
+        total_seconds,
+        longest_seconds,
+        session_count: sessions.len() as u64,
+        day_count,
+    }
+}
+
 /// Per-user inputs fed into the formula. Computed by the website from ClickHouse.
 pub struct Metrics {
     pub message_count: u64,

@@ -465,6 +465,9 @@ async fn query_slack_seconds(
     range: &TimeRange,
     slack_time: &crate::formula::Formula,
 ) -> u64 {
+    let boundary = crate::formula::SESSION_GAP_BOUNDARY_SECS;
+    let grace = crate::formula::SESSION_GRACE_SECS;
+    let max_secs = crate::formula::SESSION_MAX_SECS;
     let mut session_sql = String::from(
         "WITH
          msg AS (
@@ -478,10 +481,10 @@ async fn query_slack_seconds(
     if range.end_ts().is_some() {
         session_sql.push_str(" AND ts < ?");
     }
-    session_sql.push_str(
+    session_sql.push_str(&format!(
         "),
          flagged AS (
-             SELECT ts, if(ts - lag(ts) OVER (ORDER BY ts) > 2100, 1, 0) AS boundary
+             SELECT ts, if(ts - lag(ts) OVER (ORDER BY ts) > {boundary}, 1, 0) AS boundary
              FROM msg
          ),
          sess AS (
@@ -493,10 +496,10 @@ async fn query_slack_seconds(
              FROM sess
              GROUP BY sid
          )
-         SELECT sum(toUInt64(least(end_ts + 300 - start_ts, 14400))) AS total_time,
+         SELECT sum(toUInt64(least(end_ts + {grace} - start_ts, {max_secs}))) AS total_time,
                 count() AS sessions
-         FROM sessions",
-    );
+         FROM sessions"
+    ));
 
     let mut session_query = clickhouse.query(&session_sql);
     session_query = session_query.bind(user);

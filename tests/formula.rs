@@ -1,4 +1,4 @@
-use ship_talkers::formula::{Formula, Metrics};
+use ship_talkers::formula::{Formula, Metrics, SLACK_TIME_CALCULATION_FORMULA, sessionize};
 
 fn m(n: u64, s: u64, k: u64) -> Metrics {
     Metrics {
@@ -12,6 +12,28 @@ fn m(n: u64, s: u64, k: u64) -> Metrics {
 
 fn eval(src: &str, metrics: &Metrics) -> f64 {
     Formula::parse(src).unwrap().eval(metrics)
+}
+
+#[test]
+fn deployed_formula_matches_expected_slack_time() {
+    // A synthetic user: 3 messages 100s apart, then a lone message 6h later,
+    // ~50 chars each. The expected total pins the exact semantics of the
+    // deployed formula, so changing the formula or sessionizer fails here until
+    // the expected value is re-derived on purpose.
+    let timeline = [1000000u64, 1000100, 1000200, 1000200 + 21600];
+    let s = sessionize(&timeline);
+    assert_eq!(s.total_seconds, 800);
+    assert_eq!(s.session_count, 2);
+
+    let metrics = Metrics {
+        message_count: 4,
+        session_seconds: s.total_seconds,
+        session_count: s.session_count,
+        avg_message_length: 50.0,
+        total_chars: 200,
+    };
+    let f = Formula::parse(SLACK_TIME_CALCULATION_FORMULA).unwrap();
+    assert_eq!(f.eval(&metrics), 824.0);
 }
 
 #[test]
