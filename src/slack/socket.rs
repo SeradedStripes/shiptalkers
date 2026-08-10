@@ -807,6 +807,7 @@ pub fn parse_time_range_at(text: &str, now: i64) -> Option<TimeRange> {
         ("last 30 days", TimeRange::Since(now - 30 * 86400)),
         ("last 90 days", TimeRange::Since(now - 90 * 86400)),
         ("last 3 months", TimeRange::Since(now - 90 * 86400)),
+        ("last 2 months", TimeRange::Since(now - 60 * 86400)),
         ("last 365 days", TimeRange::Since(now - 365 * 86400)),
         ("last hour", TimeRange::Since(now - 3600)),
         ("one day", TimeRange::Since(now - 86400)),
