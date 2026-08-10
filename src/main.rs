@@ -1,4 +1,4 @@
-use ship_talkers::{db, formula, settings, slack, website};
+use ship_talkers::{db, settings, slack, website};
 
 use dotenvy::dotenv;
 use std::collections::HashMap;
@@ -36,10 +36,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let clickhouse_password = settings.get("CLICKHOUSE_PASSWORD");
     let clickhouse_db = settings.get("CLICKHOUSE_DB");
 
-    let slack_time = formula::Formula::parse(formula::SLACK_TIME_CALCULATION_FORMULA)
-        .expect("SLACK_TIME_CALCULATION_FORMULA must be a valid formula");
-    tracing::info!("Slack time formula: {}", slack_time.source());
-
     let database = db::Database::new(
         &clickhouse_url,
         &clickhouse_user,
@@ -52,16 +48,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let clickhouse_for_scraper = database.clickhouse.clone();
     let settings_for_scraper = settings.clone();
-    let slack_time_for_scraper = slack_time.clone();
 
     tokio::spawn(async move {
-        if let Err(e) = run_scraper(
-            clickhouse_for_scraper,
-            settings_for_scraper,
-            slack_time_for_scraper,
-        )
-        .await
-        {
+        if let Err(e) = run_scraper(clickhouse_for_scraper, settings_for_scraper).await {
             tracing::error!("Scraper error: {}", e);
         }
     });
@@ -88,14 +77,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let clickhouse_for_socket = database.clickhouse.clone();
         let auth_db_for_socket = auth_db.clone();
         let settings_for_socket = settings.clone();
-        let slack_time_for_socket = slack_time.clone();
         tokio::spawn(async move {
             if let Err(e) = slack::start_socket_mode(
                 socket_config,
                 clickhouse_for_socket,
                 auth_db_for_socket,
                 settings_for_socket,
-                slack_time_for_socket,
             )
             .await
             {
@@ -123,7 +110,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let listener = TcpListener::bind(&addr).await?;
     axum::serve(
         listener,
-        website::router(database.clickhouse, settings, slack_time, auth_db),
+        website::router(database.clickhouse, settings, auth_db),
     )
     .with_graceful_shutdown(shutdown_signal())
     .await?;
@@ -271,25 +258,24 @@ async fn sync_users(slack_pool: &slack::SlackClientPool, clickhouse: &clickhouse
 async fn run_scraper(
     clickhouse: clickhouse::Client,
     settings: settings::RuntimeSettings,
-    slack_time: formula::Formula,
 ) -> Result<(), String> {
     if let Err(e) = db::clickhouse_db::backfill_slack_messages_by_user(&clickhouse).await {
         tracing::warn!("Failed to backfill slack_messages_by_user: {}", e);
     }
-    // Resolve the formula-change flag once so the backfills can run in parallel:
+    // Resolve the sessionizer-change flag once so the backfills can run in parallel:
     // the user backfill writes score_meta after it finishes, so checking it first
     // means the channel backfill can't see a stale row mid-recompute.
-    let formula_changed = db::clickhouse_db::formula_changed(&clickhouse, slack_time.source())
+    let sessionizer_changed = db::clickhouse_db::sessionizer_changed(&clickhouse)
         .await
         .unwrap_or(false);
     let (channels, users) = tokio::join!(
         async {
-            db::clickhouse_db::backfill_stale_channel_scores(&clickhouse, formula_changed)
+            db::clickhouse_db::backfill_stale_channel_scores(&clickhouse, sessionizer_changed)
                 .await
                 .map_err(|e| e.to_string())
         },
         async {
-            db::clickhouse_db::backfill_stale_user_scores(&clickhouse, &slack_time, formula_changed)
+            db::clickhouse_db::backfill_stale_user_scores(&clickhouse, sessionizer_changed)
                 .await
                 .map_err(|e| e.to_string())
         },
@@ -319,7 +305,7 @@ async fn run_scraper(
         }
 
         if !user_tokens.is_empty() {
-            scrape_all_messages(&settings, &clickhouse, &slack_time).await;
+            scrape_all_messages(&settings, &clickhouse).await;
         }
 
         if last_optimize.elapsed() >= Duration::from_secs(86400) {
@@ -350,7 +336,6 @@ async fn run_scraper(
 async fn scrape_all_messages(
     settings: &settings::RuntimeSettings,
     clickhouse: &clickhouse::Client,
-    slack_time: &formula::Formula,
 ) {
     let channels = match db::clickhouse_db::get_known_channel_ids(clickhouse).await {
         Ok(c) => c,
@@ -425,8 +410,7 @@ async fn scrape_all_messages(
     // instead of after each channel.
     let users: Vec<String> = touched_users.lock().unwrap().iter().cloned().collect();
     if !users.is_empty()
-        && let Err(e) =
-            db::clickhouse_db::recompute_user_scores(clickhouse, &users, slack_time).await
+        && let Err(e) = db::clickhouse_db::recompute_user_scores(clickhouse, &users).await
     {
         tracing::warn!(
             "Failed to recompute scores for {} users this pass: {}",

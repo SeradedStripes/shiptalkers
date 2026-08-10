@@ -1,5 +1,4 @@
 use ship_talkers::db::sqlite::AuthDb;
-use ship_talkers::formula::{Formula, SLACK_TIME_CALCULATION_FORMULA};
 use ship_talkers::settings::RuntimeSettings;
 use ship_talkers::website::router;
 
@@ -16,7 +15,6 @@ fn app() -> axum::Router {
             .with_password("ship_talkers")
             .with_database("ship_talkers"),
         RuntimeSettings::load(),
-        Formula::parse(SLACK_TIME_CALCULATION_FORMULA).unwrap(),
         std::sync::Arc::new(AuthDb::open(":memory:").expect("open in-memory auth db")),
     )
 }

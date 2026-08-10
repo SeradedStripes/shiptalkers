@@ -76,7 +76,6 @@ pub async fn start_socket_mode(
     clickhouse: clickhouse::Client,
     auth_db: std::sync::Arc<AuthDb>,
     settings: RuntimeSettings,
-    slack_time: crate::formula::Formula,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     if config.app_tokens.is_empty() {
         return Err("No SLACK_APP_TOKENS set, Socket Mode disabled".into());
@@ -102,7 +101,6 @@ pub async fn start_socket_mode(
             clickhouse,
             auth_db,
             settings,
-            slack_time.clone(),
         ));
     }
 
@@ -127,7 +125,6 @@ async fn run_socket(
     clickhouse: clickhouse::Client,
     auth_db: std::sync::Arc<AuthDb>,
     settings: RuntimeSettings,
-    slack_time: crate::formula::Formula,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let client = Client::new();
     let mut failures = 0u32;
@@ -141,7 +138,6 @@ async fn run_socket(
             &clickhouse,
             &auth_db,
             &settings,
-            &slack_time,
         )
         .await
         {
@@ -183,7 +179,6 @@ async fn serve_socket(
     clickhouse: &clickhouse::Client,
     auth_db: &std::sync::Arc<AuthDb>,
     settings: &RuntimeSettings,
-    slack_time: &crate::formula::Formula,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let resp: ConnectionsOpenResponse = client
         .post("https://slack.com/api/apps.connections.open")
@@ -262,7 +257,6 @@ async fn serve_socket(
                                             auth_db,
                                             clickhouse,
                                             settings,
-                                            slack_time,
                                             event,
                                         )
                                         .await;
@@ -333,7 +327,6 @@ async fn handle_message(
     auth_db: &std::sync::Arc<AuthDb>,
     clickhouse: &clickhouse::Client,
     settings: &RuntimeSettings,
-    slack_time: &crate::formula::Formula,
     event: &serde_json::Value,
 ) {
     let main_channel = settings.get("SLACK_MAIN_CHANNEL");
@@ -397,7 +390,7 @@ async fn handle_message(
         return;
     }
 
-    let (slack_seconds, coding_seconds) = query_stats(clickhouse, &user, &range, slack_time).await;
+    let (slack_seconds, coding_seconds) = query_stats(clickhouse, &user, &range).await;
     let user_name = user_display_name(clickhouse, &user).await;
 
     let (percent, more, other) = if slack_seconds >= coding_seconds {
@@ -448,13 +441,8 @@ async fn handle_message(
     }
 }
 
-async fn query_stats(
-    clickhouse: &clickhouse::Client,
-    user: &str,
-    range: &TimeRange,
-    slack_time: &crate::formula::Formula,
-) -> (u64, u64) {
-    let slack = query_slack_seconds(clickhouse, user, range, slack_time).await;
+async fn query_stats(clickhouse: &clickhouse::Client, user: &str, range: &TimeRange) -> (u64, u64) {
+    let slack = query_slack_seconds(clickhouse, user, range).await;
     let coding = query_coding_seconds(clickhouse, user, range).await;
     (slack, coding)
 }
@@ -463,15 +451,17 @@ async fn query_slack_seconds(
     clickhouse: &clickhouse::Client,
     user: &str,
     range: &TimeRange,
-    slack_time: &crate::formula::Formula,
 ) -> u64 {
-    let boundary = crate::formula::SESSION_GAP_BOUNDARY_SECS;
-    let grace = crate::formula::SESSION_GRACE_SECS;
-    let max_secs = crate::formula::SESSION_MAX_SECS;
+    let boundary = crate::sessionize::SESSION_GAP_BOUNDARY_SECS;
+    let rate = crate::sessionize::MESSAGE_TYPING_CHARS_PER_SEC;
+    let overhead = crate::sessionize::MESSAGE_READ_OVERHEAD_SECS;
+    let max_secs = crate::sessionize::SESSION_MAX_SECS;
     let mut session_sql = String::from(
         "WITH
          msg AS (
-             SELECT toInt64(message_ts / 1000000) AS ts
+             SELECT toInt64(message_ts / 1000000) AS ts,
+                    sum(char_length(text)) AS chars,
+                    count() AS msgs
              FROM slack_messages_by_user
              WHERE user_id = ?",
     );
@@ -482,22 +472,26 @@ async fn query_slack_seconds(
         session_sql.push_str(" AND ts < ?");
     }
     session_sql.push_str(&format!(
-        "),
+        " GROUP BY ts
+         ),
          flagged AS (
-             SELECT ts, if(ts - lag(ts) OVER (ORDER BY ts) > {boundary}, 1, 0) AS boundary
+             SELECT ts, chars, msgs,
+                    if(ts - lag(ts) OVER (ORDER BY ts) > {boundary}, 1, 0) AS boundary
              FROM msg
          ),
          sess AS (
-             SELECT ts, sum(boundary) OVER (ORDER BY ts) AS sid
+             SELECT ts, chars, msgs,
+                    sum(boundary) OVER (ORDER BY ts) AS sid
              FROM flagged
          ),
          sessions AS (
-             SELECT min(ts) AS start_ts, max(ts) AS end_ts
+             SELECT min(ts) AS start_ts, max(ts) AS end_ts,
+                    argMin(chars, ts) AS first_chars,
+                    argMin(msgs, ts) AS first_msgs
              FROM sess
              GROUP BY sid
          )
-         SELECT sum(toUInt64(least(end_ts + {grace} - start_ts, {max_secs}))) AS total_time,
-                count() AS sessions
+         SELECT sum(toUInt64(least(end_ts - start_ts + (first_chars + {rate} - 1) / {rate} + first_msgs * {overhead}, {max_secs}))) AS total_time
          FROM sessions"
     ));
 
@@ -513,58 +507,13 @@ async fn query_slack_seconds(
     #[derive(clickhouse::Row, serde::Deserialize)]
     struct SessionRow {
         total_time: u64,
-        sessions: u64,
     }
 
-    let session: SessionRow = session_query.fetch_one().await.unwrap_or(SessionRow {
-        total_time: 0,
-        sessions: 0,
-    });
-
-    let mut counts_sql = String::from(
-        "SELECT count() AS message_count, sum(char_length(text)) AS total_chars
-         FROM slack_messages_by_user
-         WHERE user_id = ?",
-    );
-    if range.start_ts().is_some() {
-        counts_sql.push_str(" AND toInt64(message_ts / 1000000) >= ?");
-    }
-    if range.end_ts().is_some() {
-        counts_sql.push_str(" AND toInt64(message_ts / 1000000) < ?");
-    }
-    let mut counts_query = clickhouse.query(&counts_sql);
-    counts_query = counts_query.bind(user);
-    if let Some(start_ts) = range.start_ts() {
-        counts_query = counts_query.bind(start_ts);
-    }
-    if let Some(end_ts) = range.end_ts() {
-        counts_query = counts_query.bind(end_ts);
-    }
-
-    #[derive(clickhouse::Row, serde::Deserialize)]
-    struct CountsRow {
-        message_count: u64,
-        total_chars: u64,
-    }
-
-    let counts: CountsRow = counts_query.fetch_one().await.unwrap_or(CountsRow {
-        message_count: 0,
-        total_chars: 0,
-    });
-
-    slack_time
-        .eval(&crate::formula::Metrics {
-            message_count: counts.message_count,
-            session_seconds: session.total_time,
-            session_count: session.sessions,
-            avg_message_length: if counts.message_count > 0 {
-                counts.total_chars as f64 / counts.message_count as f64
-            } else {
-                0.0
-            },
-            total_chars: counts.total_chars,
-        })
-        .max(0.0) as u64
+    session_query
+        .fetch_one::<SessionRow>()
+        .await
+        .map(|s| s.total_time)
+        .unwrap_or(0)
 }
 
 async fn query_coding_seconds(

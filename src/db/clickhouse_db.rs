@@ -204,7 +204,8 @@ pub async fn init_tables(client: &Client) -> Result<(), Box<dyn std::error::Erro
 
     // Migration for existing deployments: the columns below were added later, so
     // they arrive as zeros; backfill_stale_user_scores recomputes any user with
-    // longest = 0 (real users always have a session of at least 300s).
+    // longest = 0 (real users always have at least one session worth more than
+    // zero, since every session earns its first message's production time).
     for column in [
         "longest UInt64",
         "days UInt64",
@@ -339,16 +340,13 @@ pub async fn backfill_slack_messages_by_user(
 /// Recomputes scores only for users who are missing from `user_scores` or have
 /// messages newer than their last recompute, so a restart doesn't trigger a full
 /// recompute over every user (hours of full-table scans on slow hardware). A full
-/// recompute still runs when the Slack Time formula changed since the last one,
-/// and once after a migration to fill in columns added to `user_scores` (marked
-/// by `longest = 0`, since real users always have a session of at least 300s).
+/// recompute still runs when the sessionizer changed since the last one, and once
+/// after a migration to fill in columns added to `user_scores` (marked by
+/// `longest = 0`, since real users always have a session worth more than zero).
 /// Reads `score_meta` once so both startup backfills can decide a full recompute
 /// up front; the user backfill writes the row after it finishes, so the check must
 /// happen before either backfill runs.
-pub async fn formula_changed(
-    client: &Client,
-    source: &str,
-) -> Result<bool, Box<dyn std::error::Error>> {
+pub async fn sessionizer_changed(client: &Client) -> Result<bool, Box<dyn std::error::Error>> {
     #[derive(Debug, Row, Deserialize)]
     struct ScoreMetaRead {
         formula: String,
@@ -358,12 +356,24 @@ pub async fn formula_changed(
         .query("SELECT formula FROM score_meta FINAL WHERE id = 1")
         .fetch_optional()
         .await?;
-    Ok(stored.as_ref().map(|m| m.formula.as_str()) != Some(source))
+    Ok(stored.as_ref().map(|m| m.formula.clone()) != Some(sessionizer_fingerprint()))
+}
+
+/// Fingerprint of the sessionizer parameters, stored in `score_meta.formula`.
+/// Changing any constant in `src/sessionize.rs` flips this and triggers one full
+/// recompute of all user and channel scores on the next restart.
+fn sessionizer_fingerprint() -> String {
+    format!(
+        "sessionize:{}:{}:{}:{}",
+        crate::sessionize::SESSION_GAP_BOUNDARY_SECS,
+        crate::sessionize::MESSAGE_TYPING_CHARS_PER_SEC,
+        crate::sessionize::MESSAGE_READ_OVERHEAD_SECS,
+        crate::sessionize::SESSION_MAX_SECS,
+    )
 }
 
 pub async fn backfill_stale_user_scores(
     client: &Client,
-    formula: &crate::formula::Formula,
     force_full: bool,
 ) -> Result<usize, Box<dyn std::error::Error>> {
     #[derive(Debug, Row, Deserialize)]
@@ -377,9 +387,8 @@ pub async fn backfill_stale_user_scores(
         formula: String,
     }
 
-    let source = formula.source();
     if force_full {
-        tracing::info!("Slack Time formula changed, recomputing scores for all users");
+        tracing::info!("Sessionizer changed, recomputing scores for all users");
         let ids: Vec<String> = client
             .query("SELECT DISTINCT user_id FROM slack_messages_by_user")
             .fetch_all::<UserRow>()
@@ -387,12 +396,12 @@ pub async fn backfill_stale_user_scores(
             .into_iter()
             .map(|r| r.user_id)
             .collect();
-        recompute_user_scores(client, &ids, formula).await?;
+        recompute_user_scores(client, &ids).await?;
         let mut insert = client.insert::<ScoreMetaRow>("score_meta").await?;
         insert
             .write(&ScoreMetaRow {
                 id: 1,
-                formula: source.to_string(),
+                formula: sessionizer_fingerprint(),
             })
             .await?;
         insert.end().await?;
@@ -424,7 +433,7 @@ pub async fn backfill_stale_user_scores(
         "Backfilling Slack Time scores for {} stale/missing users",
         ids.len()
     );
-    recompute_user_scores(client, &ids, formula).await?;
+    recompute_user_scores(client, &ids).await?;
     Ok(ids.len())
 }
 
@@ -438,7 +447,7 @@ pub async fn backfill_stale_channel_scores(
     }
 
     if force_full {
-        tracing::info!("Slack Time formula changed, recomputing channel scores for all channels");
+        tracing::info!("Sessionizer changed, recomputing channel scores for all channels");
         return recompute_channel_scores(client, &[]).await;
     }
 
@@ -739,7 +748,6 @@ const SCORE_RECOMPUTE_CHUNK: usize = 50;
 pub async fn recompute_user_scores(
     client: &Client,
     user_ids: &[String],
-    formula: &crate::formula::Formula,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let full = user_ids.is_empty();
     let ids: Vec<String> = if full {
@@ -767,7 +775,7 @@ pub async fn recompute_user_scores(
     let start = std::time::Instant::now();
     let mut done = 0usize;
     for chunk in ids.chunks(SCORE_RECOMPUTE_CHUNK) {
-        done += recompute_user_scores_chunk(client, chunk, formula).await?;
+        done += recompute_user_scores_chunk(client, chunk).await?;
         if full {
             tracing::debug!("Backfill progress: {}/{} users recomputed", done, ids.len());
         }
@@ -785,12 +793,12 @@ pub async fn recompute_user_scores(
 async fn recompute_user_scores_chunk(
     client: &Client,
     ids: &[String],
-    formula: &crate::formula::Formula,
 ) -> Result<usize, Box<dyn std::error::Error>> {
     let where_clause = format!("WHERE user_id IN ('{}')", ids.join("', '"));
-    let boundary = crate::formula::SESSION_GAP_BOUNDARY_SECS;
-    let grace = crate::formula::SESSION_GRACE_SECS;
-    let max_secs = crate::formula::SESSION_MAX_SECS;
+    let boundary = crate::sessionize::SESSION_GAP_BOUNDARY_SECS;
+    let rate = crate::sessionize::MESSAGE_TYPING_CHARS_PER_SEC;
+    let overhead = crate::sessionize::MESSAGE_READ_OVERHEAD_SECS;
+    let max_secs = crate::sessionize::SESSION_MAX_SECS;
 
     #[derive(Debug, Row, Deserialize)]
     struct MetricsRow {
@@ -805,7 +813,9 @@ async fn recompute_user_scores_chunk(
         .query(&format!(
             "WITH
              msg AS (
-                 SELECT user_id, toInt64(message_ts / 1000000) AS ts
+                 SELECT user_id, toInt64(message_ts / 1000000) AS ts,
+                        sum(char_length(text)) AS chars,
+                        count() AS msgs
                  FROM slack_messages_by_user
                  {}
                  GROUP BY user_id, ts
@@ -821,13 +831,15 @@ async fn recompute_user_scores_chunk(
                  FROM flagged
              ),
              sessions AS (
-                 SELECT user_id, sid, min(ts) AS start_ts, max(ts) AS end_ts
+                 SELECT user_id, sid, min(ts) AS start_ts, max(ts) AS end_ts,
+                        argMin(chars, ts) AS first_chars,
+                        argMin(msgs, ts) AS first_msgs
                  FROM sess
                  GROUP BY user_id, sid
              )
              SELECT user_id,
-                    sum(toUInt64(least(end_ts + {grace} - start_ts, {max_secs}))) AS total_time,
-                    max(toUInt64(least(end_ts + {grace} - start_ts, {max_secs}))) AS longest,
+                    sum(toUInt64(least(end_ts - start_ts + (first_chars + {rate} - 1) / {rate} + first_msgs * {overhead}, {max_secs}))) AS total_time,
+                    max(toUInt64(least(end_ts - start_ts + (first_chars + {rate} - 1) / {rate} + first_msgs * {overhead}, {max_secs}))) AS longest,
                     count() AS sessions,
                     greatest(toUInt64(dateDiff('day', toDateTime(min(start_ts)), toDateTime(max(start_ts))) + 1), 1) AS days
              FROM sessions
@@ -863,28 +875,6 @@ async fn recompute_user_scores_chunk(
 
     let count_map: HashMap<String, CountRow> =
         counts.into_iter().map(|r| (r.user_id.clone(), r)).collect();
-
-    #[derive(Debug, Row, Deserialize)]
-    struct CharRow {
-        user_id: String,
-        total_chars: u64,
-    }
-
-    let chars: Vec<CharRow> = client
-        .query(&format!(
-            "SELECT user_id, sum(char_length(text)) AS total_chars
-             FROM slack_messages_by_user
-             {}
-             GROUP BY user_id",
-            where_clause
-        ))
-        .fetch_all()
-        .await?;
-
-    let char_map: HashMap<String, u64> = chars
-        .into_iter()
-        .map(|r| (r.user_id, r.total_chars))
-        .collect();
 
     #[derive(Debug, Row, Deserialize)]
     struct HourRow {
@@ -925,7 +915,6 @@ async fn recompute_user_scores_chunk(
         total_time: u64,
         messages: u64,
         sessions: u64,
-        total_chars: u64,
         longest: u64,
         days: u64,
         channels: u64,
@@ -945,29 +934,13 @@ async fn recompute_user_scores_chunk(
                 first_ts: 0,
                 last_ts: 0,
             });
-            let total_chars = char_map.get(&m.user_id).copied().unwrap_or(0);
-            let avg_length = if count.messages > 0 {
-                total_chars as f64 / count.messages as f64
-            } else {
-                0.0
-            };
-            let score = formula
-                .eval(&crate::formula::Metrics {
-                    message_count: count.messages,
-                    session_seconds: m.total_time,
-                    session_count: m.sessions,
-                    avg_message_length: avg_length,
-                    total_chars,
-                })
-                .max(0.0) as i64;
             let active_hour = hour_map.get(&m.user_id).copied().unwrap_or(0);
             ScoreRow {
                 user_id: m.user_id,
-                score,
+                score: m.total_time as i64,
                 total_time: m.total_time,
                 messages: count.messages,
                 sessions: m.sessions,
-                total_chars,
                 longest: m.longest,
                 days: m.days,
                 channels: count.channels,
@@ -1054,9 +1027,10 @@ async fn recompute_channel_scores_chunk(
     let scope = format!("channel_id IN ({})", in_list);
     let exclude_bots_deleted =
         "user_id NOT IN (SELECT user_id FROM users FINAL WHERE is_bot = 1 OR is_deleted = 1)";
-    let boundary = crate::formula::SESSION_GAP_BOUNDARY_SECS;
-    let grace = crate::formula::SESSION_GRACE_SECS;
-    let max_secs = crate::formula::SESSION_MAX_SECS;
+    let boundary = crate::sessionize::SESSION_GAP_BOUNDARY_SECS;
+    let rate = crate::sessionize::MESSAGE_TYPING_CHARS_PER_SEC;
+    let overhead = crate::sessionize::MESSAGE_READ_OVERHEAD_SECS;
+    let max_secs = crate::sessionize::SESSION_MAX_SECS;
 
     #[derive(Debug, Row, Deserialize)]
     struct SessionRow {
@@ -1074,7 +1048,9 @@ async fn recompute_channel_scores_chunk(
         .query(&format!(
             "WITH
              msg AS (
-                 SELECT channel_id, toInt64(message_ts / 1000000) AS ts
+                 SELECT channel_id, toInt64(message_ts / 1000000) AS ts,
+                        sum(char_length(text)) AS chars,
+                        count() AS msgs
                  FROM slack_messages_by_user
                  WHERE {scope} AND {exclude_bots_deleted}
                  GROUP BY channel_id, ts
@@ -1090,12 +1066,14 @@ async fn recompute_channel_scores_chunk(
                  FROM flagged
              ),
              sessions AS (
-                 SELECT channel_id, sid, min(ts) AS start_ts, max(ts) AS end_ts
+                 SELECT channel_id, sid, min(ts) AS start_ts, max(ts) AS end_ts,
+                        argMin(chars, ts) AS first_chars,
+                        argMin(msgs, ts) AS first_msgs
                  FROM sess
                  GROUP BY channel_id, sid
              )
              SELECT channel_id,
-                    sum(toUInt64(least(end_ts + {grace} - start_ts, {max_secs}))) AS total_time
+                    sum(toUInt64(least(end_ts - start_ts + (first_chars + {rate} - 1) / {rate} + first_msgs * {overhead}, {max_secs}))) AS total_time
              FROM sessions
              GROUP BY channel_id
              SETTINGS max_bytes_before_external_sort = 268435456"

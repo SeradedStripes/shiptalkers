@@ -85,7 +85,6 @@ struct StatsSnapshot {
 pub struct AppState {
     pub clickhouse: Client,
     pub http: reqwest::Client,
-    pub slack_time: crate::formula::Formula,
     pub auth_db: std::sync::Arc<crate::db::sqlite::AuthDb>,
     pub cache: AppCache,
     pub settings: RuntimeSettings,
@@ -208,13 +207,11 @@ pub struct UserStats {
 pub fn router(
     clickhouse: Client,
     settings: RuntimeSettings,
-    slack_time: crate::formula::Formula,
     auth_db: std::sync::Arc<crate::db::sqlite::AuthDb>,
 ) -> Router {
     let state = AppState {
         clickhouse,
         http: reqwest::Client::new(),
-        slack_time,
         auth_db,
         cache: AppCache::new(),
         settings,
@@ -761,7 +758,6 @@ async fn get_user_stats(
         total_time: u64,
         messages: u64,
         sessions: u64,
-        total_chars: u64,
         longest: u64,
         days: u64,
         channels: u64,
@@ -770,7 +766,7 @@ async fn get_user_stats(
 
     let scores: Option<ScoreRow> = ch
         .query(
-            "SELECT score, total_time, messages, sessions, total_chars, longest,
+            "SELECT score, total_time, messages, sessions, longest,
                     days, channels, active_hour
              FROM user_scores FINAL WHERE user_id = ?",
         )
@@ -856,16 +852,7 @@ async fn get_user_stats(
     let (slack_time_total, slack_time_avg, slack_time_longest, slack_time_per_day, active_hour) =
         match scores.as_ref() {
             Some(s) if s.messages > 0 => {
-                let total = state
-                    .slack_time
-                    .eval(&crate::formula::Metrics {
-                        message_count: s.messages,
-                        session_seconds: s.total_time,
-                        session_count: s.sessions,
-                        avg_message_length: s.total_chars as f64 / s.messages as f64,
-                        total_chars: s.total_chars,
-                    })
-                    .max(0.0) as u64;
+                let total = s.total_time;
                 let avg_session = total.checked_div(s.sessions).unwrap_or(0);
                 let per_day = s.sessions as f64 / s.days.max(1) as f64;
                 (
