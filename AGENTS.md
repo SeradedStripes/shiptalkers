@@ -23,6 +23,7 @@ Use this file as the default guide for AI agents working in the repository.
 - `just lint` - clippy with `-D warnings`
 - `just fmt` - rustfmt
 - `just test` - cargo test
+- `just formula-test` - formula + sessionizer tests with `--nocapture` so the demo tests print the computed numbers
 
 ## Overview
 

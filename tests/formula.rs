@@ -33,7 +33,16 @@ fn deployed_formula_matches_expected_slack_time() {
         total_chars: 200,
     };
     let f = Formula::parse(SLACK_TIME_CALCULATION_FORMULA).unwrap();
-    assert_eq!(f.eval(&metrics), 824.0);
+    let total = f.eval(&metrics);
+    println!(
+        "deployed formula: '{}'\n  timeline: {timeline:?}\n  session_seconds={}, chars={}, messages={}\n  -> {total}s ({}h)",
+        SLACK_TIME_CALCULATION_FORMULA.trim(),
+        s.total_seconds,
+        metrics.total_chars,
+        metrics.message_count,
+        total / 3600.0
+    );
+    assert_eq!(total, 824.0);
 }
 
 #[test]

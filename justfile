@@ -9,3 +9,6 @@ check:
 
 test:
   cargo test --all-features
+
+formula-test:
+  cargo test --all-features --test formula --test sessionizer -- --nocapture

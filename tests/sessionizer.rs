@@ -81,3 +81,32 @@ fn mixed_timeline_accumulates() {
     assert_eq!(s.longest_seconds, 420);
     assert_eq!(s.day_count, 1);
 }
+
+#[test]
+fn demo_sessionize_outputs() {
+    let cases: [(&str, Vec<u64>); 5] = [
+        ("lone message", vec![1000]),
+        ("close pair (100s apart)", vec![1000, 1100]),
+        ("gap over boundary (5000s)", vec![1000, 6000]),
+        (
+            "long burst capped at 4h",
+            vec![1000, 3000, 5000, 7000, 9000, 11000, 13000, 15000, 17000],
+        ),
+        (
+            "two sessions across 3 days",
+            vec![86400, 86400 + 100, 3 * 86400, 3 * 86400 + 100],
+        ),
+    ];
+    println!();
+    for (name, ts) in cases {
+        let s = sessionize(&ts);
+        println!(
+            "{name: <28} timestamps={ts:?}\n  -> total={}s ({}h), sessions={}, longest={}s, days={}",
+            s.total_seconds,
+            s.total_seconds / 3600,
+            s.session_count,
+            s.longest_seconds,
+            s.day_count
+        );
+    }
+}
