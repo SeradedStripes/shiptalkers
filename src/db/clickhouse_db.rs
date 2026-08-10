@@ -807,7 +807,7 @@ async fn recompute_user_scores_chunk(
              ),
              flagged AS (
                  SELECT user_id, ts,
-                     if(ts - lag(ts) OVER (PARTITION BY user_id ORDER BY ts) > 300, 1, 0) AS boundary
+                     if(ts - lag(ts) OVER (PARTITION BY user_id ORDER BY ts) > 2100, 1, 0) AS boundary
                  FROM msg
              ),
              sess AS (
@@ -821,8 +821,8 @@ async fn recompute_user_scores_chunk(
                  GROUP BY user_id, sid
              )
              SELECT user_id,
-                    sum(toUInt64(end_ts - start_ts)) AS total_time,
-                    max(toUInt64(end_ts - start_ts)) AS longest,
+                    sum(toUInt64(least(end_ts + 300 - start_ts, 14400))) AS total_time,
+                    max(toUInt64(least(end_ts + 300 - start_ts, 14400))) AS longest,
                     count() AS sessions,
                     greatest(toUInt64(dateDiff('day', toDateTime(min(start_ts)), toDateTime(max(start_ts))) + 1), 1) AS days
              FROM sessions
@@ -1073,7 +1073,7 @@ async fn recompute_channel_scores_chunk(
              ),
              flagged AS (
                  SELECT channel_id, ts,
-                        if(ts - lag(ts) OVER (PARTITION BY channel_id ORDER BY ts) > 300, 1, 0) AS boundary
+                        if(ts - lag(ts) OVER (PARTITION BY channel_id ORDER BY ts) > 2100, 1, 0) AS boundary
                  FROM msg
              ),
              sess AS (
@@ -1087,7 +1087,7 @@ async fn recompute_channel_scores_chunk(
                  GROUP BY channel_id, sid
              )
              SELECT channel_id,
-                    sum(toUInt64(end_ts - start_ts)) AS total_time
+                    sum(toUInt64(least(end_ts + 300 - start_ts, 14400))) AS total_time
              FROM sessions
              GROUP BY channel_id
              SETTINGS max_bytes_before_external_sort = 268435456"
