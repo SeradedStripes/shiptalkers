@@ -65,7 +65,7 @@ pub struct AppCache {
 impl AppCache {
     fn new() -> Self {
         Self {
-            stats: Arc::new(TtlCache::new(Duration::from_secs(300))),
+            stats: Arc::new(TtlCache::new(Duration::from_secs(30))),
         }
     }
 }
