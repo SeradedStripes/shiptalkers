@@ -31,10 +31,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let settings = settings::RuntimeSettings::load();
 
-    let clickhouse_url = settings.get("CLICKHOUSE_URL");
-    let clickhouse_user = settings.get("CLICKHOUSE_USER");
-    let clickhouse_password = settings.get("CLICKHOUSE_PASSWORD");
-    let clickhouse_db = settings.get("CLICKHOUSE_DB");
+    let (clickhouse_url, url_user, url_password, url_db) =
+        db::normalize_clickhouse_url(&settings.get("CLICKHOUSE_URL"));
+    let clickhouse_user = if settings.was_set("CLICKHOUSE_USER") {
+        settings.get("CLICKHOUSE_USER")
+    } else {
+        url_user.unwrap_or_else(|| settings.get("CLICKHOUSE_USER"))
+    };
+    let clickhouse_password = if settings.was_set("CLICKHOUSE_PASSWORD") {
+        settings.get("CLICKHOUSE_PASSWORD")
+    } else {
+        url_password.unwrap_or_else(|| settings.get("CLICKHOUSE_PASSWORD"))
+    };
+    let clickhouse_db = if settings.was_set("CLICKHOUSE_DB") {
+        settings.get("CLICKHOUSE_DB")
+    } else {
+        url_db.unwrap_or_else(|| settings.get("CLICKHOUSE_DB"))
+    };
 
     let database = db::Database::new(
         &clickhouse_url,

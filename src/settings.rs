@@ -52,6 +52,7 @@ fn default_value(key: &str) -> &str {
 #[derive(Clone)]
 pub struct RuntimeSettings {
     inner: Arc<RwLock<HashMap<String, String>>>,
+    set_keys: Arc<RwLock<std::collections::HashSet<String>>>,
 }
 
 impl RuntimeSettings {
@@ -61,13 +62,26 @@ impl RuntimeSettings {
 
     pub fn from_env(env: impl Fn(&str) -> Option<String>) -> Self {
         let mut map = HashMap::new();
+        let mut set_keys = std::collections::HashSet::new();
         for key in SETTING_KEYS {
-            let value = env(key).unwrap_or_else(|| default_value(key).to_string());
+            let value = match env(key) {
+                Some(v) => {
+                    set_keys.insert((*key).to_string());
+                    v
+                }
+                None => default_value(key).to_string(),
+            };
             map.insert((*key).to_string(), value);
         }
         Self {
             inner: Arc::new(RwLock::new(map)),
+            set_keys: Arc::new(RwLock::new(set_keys)),
         }
+    }
+
+    /// Whether the key was explicitly provided by the environment (not a default).
+    pub fn was_set(&self, key: &str) -> bool {
+        self.set_keys.read().unwrap().contains(key)
     }
 
     pub fn get(&self, key: &str) -> String {

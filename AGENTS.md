@@ -82,7 +82,7 @@ All settings below are read from environment variables at startup (with the defa
 - `SLACK_CHANNEL_CONCURRENCY` - channels scraped concurrently per token, default 8
 - `SLACK_THREAD_RESCAN_HOURS` - thread rescan history window, default 720 (30 days)
 - `SLACK_THREAD_RESCAN_INTERVAL_HOURS` - how often fully-scraped channels are re-scanned for threads, default 6
-- `CLICKHOUSE_URL` - ClickHouse HTTP endpoint, default `http://clickhouse:8123`
+- `CLICKHOUSE_URL` - ClickHouse HTTP endpoint, default `http://clickhouse:8123`. Coolify internal URLs (`clickhouse://user:pass@host:9000/db`) are auto-converted to `http://host:8123`, and the credentials/database embedded in the URL are used unless `CLICKHOUSE_USER`/`CLICKHOUSE_PASSWORD`/`CLICKHOUSE_DB` are explicitly set (see `normalize_clickhouse_url`).
 - `CLICKHOUSE_USER`, `CLICKHOUSE_PASSWORD`, `CLICKHOUSE_DB` - ClickHouse credentials and database, default `ship_talkers`
 - `HOST`, `PORT` - web server bind, default 0.0.0.0:3000.
 
