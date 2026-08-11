@@ -631,6 +631,27 @@ async fn scrape_shard(
     let _ = reporter.await;
 }
 
+fn reaction_rows_from(
+    messages: &[slack::SlackMessage],
+    channel_id: &str,
+) -> Vec<db::clickhouse_db::SlackReactionRow> {
+    let mut rows = Vec::new();
+    for m in messages {
+        let message_ts = db::clickhouse_db::slack_ts_to_micros(&m.ts);
+        for reaction in &m.reactions {
+            for user_id in &reaction.users {
+                rows.push(db::clickhouse_db::SlackReactionRow {
+                    channel_id: channel_id.to_string(),
+                    message_ts,
+                    emoji: reaction.name.clone(),
+                    user_id: user_id.clone(),
+                });
+            }
+        }
+    }
+    rows
+}
+
 async fn scrape_one_channel(
     user_client: &slack::SlackClient,
     clickhouse: &clickhouse::Client,
@@ -774,6 +795,20 @@ async fn scrape_one_channel(
         );
     }
 
+    let reaction_rows = reaction_rows_from(&messages, &channel_id);
+    if !reaction_rows.is_empty()
+        && let Err(e) = db::clickhouse_db::insert_reactions(clickhouse, &reaction_rows).await
+    {
+        tracing::warn!(
+            "[token {}][{}/{}] Failed to insert reactions for {}: {}",
+            token_idx,
+            idx,
+            total_channels,
+            channel_id,
+            e
+        );
+    }
+
     // Mark the channel as scraped as soon as its messages are stored, so a timeout
     // later in the thread phase doesn't force a full re-scrape next pass.
     if let Err(e) = db::clickhouse_db::mark_channel_scraped(clickhouse, &channel_id).await {
@@ -841,6 +876,20 @@ async fn scrape_one_channel(
                         total_channels,
                         channel_id,
                         found
+                    );
+                }
+                let extra_reactions = reaction_rows_from(&extra, &channel_id);
+                if !extra_reactions.is_empty()
+                    && let Err(e) =
+                        db::clickhouse_db::insert_reactions(clickhouse, &extra_reactions).await
+                {
+                    tracing::warn!(
+                        "[token {}][{}/{}] Failed to insert reactions from thread re-scan of {}: {}",
+                        token_idx,
+                        idx,
+                        total_channels,
+                        channel_id,
+                        e
                     );
                 }
             }
@@ -1052,6 +1101,22 @@ async fn scrape_thread(
                     inserted,
                     thread_ts,
                     channel_id
+                );
+            }
+
+            let reply_reactions = reaction_rows_from(&replies, &channel_id);
+            if !reply_reactions.is_empty()
+                && let Err(e) =
+                    db::clickhouse_db::insert_reactions(clickhouse, &reply_reactions).await
+            {
+                tracing::warn!(
+                    "[token {}][{}/{}] Failed to insert reactions for thread {} in {}: {}",
+                    token_idx,
+                    idx,
+                    total_channels,
+                    thread_ts,
+                    channel_id,
+                    e
                 );
             }
 

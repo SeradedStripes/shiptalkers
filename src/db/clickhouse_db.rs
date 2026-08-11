@@ -11,6 +11,14 @@ pub struct SlackMessageRow {
     pub thread_ts: Option<String>,
 }
 
+#[derive(Debug, Row, Serialize, Deserialize)]
+pub struct SlackReactionRow {
+    pub channel_id: String,
+    pub message_ts: u64,
+    pub emoji: String,
+    pub user_id: String,
+}
+
 /// Converts a Slack timestamp string ("seconds.microseconds") to microseconds.
 pub fn slack_ts_to_micros(ts: &str) -> u64 {
     let (secs, frac) = match ts.split_once('.') {
@@ -314,6 +322,22 @@ pub async fn init_tables(client: &Client) -> Result<(), Box<dyn std::error::Erro
             .await?;
         ensure_slack_messages_by_user().await?;
     }
+
+    // Per-message reactions (emoji name + reacting user) as fetched from
+    // conversations.history / conversations.replies. A raw snapshot per message;
+    // re-fetches replace the rows for that message.
+    client
+        .query(
+            "CREATE TABLE IF NOT EXISTS slack_reactions (
+                channel_id String,
+                message_ts UInt64,
+                emoji String,
+                user_id String
+            ) ENGINE = ReplacingMergeTree()
+            ORDER BY (channel_id, message_ts, emoji, user_id)",
+        )
+        .execute()
+        .await?;
 
     client
         .query(
@@ -778,6 +802,45 @@ pub async fn insert_messages(
     let mut insert = client.insert::<SlackMessageRow>("slack_messages").await?;
     for msg in messages {
         insert.write(msg).await?;
+    }
+    insert.end().await?;
+    Ok(count)
+}
+
+/// Stores a fresh reactions snapshot for the touched messages. Reactions are
+/// whatever the fetch returned at that moment, so rows for each touched message
+/// are cleared first (chunked, mutations_sync = 2) and then re-inserted, keeping
+/// counts accurate when reactions are added or removed between passes.
+pub async fn insert_reactions(
+    client: &Client,
+    rows: &[SlackReactionRow],
+) -> Result<u64, Box<dyn std::error::Error>> {
+    if rows.is_empty() {
+        return Ok(0);
+    }
+    let mut touched: Vec<(String, u64)> = rows
+        .iter()
+        .map(|r| (r.channel_id.clone(), r.message_ts))
+        .collect();
+    touched.sort();
+    touched.dedup();
+    for chunk in touched.chunks(500) {
+        let tuples: Vec<String> = chunk
+            .iter()
+            .map(|(channel_id, ts)| format!("('{}', {})", channel_id, ts))
+            .collect();
+        client
+            .query(&format!(
+                "ALTER TABLE slack_reactions DELETE WHERE (channel_id, message_ts) IN ({}) SETTINGS mutations_sync = 2",
+                tuples.join(", ")
+            ))
+            .execute()
+            .await?;
+    }
+    let count = rows.len() as u64;
+    let mut insert = client.insert::<SlackReactionRow>("slack_reactions").await?;
+    for row in rows {
+        insert.write(row).await?;
     }
     insert.end().await?;
     Ok(count)

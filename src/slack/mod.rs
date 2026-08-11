@@ -12,6 +12,12 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::Notify;
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SlackReaction {
+    pub name: String,
+    pub users: Vec<String>,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SlackMessage {
     pub user: String,
@@ -19,6 +25,7 @@ pub struct SlackMessage {
     pub ts: String,
     pub channel: String,
     pub thread_ts: Option<String>,
+    pub reactions: Vec<SlackReaction>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -300,12 +307,39 @@ impl SlackClient {
                         msg.get("ts").and_then(|v| v.as_str()),
                     ) {
                         let thread = msg.get("thread_ts").and_then(|v| v.as_str());
+                        let reactions = msg
+                            .get("reactions")
+                            .and_then(|v| v.as_array())
+                            .map(|arr| {
+                                arr.iter()
+                                    .filter_map(|r| {
+                                        let name = r.get("name").and_then(|v| v.as_str())?;
+                                        let users = r
+                                            .get("users")
+                                            .and_then(|v| v.as_array())
+                                            .map(|u| {
+                                                u.iter()
+                                                    .filter_map(|x| {
+                                                        x.as_str().map(|s| s.to_string())
+                                                    })
+                                                    .collect()
+                                            })
+                                            .unwrap_or_default();
+                                        Some(SlackReaction {
+                                            name: name.to_string(),
+                                            users,
+                                        })
+                                    })
+                                    .collect()
+                            })
+                            .unwrap_or_default();
                         messages.push(SlackMessage {
                             user: user.to_string(),
                             text: text.to_string(),
                             ts: ts.to_string(),
                             channel: channel_id.to_string(),
                             thread_ts: thread.map(|t| t.to_string()),
+                            reactions,
                         });
                     }
                 }
