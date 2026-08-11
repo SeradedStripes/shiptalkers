@@ -62,18 +62,18 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  deploy:
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - name: Call Coolify API to deploy
-        env:
-          COOLIFY_TOKEN: ${{ secrets.COOLIFY_TOKEN }}
-        run: |
-          if [ -z "${COOLIFY_TOKEN}" ]; then
-            echo "::error::COOLIFY_TOKEN secret is not set. Add it in GitHub repo Settings > Secrets and variables > Actions."
-            exit 1
-          fi
-          curl --fail --silent --show-error \
-            "https://coolify.kirze.de/api/v1/deploy?uuid=li1vtzvz0fmim9rfrmty0o85&force=false" \
-            -H "Authorization: Bearer ${COOLIFY_TOKEN}"
+#  deploy:
+#    needs: build
+#    runs-on: ubuntu-latest
+#    steps:
+#      - name: Call Coolify API to deploy
+#        env:
+#          COOLIFY_TOKEN: ${{ secrets.COOLIFY_TOKEN }}
+#        run: |
+#          if [ -z "${COOLIFY_TOKEN}" ]; then
+#            echo "::error::COOLIFY_TOKEN secret is not set. Add it in GitHub repo Settings > Secrets and variables > Actions."
+#            exit 1
+#          fi
+#          curl --fail --silent --show-error \
+#            "https://coolify.kirze.de/api/v1/deploy?uuid=li1vtzvz0fmim9rfrmty0o85&force=false" \
+#            -H "Authorization: Bearer ${COOLIFY_TOKEN}"
