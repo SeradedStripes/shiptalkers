@@ -927,12 +927,12 @@ async fn recompute_user_scores_chunk(
                  GROUP BY user_id, ts
              ),
              flagged AS (
-                 SELECT user_id, ts,
+                 SELECT user_id, ts, chars, msgs,
                      if(ts - lag(ts) OVER (PARTITION BY user_id ORDER BY ts) > {boundary}, 1, 0) AS boundary
                  FROM msg
              ),
              sess AS (
-                 SELECT user_id, ts,
+                 SELECT user_id, ts, chars, msgs,
                      sum(boundary) OVER (PARTITION BY user_id ORDER BY ts) AS sid
                  FROM flagged
              ),
@@ -1162,12 +1162,12 @@ async fn recompute_channel_scores_chunk(
                  GROUP BY channel_id, ts
              ),
              flagged AS (
-                 SELECT channel_id, ts,
+                 SELECT channel_id, ts, chars, msgs,
                         if(ts - lag(ts) OVER (PARTITION BY channel_id ORDER BY ts) > {boundary}, 1, 0) AS boundary
                  FROM msg
              ),
              sess AS (
-                 SELECT channel_id, ts,
+                 SELECT channel_id, ts, chars, msgs,
                         sum(boundary) OVER (PARTITION BY channel_id ORDER BY ts) AS sid
                  FROM flagged
              ),
