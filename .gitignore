@@ -1,3 +1,4 @@
 target/
 **/.env
+**/.env.output
 ship-talkers.db

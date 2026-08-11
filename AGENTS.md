@@ -49,7 +49,7 @@ Scrapes every public channel and thread reply (plus their reactions) from Hack C
 - `templates/slack_image.html` - askama SVG template for the stats bot card (CSS inlined from `slack_image_stats.css`)
 - `src/website/static/` - style.css, time.js, slack_image_stats.css
 - `src/sessionize.rs` - Slack Time sessionizer: the shared constants (`SESSION_GAP_BOUNDARY_SECS`, `MESSAGE_TYPING_CHARS_PER_SEC`, `MESSAGE_READ_OVERHEAD_SECS`, `SESSION_MAX_SECS`) and the Rust reference `sessionize` (edit here to change the algorithm)
-- `scripts/slack_app_creation/` - standalone Rust CLI that creates a Slack app from a manifest (default `manifest.yml` in the same directory as `.env.example`, or one passed as an argument) via an app configuration token and runs a one-shot OAuth install to print the bot and user tokens; configured through env vars (`SLACK_CONFIG_TOKEN`, `SLACK_CONFIG_REFRESH_TOKEN`, `SLACK_INSTALL_PORT`), see `.env.example`
+- `scripts/slack_app_creation/` - standalone Rust CLI that creates a Slack app from a manifest (default `manifest.yml` in the same directory as `.env.example`, or one passed as an argument) via an app configuration token and runs a one-shot OAuth install to print the bot and user tokens and write them (plus an empty `SLACK_APP_TOKENS` line to fill in) to `.env.output` for the Rust app; re-running updates existing keys in place and appends any new ones without clobbering user-filled values; configured through env vars (`SLACK_CONFIG_TOKEN`, `SLACK_CONFIG_REFRESH_TOKEN`, `SLACK_INSTALL_PORT`), see `.env.example`
 
 ## Slack Time Formula
 
