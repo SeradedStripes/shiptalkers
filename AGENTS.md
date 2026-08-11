@@ -82,7 +82,8 @@ All settings below are read from environment variables at startup (with the defa
 - `SLACK_CHANNEL_CONCURRENCY` - channels scraped concurrently per token, default 8
 - `SLACK_THREAD_RESCAN_HOURS` - thread rescan history window, default 720 (30 days)
 - `SLACK_THREAD_RESCAN_INTERVAL_HOURS` - how often fully-scraped channels are re-scanned for threads, default 6
-- `CLICKHOUSE_URL`, `CLICKHOUSE_USER`, `CLICKHOUSE_PASSWORD`, `CLICKHOUSE_DB`
+- `CLICKHOUSE_URL` - ClickHouse HTTP endpoint, default `http://clickhouse:8123`
+- `CLICKHOUSE_USER`, `CLICKHOUSE_PASSWORD`, `CLICKHOUSE_DB` - ClickHouse credentials and database, default `ship_talkers`
 - `HOST`, `PORT` - web server bind, default 0.0.0.0:3000.
 
 ## Gotchas

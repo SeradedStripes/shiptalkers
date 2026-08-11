@@ -19,6 +19,10 @@ fn unset_keys_get_defaults() {
     assert_eq!(s.get("PORT"), "3000");
     assert_eq!(s.get("HOST"), "0.0.0.0");
     assert_eq!(s.get("SQLITE_DB_PATH"), "data/auth.db");
+    assert_eq!(s.get("CLICKHOUSE_URL"), "http://clickhouse:8123");
+    assert_eq!(s.get("CLICKHOUSE_USER"), "ship_talkers");
+    assert_eq!(s.get("CLICKHOUSE_PASSWORD"), "ship_talkers");
+    assert_eq!(s.get("CLICKHOUSE_DB"), "ship_talkers");
     assert_eq!(s.get("SLACK_BOT_TOKENS"), "");
 }
 
