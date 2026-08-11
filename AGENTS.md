@@ -49,7 +49,7 @@ Scrapes every public channel and thread reply (plus their reactions) from Hack C
 - `templates/slack_image.html` - askama SVG template for the stats bot card (CSS inlined from `slack_image_stats.css`)
 - `src/website/static/` - style.css, time.js, slack_image_stats.css
 - `src/sessionize.rs` - Slack Time sessionizer: the shared constants (`SESSION_GAP_BOUNDARY_SECS`, `MESSAGE_TYPING_CHARS_PER_SEC`, `MESSAGE_READ_OVERHEAD_SECS`, `SESSION_MAX_SECS`) and the Rust reference `sessionize` (edit here to change the algorithm)
-- `scripts/slack_app_creation/` - standalone Rust CLI that creates a Slack app from a manifest (default `manifest.yml` in the same directory as `.env.example`, or one passed as an argument) via an app configuration token and runs a one-shot OAuth install to print the bot and user tokens and write them (plus an empty `SLACK_APP_TOKENS` line to fill in) to `.env.output` for the Rust app; re-running updates existing keys in place and appends any new ones without clobbering user-filled values; configured through env vars (`SLACK_CONFIG_TOKEN`, `SLACK_CONFIG_REFRESH_TOKEN`, `SLACK_INSTALL_PORT`), see `.env.example`
+- `scripts/slack_app_creation/` - standalone Rust CLI that creates a Slack app from a manifest (default `manifest.yml` in the same directory as `.env.example`, or one passed as an argument) via an app configuration token and runs a one-shot OAuth install to print the bot and user tokens and write them (plus an empty `SLACK_APP_TOKENS` line to fill in) to `.env.output` for the Rust app; each run's tokens get a numbered key (`SLACK_BOT_TOKENS_1`, `SLACK_USER_TOKENS_1`, ... next free number) so reruns append short one-per-line tokens instead of a giant comma list; configured through env vars (`SLACK_CONFIG_TOKEN`, `SLACK_CONFIG_REFRESH_TOKEN`, `SLACK_INSTALL_PORT`), see `.env.example`
 
 ## Slack Time Formula
 
@@ -72,9 +72,9 @@ Slack Time is the sessionizer output (`user_scores.total_time`, ranked by `score
 
 All settings below are read from environment variables at startup (with the defaults noted); edit `.env` and restart to change them.
 
-- `SLACK_BOT_TOKENS` - required, comma-separated bot tokens (one per Slack app); `conversations.list` / `users.list` pages round-robin across them, stats bot replies always use the first entry (the main bot).
-- `SLACK_USER_TOKENS` - comma-separated user tokens, sharded round-robin per channel.
-- `SLACK_APP_TOKENS` - optional, comma-separated app tokens; each opens its own Socket Mode connection and message events are sharded across them so only one bot replies.
+- `SLACK_BOT_TOKENS` - required, comma-separated bot tokens (one per Slack app), or the numbered variants `SLACK_BOT_TOKENS_1`, `SLACK_BOT_TOKENS_2`, ... (one per app, `get_list` merges base + variants); `conversations.list` / `users.list` pages round-robin across them, stats bot replies always use the first entry (the main bot).
+- `SLACK_USER_TOKENS` - comma-separated user tokens or numbered variants (`SLACK_USER_TOKENS_1`, ...), sharded round-robin per channel.
+- `SLACK_APP_TOKENS` - optional, comma-separated app tokens or numbered variants (`SLACK_APP_TOKENS_1`, ...); each opens its own Socket Mode connection and message events are sharded across them so only one bot replies.
 - `SLACK_MAIN_CHANNEL` - channel ID the stats bot watches; users posting a time range there get a threaded reply. Optional, disables the bot when unset.
 - `SQLITE_DB_PATH` - SQLite auth DB path (linked users), default `data/auth.db`.
 - `SLACK_REQUEST_DELAY_MS` - request pacing per method per token, default 1200 (tier 3, 50 req/min)

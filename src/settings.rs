@@ -47,6 +47,12 @@ fn default_value(key: &str) -> &str {
     }
 }
 
+/// Keys that hold comma-separated lists. These also accept numbered variants
+/// (`SLACK_BOT_TOKENS_1`, `SLACK_BOT_TOKENS_2`, ...) so long tokens can be
+/// added as short separate lines instead of one giant line.
+const LIST_KEYS: &[&str] = &["SLACK_APP_TOKENS", "SLACK_BOT_TOKENS", "SLACK_USER_TOKENS"];
+const MAX_LIST_VARIANTS: u32 = 64;
+
 /// Settings read from environment variables at startup, with defaults for keys
 /// that are unset. All subsystems read their knobs from here.
 #[derive(Clone)]
@@ -72,6 +78,15 @@ impl RuntimeSettings {
                 None => default_value(key).to_string(),
             };
             map.insert((*key).to_string(), value);
+            if LIST_KEYS.contains(key) {
+                for i in 1..=MAX_LIST_VARIANTS {
+                    let variant = format!("{key}_{i}");
+                    if let Some(v) = env(&variant) {
+                        set_keys.insert(variant.clone());
+                        map.insert(variant, v);
+                    }
+                }
+            }
         }
         Self {
             inner: Arc::new(RwLock::new(map)),
@@ -98,11 +113,24 @@ impl RuntimeSettings {
     }
 
     pub fn get_list(&self, key: &str) -> Vec<String> {
-        self.get(key)
-            .split(',')
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect()
+        let read = self.inner.read().unwrap();
+        let mut out = Vec::new();
+        let mut push = |v: &str| {
+            for s in v.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+                if !out.contains(&s.to_string()) {
+                    out.push(s.to_string());
+                }
+            }
+        };
+        if let Some(base) = read.get(key) {
+            push(base);
+        }
+        for i in 1..=MAX_LIST_VARIANTS {
+            if let Some(v) = read.get(&format!("{key}_{i}")) {
+                push(v);
+            }
+        }
+        out
     }
 
     pub fn auth_config(&self) -> crate::auth::AuthConfig {

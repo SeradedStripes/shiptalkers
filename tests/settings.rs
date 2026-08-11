@@ -49,6 +49,30 @@ fn get_list_splits_trims_and_drops_empties() {
 }
 
 #[test]
+fn get_list_merges_numbered_variants() {
+    let s = RuntimeSettings::from_env(env(&[
+        ("SLACK_BOT_TOKENS", "xoxb-0"),
+        ("SLACK_BOT_TOKENS_1", "xoxb-1"),
+        ("SLACK_BOT_TOKENS_2", " xoxb-2 ,"),
+        ("SLACK_USER_TOKENS_3", "xoxp-3"),
+    ]));
+    assert_eq!(
+        s.get_list("SLACK_BOT_TOKENS"),
+        vec!["xoxb-0", "xoxb-1", "xoxb-2"]
+    );
+    assert_eq!(s.get_list("SLACK_USER_TOKENS"), vec!["xoxp-3"]);
+}
+
+#[test]
+fn get_list_dedupes_across_base_and_variants() {
+    let s = RuntimeSettings::from_env(env(&[
+        ("SLACK_BOT_TOKENS", "xoxb-1"),
+        ("SLACK_BOT_TOKENS_1", "xoxb-1"),
+    ]));
+    assert_eq!(s.get_list("SLACK_BOT_TOKENS"), vec!["xoxb-1"]);
+}
+
+#[test]
 fn auth_config_reads_oauth_credentials() {
     let s = RuntimeSettings::from_env(env(&[
         ("HCA_CLIENT_ID", "hca-id"),
