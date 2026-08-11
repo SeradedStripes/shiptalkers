@@ -43,7 +43,36 @@ fn next_list_key(existing: Option<&str>, base: &str) -> String {
     format!("{base}_{}", max + 1)
 }
 
+/// Base key for a numbered variant, e.g. `SLACK_BOT_TOKENS` for
+/// `SLACK_BOT_TOKENS_2`. Unnumbered keys return themselves.
+fn base_of(key: &str) -> String {
+    match key.rsplit_once('_') {
+        Some((base, n)) if !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()) => {
+            base.to_string()
+        }
+        _ => key.to_string(),
+    }
+}
+
+/// Insert a missing entry right after the last line sharing its base key,
+/// so reruns stay grouped in their section instead of piling up at the end.
+fn insert_after_base(lines: &mut Vec<String>, entry: &EnvEntry) {
+    let base = base_of(&entry.key);
+    let mut insert_at = lines.len();
+    for (i, line) in lines.iter().enumerate() {
+        let Some((key, _)) = line.split_once('=') else {
+            continue;
+        };
+        let key = key.trim();
+        if key == base || key.strip_prefix(&base).is_some_and(|r| r.starts_with('_')) {
+            insert_at = i + 1;
+        }
+    }
+    lines.insert(insert_at, format!("{}={}", entry.key, entry.value));
+}
+
 pub fn merge_env_output(existing: Option<&str>, entries: &[EnvEntry]) -> String {
+    let fresh = existing.is_none();
     let mut lines: Vec<String> = match existing {
         Some(text) => text.lines().map(str::to_string).collect(),
         None => vec![
@@ -52,7 +81,6 @@ pub fn merge_env_output(existing: Option<&str>, entries: &[EnvEntry]) -> String 
             String::new(),
         ],
     };
-    let mut missing: Vec<&EnvEntry> = Vec::new();
     for entry in entries {
         let mut found = false;
         for line in lines.iter_mut() {
@@ -68,16 +96,13 @@ pub fn merge_env_output(existing: Option<&str>, entries: &[EnvEntry]) -> String 
             }
         }
         if !found {
-            missing.push(entry);
-        }
-    }
-    if !missing.is_empty() {
-        if lines.last().map(|l| !l.is_empty()).unwrap_or(true) {
-            lines.push(String::new());
-        }
-        for entry in missing {
-            lines.push(entry.comment.to_string());
-            lines.push(format!("{}={}", entry.key, entry.value));
+            if fresh {
+                lines.push(entry.comment.to_string());
+                lines.push(format!("{}={}", entry.key, entry.value));
+                lines.push(String::new());
+            } else {
+                insert_after_base(&mut lines, entry);
+            }
         }
     }
     let mut out = lines.join("\n");
@@ -509,9 +534,35 @@ mod tests {
         let out = merge_env_output(Some(existing), &entries);
         assert!(out.contains("SLACK_BOT_TOKENS_1=xoxb-1\n"));
         assert!(out.contains("SLACK_BOT_TOKENS_2=xoxb-2\n"));
+        assert!(out.contains("SLACK_USER_TOKENS_1=xoxp-1\n"));
         assert!(out.contains("SLACK_USER_TOKENS_2=xoxp-2\n"));
         assert!(out.contains("SLACK_MAIN_CHANNEL=C123\n"));
         assert!(out.contains("SLACK_APP_TOKENS=\n"));
+    }
+
+    #[test]
+    fn rerun_does_not_add_comments() {
+        let existing = "# header\nSLACK_BOT_TOKENS_1=xoxb-1\nSLACK_USER_TOKENS_1=xoxp-1\n";
+        let entries = app_env_entries(Some(existing), "xoxb-2", "xoxp-2");
+        let out = merge_env_output(Some(existing), &entries);
+        assert_eq!(out.matches("# header").count(), 1);
+        assert!(!out.contains("# Bot token"));
+        assert!(!out.contains("# User token"));
+    }
+
+    #[test]
+    fn rerun_inserts_next_to_sibling_keys() {
+        let existing = "SLACK_MAIN_CHANNEL=C123\nSLACK_BOT_TOKENS_1=xoxb-1\n\nSLACK_USER_TOKENS_1=xoxp-1\n\nSLACK_APP_TOKENS=\n";
+        let entries = app_env_entries(Some(existing), "xoxb-2", "xoxp-2");
+        let out = merge_env_output(Some(existing), &entries);
+        let lines: Vec<&str> = out.lines().collect();
+        let bot_1 = lines.iter().position(|l| l.starts_with("SLACK_BOT_TOKENS_1")).unwrap();
+        let bot_2 = lines.iter().position(|l| l.starts_with("SLACK_BOT_TOKENS_2")).unwrap();
+        let user_2 = lines.iter().position(|l| l.starts_with("SLACK_USER_TOKENS_2")).unwrap();
+        let app = lines.iter().position(|l| l.starts_with("SLACK_APP_TOKENS=")).unwrap();
+        assert_eq!(bot_2, bot_1 + 1);
+        assert!(user_2 < app);
+        assert!(bot_2 < user_2);
     }
 
     #[test]
