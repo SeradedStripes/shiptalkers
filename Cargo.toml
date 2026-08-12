@@ -25,6 +25,7 @@ futures = "0.3"
 rusqlite = { version = "0.40", features = ["bundled"] }
 resvg = "0.48"
 usvg = "0.48"
+mimalloc = "0.1"
 ttf-parser = "0.25"
 
 [dev-dependencies]
