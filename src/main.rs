@@ -610,7 +610,6 @@ async fn scrape_shard(
         }
     });
 
-    let channel_timeout = Duration::from_secs(25 * 60);
     let mut handles = Vec::with_capacity(channel_concurrency);
     for _ in 0..channel_concurrency {
         let client = user_client.clone();
@@ -625,21 +624,7 @@ async fn scrape_shard(
                     break;
                 }
                 let channel_id = channels[idx].clone();
-                let ch_id = channel_id.clone();
-                if tokio::time::timeout(
-                    channel_timeout,
-                    scrape_one_channel(&client, &clickhouse, channel_id, idx + 1, &ctx),
-                )
-                .await
-                .is_err()
-                {
-                    tracing::warn!(
-                        "[token {}] Channel {} timed out after {}s, skipping",
-                        token_idx,
-                        ch_id,
-                        channel_timeout.as_secs()
-                    );
-                }
+                scrape_one_channel(&client, &clickhouse, channel_id, idx + 1, &ctx).await;
             }
         }));
     }

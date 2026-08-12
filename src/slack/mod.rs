@@ -12,6 +12,11 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::Notify;
 
+/// Max 429/ratelimited retries before giving up on a request. Without a bound a
+/// persistently rate-limited token would spin forever now that channels have no
+/// wall-clock timeout.
+const MAX_RATE_LIMIT_RETRIES: u32 = 5;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SlackReaction {
     pub name: String,
@@ -192,6 +197,11 @@ impl SlackClient {
                     wait,
                     retry_after
                 );
+                if retry_count >= MAX_RATE_LIMIT_RETRIES {
+                    return Err(
+                        format!("rate limited on {method} after {retry_count} retries").into(),
+                    );
+                }
                 tokio::time::sleep(Duration::from_secs(wait)).await;
                 retry_count += 1;
                 continue;
@@ -215,6 +225,12 @@ impl SlackClient {
                         wait,
                         retry_after
                     );
+                    if retry_count >= MAX_RATE_LIMIT_RETRIES {
+                        return Err(format!(
+                            "rate limited on {method} after {retry_count} retries"
+                        )
+                        .into());
+                    }
                     tokio::time::sleep(Duration::from_secs(wait)).await;
                     retry_count += 1;
                     continue;
