@@ -21,7 +21,15 @@ jobs:
     if: github.event.pull_request.user.login == 'dependabot[bot]'
     steps:
       - name: Wait for CI to pass
-        run: gh pr checks "$PR_URL" --watch --interval 30
+        run: |
+          until gh pr checks "$PR_URL" --json name,state,conclusion \
+            --jq '[.[] | select(.name != "auto-merge")] as $c | ($c | length) > 0 and ($c | all(.state == "COMPLETED"))' \
+            | grep -qx true; do
+            sleep 30
+          done
+          gh pr checks "$PR_URL" --json name,state,conclusion \
+            --jq '[.[] | select(.name != "auto-merge")] | all(.conclusion == "SUCCESS")' \
+            | grep -qx true
         timeout-minutes: 60
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
