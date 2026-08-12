@@ -837,6 +837,34 @@ async fn scrape_one_channel(
         }
     }
 
+    // If the channel's first scrape's thread phase was interrupted (messages
+    // stored but threads never all fetched), pull every stored thread root so
+    // old threads outside the rescan window still get their replies recovered.
+    // The channel is marked fully scraped below only once every thread fetched
+    // cleanly, so a channel with transient failures retries the recovery.
+    if !fully_scraped {
+        let stored_roots = db::clickhouse_db::get_thread_roots(clickhouse, &channel_id)
+            .await
+            .unwrap_or_default();
+        let mut added = 0usize;
+        for root in stored_roots {
+            if !thread_parents.contains(&root) {
+                thread_parents.push(root);
+                added += 1;
+            }
+        }
+        if added > 0 {
+            tracing::info!(
+                "[token {}][{}/{}] Recovering {} stored thread root(s) in {}",
+                token_idx,
+                idx,
+                total_channels,
+                added,
+                channel_id
+            );
+        }
+    }
+
     // For channels already being checked incrementally, periodically re-scan a
     // recent window of history so messages that gained a thread since they were
     // first scraped (their root is older than this pass's new messages) get their
@@ -970,7 +998,7 @@ async fn scrape_one_channel(
     }
 
     if !fully_scraped
-        && oldest.is_none()
+        && threads_skipped == 0
         && let Err(e) = db::clickhouse_db::mark_fully_scraped(clickhouse, &channel_id).await
     {
         tracing::warn!(
@@ -1154,7 +1182,7 @@ async fn scrape_thread(
                 channel_id,
                 e
             );
-            (0, 0, Vec::new())
+            (1, 0, Vec::new())
         }
     }
 }

@@ -1520,6 +1520,30 @@ pub async fn get_max_thread_reply_ts(
     Ok(row)
 }
 
+/// All distinct thread root timestamps stored for a channel. Used by the
+/// thread-reply recovery pass to re-fetch threads whose first-scrape thread
+/// phase was interrupted, since their roots are older than the rescan window.
+pub async fn get_thread_roots(
+    client: &Client,
+    channel_id: &str,
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    #[derive(Debug, Row, Deserialize)]
+    struct ThreadRootRow {
+        thread_ts: String,
+    }
+
+    let rows: Vec<ThreadRootRow> = client
+        .query(&format!(
+            "SELECT DISTINCT thread_ts FROM slack_messages \
+             WHERE channel_id = '{}' AND thread_ts IS NOT NULL AND thread_ts != ''",
+            channel_id
+        ))
+        .fetch_all()
+        .await?;
+
+    Ok(rows.into_iter().map(|r| r.thread_ts).collect())
+}
+
 #[derive(Debug, Row, Serialize)]
 pub struct HackatimeConnectionRow {
     pub slack_id: String,
