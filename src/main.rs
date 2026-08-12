@@ -8,7 +8,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 use tokio::net::TcpListener;
 
@@ -503,19 +503,17 @@ async fn scrape_channel_list(
     }
 
     let mut workers = Vec::new();
+    // Shared work queue: each token's workers pull the next channel when a slot
+    // frees up, so a token that finishes a slow channel immediately grabs the
+    // next one instead of idling on a pre-computed shard.
+    let next = Arc::new(AtomicUsize::new(0));
     for (token_idx, token) in user_tokens.iter().enumerate() {
         let client = slack::SlackClient::new(token.clone(), request_delay, max_inflight);
-        let shard: Vec<String> = channels
-            .iter()
-            .enumerate()
-            .filter(|(i, _)| i % user_tokens.len() == token_idx)
-            .map(|(_, c)| c.clone())
-            .collect();
 
         let (tx, rx) = tokio::sync::mpsc::channel::<usize>(512);
         let ctx = ShardCtx {
             token_idx,
-            total_channels: shard.len(),
+            total_channels: channels.len(),
             max_inflight,
             channel_concurrency,
             thread_rescan_window_hours,
@@ -527,8 +525,10 @@ async fn scrape_channel_list(
             touched_channels: touched_channels.clone(),
         };
         let clickhouse = clickhouse.clone();
+        let next = next.clone();
+        let channels = channels.to_vec();
         workers.push(tokio::spawn(async move {
-            scrape_shard(&client, &clickhouse, shard, ctx, rx).await;
+            scrape_shard(&client, &clickhouse, channels, next, ctx, rx).await;
         }));
     }
 
@@ -562,21 +562,21 @@ async fn scrape_shard(
     user_client: &slack::SlackClient,
     clickhouse: &clickhouse::Client,
     channels: Vec<String>,
+    next: Arc<AtomicUsize>,
     ctx: ShardCtx,
     rx: tokio::sync::mpsc::Receiver<usize>,
 ) {
     if channels.is_empty() {
-        tracing::info!("[token {}] No channels assigned", ctx.token_idx);
+        tracing::info!("[token {}] No channels to scrape", ctx.token_idx);
         return;
     }
     tracing::info!(
-        "[token {}] Scraping {} channels",
+        "[token {}] Scraping {} channels from shared queue",
         ctx.token_idx,
         channels.len()
     );
 
     let channel_concurrency = ctx.channel_concurrency.max(1);
-    let sem = Arc::new(tokio::sync::Semaphore::new(channel_concurrency));
 
     let tx = ctx.tx.clone();
     let token_idx = ctx.token_idx;
@@ -611,29 +611,35 @@ async fn scrape_shard(
     });
 
     let channel_timeout = Duration::from_secs(25 * 60);
-    let mut handles = Vec::with_capacity(channels.len());
-    for (i, channel_id) in channels.iter().enumerate() {
-        let permit = sem.clone();
+    let mut handles = Vec::with_capacity(channel_concurrency);
+    for _ in 0..channel_concurrency {
         let client = user_client.clone();
         let clickhouse = clickhouse.clone();
-        let channel_id = channel_id.clone();
+        let channels = channels.clone();
+        let next = next.clone();
         let ctx = ctx.clone();
-        let ch_id = channel_id.clone();
         handles.push(tokio::spawn(async move {
-            let _permit = permit.acquire().await;
-            if tokio::time::timeout(
-                channel_timeout,
-                scrape_one_channel(&client, &clickhouse, channel_id, i + 1, &ctx),
-            )
-            .await
-            .is_err()
-            {
-                tracing::warn!(
-                    "[token {}] Channel {} timed out after {}s, skipping",
-                    token_idx,
-                    ch_id,
-                    channel_timeout.as_secs()
-                );
+            loop {
+                let idx = next.fetch_add(1, Ordering::Relaxed);
+                if idx >= channels.len() {
+                    break;
+                }
+                let channel_id = channels[idx].clone();
+                let ch_id = channel_id.clone();
+                if tokio::time::timeout(
+                    channel_timeout,
+                    scrape_one_channel(&client, &clickhouse, channel_id, idx + 1, &ctx),
+                )
+                .await
+                .is_err()
+                {
+                    tracing::warn!(
+                        "[token {}] Channel {} timed out after {}s, skipping",
+                        token_idx,
+                        ch_id,
+                        channel_timeout.as_secs()
+                    );
+                }
             }
         }));
     }
