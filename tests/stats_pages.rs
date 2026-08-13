@@ -27,6 +27,7 @@ async fn stats_routes_match() {
         "/stats/C0123456789",
         "/search",
         "/leaderboard/channels",
+        "/leaderboard/words",
     ] {
         let res = app
             .clone()

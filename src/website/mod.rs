@@ -60,14 +60,22 @@ impl<T> TtlCache<T> {
 #[derive(Clone)]
 pub struct AppCache {
     stats: Arc<TtlCache<StatsSnapshot>>,
+    words: Arc<TtlCache<Vec<WordCount>>>,
 }
 
 impl AppCache {
     fn new() -> Self {
         Self {
             stats: Arc::new(TtlCache::new(Duration::from_secs(30))),
+            words: Arc::new(TtlCache::new(Duration::from_secs(600))),
         }
     }
+}
+
+#[derive(Clone)]
+struct WordCount {
+    word: String,
+    count: u64,
 }
 
 #[derive(Clone)]
@@ -189,6 +197,7 @@ pub struct LeaderboardEntry {
     pub pfp: String,
     pub value: String,
     pub extra: String,
+    pub linked: bool,
 }
 
 pub struct SearchResult {
@@ -590,6 +599,25 @@ async fn get_leaderboard_category(
             )
         }
         "combined" => ("Top Combined".into(), String::new(), None, true, Vec::new()),
+        "words" => {
+            let rows: Vec<WordCount> = state
+                .cache
+                .words
+                .get_or(async { top_words(ch).await })
+                .await;
+            let entries = rows
+                .into_iter()
+                .map(|w| LeaderboardEntry {
+                    user_id: w.word.clone(),
+                    display_name: w.word,
+                    pfp: String::new(),
+                    value: fmt_thousands(w.count),
+                    extra: String::new(),
+                    linked: false,
+                })
+                .collect();
+            ("Top Words".into(), "Uses".into(), None, false, entries)
+        }
         _ => {
             return Err(StatusCode::NOT_FOUND);
         }
@@ -597,11 +625,12 @@ async fn get_leaderboard_category(
 
     let template = LeaderboardCategoryTemplate {
         title,
-        entity: if category == "channels" {
-            "Channel".into()
-        } else {
-            "User".into()
-        },
+        entity: match category.as_str() {
+            "channels" => "Channel",
+            "words" => "Word",
+            _ => "User",
+        }
+        .into(),
         unit,
         extra_unit,
         rows,
@@ -693,9 +722,40 @@ async fn leaderboard_entries(
                     .map(|v| v.max(0) as u64)
                     .and_then(|v| format_extra.map(|f| f(v)))
                     .unwrap_or_default(),
+                linked: true,
             }
         })
         .collect()
+}
+
+async fn top_words(ch: &Client) -> Vec<WordCount> {
+    #[derive(clickhouse::Row, serde::Deserialize)]
+    struct WordRow {
+        word: String,
+        count: u64,
+    }
+
+    ch.query(&format!(
+        "SELECT word, count() AS count
+         FROM (
+             SELECT arrayJoin(extractAll(lower(text), '[a-z]+')) AS word
+             FROM slack_messages
+             WHERE {EXCLUDE_BOTS_DELETED}
+         )
+         WHERE length(word) > 1
+         GROUP BY word
+         ORDER BY count DESC
+         LIMIT 100"
+    ))
+    .fetch_all::<WordRow>()
+    .await
+    .unwrap_or_default()
+    .into_iter()
+    .map(|r| WordCount {
+        word: r.word,
+        count: r.count,
+    })
+    .collect()
 }
 
 pub fn fmt_duration(secs: u64) -> String {
