@@ -736,13 +736,9 @@ async fn top_words(ch: &Client) -> Vec<WordCount> {
     }
 
     ch.query(&format!(
-        "SELECT word, count() AS count
-         FROM (
-             SELECT arrayJoin(extractAll(lower(text), '[a-z]+')) AS word
-             FROM slack_messages
-             WHERE {EXCLUDE_BOTS_DELETED}
-         )
-         WHERE length(word) > 1
+        "SELECT word, sum(count) AS count
+         FROM word_counts FINAL
+         WHERE {EXCLUDE_BOTS_DELETED}
          GROUP BY word
          ORDER BY count DESC
          LIMIT 100"

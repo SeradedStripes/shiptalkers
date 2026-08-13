@@ -275,6 +275,9 @@ async fn run_scraper(
     if let Err(e) = db::clickhouse_db::backfill_slack_messages_by_user(&clickhouse).await {
         tracing::warn!("Failed to backfill slack_messages_by_user: {}", e);
     }
+    if let Err(e) = db::clickhouse_db::backfill_word_counts(&clickhouse).await {
+        tracing::warn!("Failed to backfill word_counts: {}", e);
+    }
     // Resolve the sessionizer-change flag once so the backfills can run in parallel:
     // the user backfill writes score_meta after it finishes, so checking it first
     // means the channel backfill can't see a stale row mid-recompute.
@@ -657,6 +660,34 @@ fn reaction_rows_from(
     rows
 }
 
+fn word_count_rows_from(
+    messages: &[slack::SlackMessage],
+    channel_id: &str,
+) -> Vec<db::clickhouse_db::WordCountRow> {
+    let mut rows = Vec::new();
+    for m in messages {
+        let message_ts = db::clickhouse_db::slack_ts_to_micros(&m.ts);
+        let lower = m.text.to_lowercase();
+        let mut counts: std::collections::HashMap<&str, u64> = std::collections::HashMap::new();
+        for word in lower
+            .split(|c: char| !c.is_ascii_lowercase())
+            .filter(|w| w.len() > 1)
+        {
+            *counts.entry(word).or_insert(0) += 1;
+        }
+        for (word, count) in counts {
+            rows.push(db::clickhouse_db::WordCountRow {
+                word: word.to_string(),
+                user_id: m.user.clone(),
+                channel_id: channel_id.to_string(),
+                message_ts,
+                count,
+            });
+        }
+    }
+    rows
+}
+
 async fn scrape_one_channel(
     user_client: &slack::SlackClient,
     clickhouse: &clickhouse::Client,
@@ -806,6 +837,20 @@ async fn scrape_one_channel(
     {
         tracing::warn!(
             "[token {}][{}/{}] Failed to insert reactions for {}: {}",
+            token_idx,
+            idx,
+            total_channels,
+            channel_id,
+            e
+        );
+    }
+
+    let word_rows = word_count_rows_from(&messages, &channel_id);
+    if !word_rows.is_empty()
+        && let Err(e) = db::clickhouse_db::insert_word_counts(clickhouse, &word_rows).await
+    {
+        tracing::warn!(
+            "[token {}][{}/{}] Failed to insert word counts for {}: {}",
             token_idx,
             idx,
             total_channels,
@@ -1144,6 +1189,22 @@ async fn scrape_thread(
             {
                 tracing::warn!(
                     "[token {}][{}/{}] Failed to insert reactions for thread {} in {}: {}",
+                    token_idx,
+                    idx,
+                    total_channels,
+                    thread_ts,
+                    channel_id,
+                    e
+                );
+            }
+
+            let reply_words = word_count_rows_from(&replies, &channel_id);
+            if !reply_words.is_empty()
+                && let Err(e) =
+                    db::clickhouse_db::insert_word_counts(clickhouse, &reply_words).await
+            {
+                tracing::warn!(
+                    "[token {}][{}/{}] Failed to insert word counts for thread {} in {}: {}",
                     token_idx,
                     idx,
                     total_channels,

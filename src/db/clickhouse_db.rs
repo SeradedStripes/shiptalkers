@@ -348,6 +348,24 @@ pub async fn init_tables(client: &Client) -> Result<(), Box<dyn std::error::Erro
         .execute()
         .await?;
 
+    // Per-message word frequencies driving the Top Words leaderboard. Rows are
+    // written by the scraper for each newly inserted message (one per distinct
+    // lowercase word, count = occurrences in that message) plus a one-time
+    // backfill; reads use FINAL so re-scans never double-count.
+    client
+        .query(
+            "CREATE TABLE IF NOT EXISTS word_counts (
+                word String,
+                user_id String,
+                channel_id String,
+                message_ts UInt64,
+                count UInt64
+            ) ENGINE = ReplacingMergeTree()
+            ORDER BY (word, channel_id, message_ts)",
+        )
+        .execute()
+        .await?;
+
     client
         .query(
             "CREATE TABLE IF NOT EXISTS channel_scores (
@@ -410,6 +428,37 @@ pub async fn backfill_slack_messages_by_user(
         .execute()
         .await?;
     tracing::info!("slack_messages_by_user backfill complete");
+    Ok(())
+}
+
+/// Builds word_counts for every existing slack_messages row once, so the Top
+/// Words leaderboard is all-time on first deploy. New inserts keep it in sync
+/// from then on; it only runs when the table is empty.
+pub async fn backfill_word_counts(client: &Client) -> Result<(), Box<dyn std::error::Error>> {
+    let count: u64 = client
+        .query("SELECT count() FROM word_counts")
+        .fetch_one()
+        .await
+        .unwrap_or(0);
+    if count > 0 {
+        return Ok(());
+    }
+    tracing::info!("Backfilling word_counts from slack_messages...");
+    client
+        .query(
+            "INSERT INTO word_counts (word, user_id, channel_id, message_ts, count)
+             SELECT word, user_id, channel_id, message_ts, count()
+             FROM (
+                 SELECT arrayJoin(extractAll(lower(text), '[a-z]+')) AS word,
+                        user_id, channel_id, message_ts
+                 FROM slack_messages
+             )
+             WHERE length(word) > 1
+             GROUP BY word, user_id, channel_id, message_ts",
+        )
+        .execute()
+        .await?;
+    tracing::info!("word_counts backfill complete");
     Ok(())
 }
 
@@ -848,6 +897,34 @@ pub async fn insert_reactions(
     }
     let count = rows.len() as u64;
     let mut insert = client.insert::<SlackReactionRow>("slack_reactions").await?;
+    for row in rows {
+        insert.write(row).await?;
+    }
+    insert.end().await?;
+    Ok(count)
+}
+
+#[derive(Debug, Row, Serialize)]
+pub struct WordCountRow {
+    pub word: String,
+    pub user_id: String,
+    pub channel_id: String,
+    pub message_ts: u64,
+    pub count: u64,
+}
+
+/// Stores per-message word frequencies for newly inserted messages. Reads use
+/// FINAL on the ReplacingMergeTree, so the same (word, channel, message) key
+/// written twice never double-counts.
+pub async fn insert_word_counts(
+    client: &Client,
+    rows: &[WordCountRow],
+) -> Result<u64, Box<dyn std::error::Error>> {
+    if rows.is_empty() {
+        return Ok(0);
+    }
+    let count = rows.len() as u64;
+    let mut insert = client.insert::<WordCountRow>("word_counts").await?;
     for row in rows {
         insert.write(row).await?;
     }
