@@ -28,6 +28,8 @@ async fn stats_routes_match() {
         "/search",
         "/leaderboard/channels",
         "/leaderboard/words",
+        "/leaderboard/talkers?q=1234",
+        "/leaderboard/talkers?q=ZachLatta",
     ] {
         let res = app
             .clone()

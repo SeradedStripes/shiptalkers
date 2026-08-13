@@ -18,6 +18,13 @@
             <p class="empty">Coming soon</p>
         </div>
         {% else %}
+        <form class="search" method="get" action="/leaderboard/{{ category }}">
+            <input type="text" name="q" placeholder="Rank (e.g. 1234) or name..." value="{{ query }}">
+            <button type="submit">Search</button>
+        </form>
+        {% if notice.is_some() %}
+        <p class="empty">{{ notice.as_deref().unwrap_or("") }}</p>
+        {% endif %}
         <div class="table-card">
             <table>
                 <thead>
@@ -32,11 +39,11 @@
                 </thead>
                 <tbody>
                     {% if rows.is_empty() %}
-                    <tr><td colspan="4" class="empty">Coming soon</td></tr>
+                    <tr><td colspan="4" class="empty">No entries yet</td></tr>
                     {% else %}
                     {% for e in rows %}
                     <tr>
-                        <td>{{ loop.index }}</td>
+                        <td>{{ e.rank }}</td>
                         <td><span class="user-cell">{% if !e.pfp.is_empty() %}<img class="avatar" src="{{ e.pfp }}" alt="">{% endif %}{% if e.linked %}<a href="/stats/{{ e.user_id }}">{{ e.display_name }}</a>{% else %}{{ e.display_name }}{% endif %}</span></td>
                         <td>{{ e.value }}</td>
                         {% if extra_unit.is_some() %}

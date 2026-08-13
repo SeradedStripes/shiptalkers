@@ -57,10 +57,18 @@ impl<T> TtlCache<T> {
     }
 }
 
+#[derive(Clone, Debug)]
+struct RankedRow {
+    id: String,
+    value: i64,
+    extra: Option<i64>,
+    rank: u64,
+}
+
 #[derive(Clone)]
 pub struct AppCache {
     stats: Arc<TtlCache<StatsSnapshot>>,
-    words: Arc<TtlCache<Vec<WordCount>>>,
+    words: Arc<TtlCache<Vec<RankedRow>>>,
 }
 
 impl AppCache {
@@ -70,12 +78,6 @@ impl AppCache {
             words: Arc::new(TtlCache::new(Duration::from_secs(600))),
         }
     }
-}
-
-#[derive(Clone)]
-struct WordCount {
-    word: String,
-    count: u64,
 }
 
 #[derive(Clone)]
@@ -187,6 +189,9 @@ pub struct LeaderboardCategoryTemplate {
     pub extra_unit: Option<String>,
     pub rows: Vec<LeaderboardEntry>,
     pub coming_soon: bool,
+    pub category: String,
+    pub query: String,
+    pub notice: Option<String>,
     pub signed_in: bool,
     pub page_load_ms: String,
 }
@@ -198,6 +203,7 @@ pub struct LeaderboardEntry {
     pub value: String,
     pub extra: String,
     pub linked: bool,
+    pub rank: u64,
 }
 
 pub struct SearchResult {
@@ -457,171 +463,291 @@ async fn get_leaderboard(
     Ok(Html(html))
 }
 
+const RANK_WINDOW: u64 = 10;
+
+fn sql_escape(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('\'', "\\'")
+}
+
+async fn resolve_id(ch: &Client, sql: &str) -> Option<String> {
+    #[derive(clickhouse::Row, serde::Deserialize)]
+    struct IdRow {
+        id: String,
+    }
+    ch.query(sql)
+        .fetch_optional::<IdRow>()
+        .await
+        .ok()
+        .flatten()
+        .map(|r| r.id)
+}
+
+async fn fetch_rank_of(ch: &Client, inner: &str, id: &str) -> Option<u64> {
+    #[derive(clickhouse::Row, serde::Deserialize)]
+    struct RankRow {
+        rank: u64,
+    }
+    ch.query(&format!("SELECT rank FROM ({inner}) WHERE id = '{}'", id))
+        .fetch_optional::<RankRow>()
+        .await
+        .ok()
+        .flatten()
+        .map(|r| r.rank)
+}
+
+async fn fetch_rank_window(ch: &Client, inner: &str, lo: u64, hi: u64) -> Vec<RankedRow> {
+    #[derive(clickhouse::Row, serde::Deserialize)]
+    struct Row {
+        id: String,
+        value: i64,
+        extra: Option<i64>,
+        rank: u64,
+    }
+    ch.query(&format!(
+        "SELECT id, value, extra, rank FROM ({inner}) WHERE rank BETWEEN {lo} AND {hi} ORDER BY rank"
+    ))
+    .fetch_all::<Row>()
+    .await
+    .unwrap_or_default()
+    .into_iter()
+    .map(|r| RankedRow {
+        id: r.id,
+        value: r.value,
+        extra: r.extra,
+        rank: r.rank,
+    })
+    .collect()
+}
+
+/// Fetches a ranked window for a leaderboard. No query returns the top 100; a
+/// numeric query jumps to that rank; anything else resolves an entity (user,
+/// channel, word) and jumps to its rank. Returns the rows plus an optional
+/// notice (e.g. no match found).
+async fn ranked_window(
+    ch: &Client,
+    inner: &str,
+    q: &str,
+    parsed_rank: Option<u64>,
+    resolve_sql: Option<&str>,
+) -> (Vec<RankedRow>, Option<String>) {
+    if q.is_empty() {
+        return (fetch_rank_window(ch, inner, 1, 100).await, None);
+    }
+    if let Some(n) = parsed_rank
+        && n >= 1
+    {
+        let lo = n.saturating_sub(RANK_WINDOW);
+        let hi = n + RANK_WINDOW;
+        return (fetch_rank_window(ch, inner, lo, hi).await, None);
+    }
+    let id = match resolve_sql {
+        Some(sql) => resolve_id(ch, sql).await,
+        None => None,
+    };
+    let id = match id {
+        Some(id) => id,
+        None => return (Vec::new(), Some(format!("No matches for '{}'", q))),
+    };
+    match fetch_rank_of(ch, inner, &id).await {
+        Some(rank) => {
+            let lo = rank.saturating_sub(RANK_WINDOW);
+            let hi = rank + RANK_WINDOW;
+            (fetch_rank_window(ch, inner, lo, hi).await, None)
+        }
+        None => (
+            Vec::new(),
+            Some(format!("'{}' is not on this leaderboard", q)),
+        ),
+    }
+}
+
+fn resolve_user_sql(q: &str) -> String {
+    let eq = sql_escape(q);
+    format!(
+        "SELECT user_id AS id FROM users FINAL \
+         WHERE is_bot = 0 AND is_deleted = 0 \
+           AND lower(display_name) LIKE '%{}%' \
+         ORDER BY (lower(display_name) = '{}') DESC, lower(display_name) \
+         LIMIT 1",
+        eq, eq
+    )
+}
+
 async fn get_leaderboard_category(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(category): Path<String>,
+    Query(params): Query<HashMap<String, String>>,
 ) -> Result<Html<String>, StatusCode> {
     let started = Instant::now();
     let ch = &state.clickhouse;
     let signed_in = signed_in(&state, &headers);
+    let query = params.get("q").cloned().unwrap_or_default();
+    let q = query.trim();
+    let parsed_rank: Option<u64> = q.parse().ok();
 
-    #[derive(clickhouse::Row, serde::Deserialize)]
-    struct LeaderboardRow {
-        user_id: String,
-        value: i64,
-    }
-
-    let (title, unit, extra_unit, coming_soon, rows): (
+    let (title, unit, extra_unit, coming_soon, rows, notice): (
         String,
         String,
         Option<String>,
         bool,
         Vec<LeaderboardEntry>,
+        Option<String>,
     ) = match category.as_str() {
         "talkers" => {
-            #[derive(clickhouse::Row, serde::Deserialize)]
-            struct ScoreRow {
-                user_id: String,
-                score: i64,
-                messages: u64,
-            }
-
-            let rows: Vec<ScoreRow> = match ch
-                .query(&format!(
-                    "SELECT user_id, score, messages
-                     FROM user_scores FINAL
-                     WHERE {EXCLUDE_BOTS_DELETED}
-                     ORDER BY score DESC
-                     LIMIT 100"
-                ))
-                .fetch_all()
-                .await
-            {
-                Ok(r) => r,
-                Err(e) => {
-                    tracing::error!("talkers leaderboard query failed: {}", e);
-                    Vec::new()
-                }
-            };
-            let ranked: Vec<(String, i64, Option<i64>)> = rows
-                .into_iter()
-                .map(|r| (r.user_id, r.score, Some(r.messages as i64)))
-                .collect();
+            let inner = format!(
+                "SELECT user_id AS id, score AS value, toNullable(toInt64(messages)) AS extra, \
+                 row_number() OVER (ORDER BY score DESC) AS rank \
+                 FROM user_scores FINAL \
+                 WHERE {EXCLUDE_BOTS_DELETED}"
+            );
+            let (ranked, notice) =
+                ranked_window(ch, &inner, q, parsed_rank, Some(&resolve_user_sql(q))).await;
+            let rows = leaderboard_entries(
+                ch,
+                ranked,
+                LeaderboardSource::Users,
+                fmt_duration,
+                Some(fmt_thousands),
+            )
+            .await;
             (
                 "Top Talkers".into(),
                 "Slack Time".into(),
                 Some("Messages".into()),
                 false,
-                leaderboard_entries(
-                    ch,
-                    ranked,
-                    LeaderboardSource::Users,
-                    fmt_duration,
-                    Some(fmt_thousands),
-                )
-                .await,
+                rows,
+                notice,
             )
         }
         "coders" => {
-            let rows: Vec<(String, i64)> = match ch
-                .query(&format!(
-                    "SELECT user_id, sum(m) as value FROM (
-                         SELECT user_id, date, max(minutes) AS m
-                         FROM coding_activity
-                         GROUP BY user_id, date
-                     )
-                     WHERE {EXCLUDE_BOTS_DELETED}
-                     GROUP BY user_id
-                     ORDER BY value DESC
-                     LIMIT 100"
-                ))
-                .fetch_all::<LeaderboardRow>()
-                .await
-            {
-                Ok(r) => r.into_iter().map(|r| (r.user_id, r.value)).collect(),
-                Err(e) => {
-                    tracing::error!("coders leaderboard query failed: {}", e);
-                    Vec::new()
-                }
-            };
-            let rows: Vec<(String, i64, Option<i64>)> =
-                rows.into_iter().map(|(id, v)| (id, v, None)).collect();
+            let inner = format!(
+                "SELECT user_id AS id, value, CAST(NULL AS Nullable(Int64)) AS extra, rank \
+                 FROM ( \
+                     SELECT user_id, sum(m) AS value, \
+                            row_number() OVER (ORDER BY sum(m) DESC) AS rank \
+                     FROM ( \
+                         SELECT user_id, date, max(minutes) AS m \
+                         FROM coding_activity \
+                         GROUP BY user_id, date \
+                     ) \
+                     WHERE {EXCLUDE_BOTS_DELETED} \
+                     GROUP BY user_id \
+                 )"
+            );
+            let (ranked, notice) =
+                ranked_window(ch, &inner, q, parsed_rank, Some(&resolve_user_sql(q))).await;
+            let rows =
+                leaderboard_entries(ch, ranked, LeaderboardSource::Users, fmt_minutes, None).await;
             (
                 "Top Coders".into(),
                 "Coding Time".into(),
                 None,
                 false,
-                leaderboard_entries(ch, rows, LeaderboardSource::Users, fmt_minutes, None).await,
+                rows,
+                notice,
             )
         }
         "channels" => {
-            #[derive(clickhouse::Row, serde::Deserialize)]
-            struct ChannelRow {
-                channel_id: String,
-                total_time: u64,
-                messages: u64,
-            }
-
-            let rows: Vec<ChannelRow> = match ch
-                .query(
-                    "SELECT channel_id, total_time, messages
-                     FROM channel_scores FINAL
-                     ORDER BY total_time DESC
-                     LIMIT 100",
-                )
-                .fetch_all()
-                .await
-            {
-                Ok(r) => r,
-                Err(e) => {
-                    tracing::error!("channels leaderboard query failed: {}", e);
-                    Vec::new()
-                }
-            };
-            let ranked: Vec<(String, i64, Option<i64>)> = rows
-                .into_iter()
-                .map(|r| (r.channel_id, r.total_time as i64, Some(r.messages as i64)))
-                .collect();
+            let inner = "SELECT channel_id AS id, toInt64(total_time) AS value, \
+                 toNullable(toInt64(messages)) AS extra, \
+                 row_number() OVER (ORDER BY total_time DESC) AS rank \
+                 FROM channel_scores FINAL";
+            let eq = sql_escape(q);
+            let resolve = format!(
+                "SELECT channel_id AS id FROM slack_channels FINAL \
+                 WHERE lower(name) LIKE '%{}%' \
+                 ORDER BY (lower(name) = '{}') DESC, lower(name) \
+                 LIMIT 1",
+                eq, eq
+            );
+            let (ranked, notice) = ranked_window(ch, inner, q, parsed_rank, Some(&resolve)).await;
+            let rows = leaderboard_entries(
+                ch,
+                ranked,
+                LeaderboardSource::Channels,
+                fmt_duration,
+                Some(fmt_thousands),
+            )
+            .await;
             (
                 "Top Channels".into(),
                 "Slack Time".into(),
                 Some("Messages".into()),
                 false,
-                leaderboard_entries(
-                    ch,
-                    ranked,
-                    LeaderboardSource::Channels,
-                    fmt_duration,
-                    Some(fmt_thousands),
-                )
-                .await,
+                rows,
+                notice,
             )
         }
-        "combined" => ("Top Combined".into(), String::new(), None, true, Vec::new()),
+        "combined" => (
+            "Top Combined".into(),
+            String::new(),
+            None,
+            true,
+            Vec::new(),
+            None,
+        ),
         "words" => {
-            let rows: Vec<WordCount> = state
-                .cache
-                .words
-                .get_or(async { top_words(ch).await })
-                .await;
-            let entries = rows
+            let inner = format!(
+                "SELECT word AS id, toInt64(cnt) AS value, \
+                 CAST(NULL AS Nullable(Int64)) AS extra, rank \
+                 FROM ( \
+                     SELECT word, sum(count) AS cnt, \
+                            row_number() OVER (ORDER BY sum(count) DESC) AS rank \
+                     FROM word_counts FINAL \
+                     WHERE {EXCLUDE_BOTS_DELETED} \
+                     GROUP BY word \
+                 )"
+            );
+            let (ranked, notice) = if q.is_empty() {
+                let cached = state
+                    .cache
+                    .words
+                    .get_or(async { fetch_rank_window(ch, &inner, 1, 100).await })
+                    .await;
+                (cached, None)
+            } else {
+                let eq = sql_escape(q);
+                let resolve = format!(
+                    "SELECT id FROM ({inner}) WHERE id = '{}' OR id LIKE '{}%' \
+                     ORDER BY (id = '{}') DESC LIMIT 1",
+                    eq, eq, eq
+                );
+                ranked_window(ch, &inner, q, parsed_rank, Some(&resolve)).await
+            };
+            let entries = ranked
                 .into_iter()
-                .map(|w| LeaderboardEntry {
-                    user_id: w.word.clone(),
-                    display_name: w.word,
+                .map(|r| LeaderboardEntry {
+                    user_id: r.id.clone(),
+                    display_name: r.id,
                     pfp: String::new(),
-                    value: fmt_thousands(w.count),
+                    value: fmt_thousands(r.value.max(0) as u64),
                     extra: String::new(),
                     linked: false,
+                    rank: r.rank,
                 })
                 .collect();
-            ("Top Words".into(), "Uses".into(), None, false, entries)
+            (
+                "Top Words".into(),
+                "Uses".into(),
+                None,
+                false,
+                entries,
+                notice,
+            )
         }
         _ => {
             return Err(StatusCode::NOT_FOUND);
         }
     };
+
+    let notice = notice.or_else(|| {
+        if rows.is_empty() && !q.is_empty() {
+            Some(format!("No results for '{}'", q))
+        } else {
+            None
+        }
+    });
 
     let template = LeaderboardCategoryTemplate {
         title,
@@ -635,6 +761,9 @@ async fn get_leaderboard_category(
         extra_unit,
         rows,
         coming_soon,
+        category,
+        query,
+        notice,
         signed_in,
         page_load_ms: format!("{}ms", started.elapsed().as_millis()),
     };
@@ -651,12 +780,12 @@ enum LeaderboardSource {
 
 async fn leaderboard_entries(
     ch: &Client,
-    rows: Vec<(String, i64, Option<i64>)>,
+    rows: Vec<RankedRow>,
     source: LeaderboardSource,
     format_value: impl Fn(u64) -> String,
     format_extra: Option<fn(u64) -> String>,
 ) -> Vec<LeaderboardEntry> {
-    let mut name_ids: Vec<String> = rows.iter().map(|(id, _, _)| id.clone()).collect();
+    let mut name_ids: Vec<String> = rows.iter().map(|r| r.id.clone()).collect();
     name_ids.sort();
     name_ids.dedup();
 
@@ -706,52 +835,28 @@ async fn leaderboard_entries(
     };
 
     rows.into_iter()
-        .map(|(id, value, extra)| {
-            let value = value.max(0) as u64;
-            let (display_name, pfp) = names.get(&id).cloned().unwrap_or_default();
+        .map(|r| {
+            let value = r.value.max(0) as u64;
+            let (display_name, pfp) = names.get(&r.id).cloned().unwrap_or_default();
             LeaderboardEntry {
-                user_id: id.clone(),
+                user_id: r.id.clone(),
                 display_name: if display_name.is_empty() {
-                    id.clone()
+                    r.id.clone()
                 } else {
                     display_name
                 },
-                pfp: local_pfp(&id, &pfp),
+                pfp: local_pfp(&r.id, &pfp),
                 value: format_value(value),
-                extra: extra
+                extra: r
+                    .extra
                     .map(|v| v.max(0) as u64)
                     .and_then(|v| format_extra.map(|f| f(v)))
                     .unwrap_or_default(),
                 linked: true,
+                rank: r.rank,
             }
         })
         .collect()
-}
-
-async fn top_words(ch: &Client) -> Vec<WordCount> {
-    #[derive(clickhouse::Row, serde::Deserialize)]
-    struct WordRow {
-        word: String,
-        count: u64,
-    }
-
-    ch.query(&format!(
-        "SELECT word, sum(count) AS count
-         FROM word_counts FINAL
-         WHERE {EXCLUDE_BOTS_DELETED}
-         GROUP BY word
-         ORDER BY count DESC
-         LIMIT 100"
-    ))
-    .fetch_all::<WordRow>()
-    .await
-    .unwrap_or_default()
-    .into_iter()
-    .map(|r| WordCount {
-        word: r.word,
-        count: r.count,
-    })
-    .collect()
 }
 
 pub fn fmt_duration(secs: u64) -> String {
