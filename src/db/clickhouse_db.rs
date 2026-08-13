@@ -221,7 +221,6 @@ pub async fn init_tables(client: &Client) -> Result<(), Box<dyn std::error::Erro
                 total_time UInt64,
                 messages UInt64,
                 sessions UInt64,
-                total_chars UInt64,
                 longest UInt64,
                 days UInt64,
                 channels UInt64,
@@ -255,6 +254,16 @@ pub async fn init_tables(client: &Client) -> Result<(), Box<dyn std::error::Erro
             .await
             .ok();
     }
+
+    // Fresh deployments created `total_chars` (it was in the CREATE TABLE from
+    // an older ranking system) but the sessionizer no longer writes it, and the
+    // insert struct lacks the field, so every recompute failed with a schema
+    // mismatch on a fresh DB. Drop it for any DB that still has it.
+    client
+        .query("ALTER TABLE user_scores DROP COLUMN IF EXISTS total_chars")
+        .execute()
+        .await
+        .ok();
 
     client
         .query(
