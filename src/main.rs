@@ -632,6 +632,7 @@ async fn scrape_shard(
     for handle in handles {
         let _ = handle.await;
     }
+    drop(ctx);
     let _ = reporter.await;
 }
 
