@@ -10,7 +10,6 @@ use std::future::Future;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
-use tower_http::services::ServeDir;
 
 use crate::settings::RuntimeSettings;
 
@@ -273,7 +272,6 @@ pub fn router(
                     .unwrap()
             }),
         )
-        .fallback_service(ServeDir::new("static"))
         .with_state(state)
 }
 

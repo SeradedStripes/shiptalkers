@@ -41,7 +41,6 @@ RUN apk add --no-cache \
 WORKDIR /app
 
 COPY --from=builder /app/target/release/ship-talkers /usr/local/bin/ship-talkers
-COPY src/website/static ./static
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
