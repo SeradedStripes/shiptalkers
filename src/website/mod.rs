@@ -84,11 +84,10 @@ impl AppCache {
 #[derive(Clone)]
 struct StatsSnapshot {
     total_messages: u64,
-    active_users: u64,
-    channels_tracked: u64,
     total_channels: u64,
     total_users: u64,
     coding_minutes: u64,
+    slack_time_secs: u64,
     db_size_bytes: u64,
 }
 
@@ -112,11 +111,11 @@ pub struct IndexTemplate {
 #[template(path = "stats.html")]
 pub struct Stats {
     pub total_messages: String,
-    pub active_users: String,
-    pub channels_tracked: String,
     pub total_channels: String,
     pub total_users: String,
     pub coding_hours: String,
+    pub slack_time: String,
+    pub combined_time: String,
     pub db_size_label: String,
     pub signed_in: bool,
     pub page_load_ms: String,
@@ -1280,11 +1279,11 @@ async fn load_stats(state: &AppState, headers: &HeaderMap) -> Stats {
 
     Stats {
         total_messages: fmt_thousands(snapshot.total_messages),
-        active_users: fmt_thousands(snapshot.active_users),
-        channels_tracked: fmt_thousands(snapshot.channels_tracked),
         total_channels: fmt_thousands(snapshot.total_channels),
         total_users: fmt_thousands(snapshot.total_users),
         coding_hours: fmt_minutes(snapshot.coding_minutes),
+        slack_time: fmt_duration(snapshot.slack_time_secs),
+        combined_time: fmt_duration(snapshot.slack_time_secs + snapshot.coding_minutes * 60),
         db_size_label,
         signed_in: signed_in(state, headers),
         page_load_ms: String::new(),
@@ -1295,20 +1294,6 @@ async fn compute_stats(state: &AppState) -> StatsSnapshot {
     let ch = &state.clickhouse;
     let total_messages: u64 = ch
         .query("SELECT count() FROM slack_messages")
-        .fetch_one()
-        .await
-        .unwrap_or(0);
-
-    let active_users: u64 = ch
-        .query(&format!(
-            "SELECT count() FROM user_scores FINAL WHERE {EXCLUDE_BOTS_DELETED}"
-        ))
-        .fetch_one()
-        .await
-        .unwrap_or(0);
-
-    let channels_tracked: u64 = ch
-        .query("SELECT count() FROM scraped_channels FINAL")
         .fetch_one()
         .await
         .unwrap_or(0);
@@ -1337,6 +1322,14 @@ async fn compute_stats(state: &AppState) -> StatsSnapshot {
         .await
         .unwrap_or(0);
 
+    let slack_time_secs: u64 = ch
+        .query(&format!(
+            "SELECT sum(toUInt64(total_time)) FROM user_scores FINAL WHERE {EXCLUDE_BOTS_DELETED}"
+        ))
+        .fetch_one()
+        .await
+        .unwrap_or(0);
+
     let db_size_bytes: u64 = ch
         .query("SELECT sum(bytes_on_disk) as bytes FROM system.parts WHERE database = currentDatabase() AND active")
         .fetch_one()
@@ -1345,11 +1338,10 @@ async fn compute_stats(state: &AppState) -> StatsSnapshot {
 
     StatsSnapshot {
         total_messages,
-        active_users,
-        channels_tracked,
         total_channels,
         total_users,
         coding_minutes,
+        slack_time_secs,
         db_size_bytes,
     }
 }

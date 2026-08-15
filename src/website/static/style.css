@@ -88,7 +88,12 @@ p { color: #888; line-height: 1.6; margin-bottom: 1.5rem; }
 .status { margin-top: 0.5rem; font-size: 0.875rem; }
 
 .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; margin-bottom: 2rem; }
+body.stats .grid { grid-template-columns: repeat(4, 1fr); }
+@media (max-width: 900px) { body.stats .grid { grid-template-columns: repeat(2, 1fr); } }
 .stat { background: #1a1a1a; border-radius: 12px; padding: 1.5rem; }
+body.stats .stat.combined { grid-column: span 2; }
+body.stats .stat.combined .value { font-size: 2.25rem; }
+body.stats .stat.invisible { visibility: hidden; }
 .stat h3 { color: #888; font-size: 0.875rem; text-transform: uppercase; margin-bottom: 0.5rem; }
 .stat .value { font-size: 2rem; font-weight: 700; }
 .stat .value.pink { color: #f472b6; }
