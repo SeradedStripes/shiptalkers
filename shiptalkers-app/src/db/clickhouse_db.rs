@@ -445,6 +445,21 @@ pub async fn init_tables(client: &Client) -> Result<(), Box<dyn std::error::Erro
         .execute()
         .await?;
 
+    // Per-day totals for the stats page charts (coding minutes and Slack Time
+    // seconds, both over all history). Refreshed on a background schedule by
+    // `refresh_daily_stats` so the sessionizer never runs on a page load.
+    client
+        .query(
+            "CREATE TABLE IF NOT EXISTS daily_stats (
+                date Date,
+                coding_minutes UInt64,
+                slack_secs UInt64
+            ) ENGINE = ReplacingMergeTree()
+            ORDER BY date",
+        )
+        .execute()
+        .await?;
+
     Ok(())
 }
 
@@ -1214,6 +1229,115 @@ async fn refresh_word_totals_full(
         .execute()
         .await
         .ok();
+    Ok(())
+}
+
+/// Rebuilds `daily_stats` (per-day coding minutes and Slack Time seconds over
+/// all history) for the stats page charts. Runs in the background on a schedule
+/// because the Slack Time half is a sessionizer pass over every message; the
+/// whole table is replaced so no stale day survives. Coding minutes match the
+/// headline total (everyone, including bots), while Slack Time excludes
+/// bot/deleted users like `user_scores` does.
+pub async fn refresh_daily_stats(client: &Client) -> Result<(), Box<dyn std::error::Error>> {
+    #[derive(Debug, Row, Deserialize)]
+    struct CodingDayRow {
+        #[serde(with = "clickhouse::serde::time::date")]
+        date: time::Date,
+        minutes: u64,
+    }
+    let coding: Vec<CodingDayRow> = client
+        .query(
+            "SELECT date, sum(toUInt64(minutes)) AS minutes
+             FROM (
+                 SELECT user_id, date, max(minutes) AS minutes
+                 FROM coding_activity
+                 GROUP BY user_id, date
+             )
+             GROUP BY date",
+        )
+        .fetch_all()
+        .await?;
+
+    #[derive(Debug, Row, Deserialize)]
+    struct SlackDayRow {
+        #[serde(with = "clickhouse::serde::time::date")]
+        date: time::Date,
+        total_time: u64,
+    }
+    let boundary = crate::sessionize::SESSION_GAP_BOUNDARY_SECS;
+    let rate = crate::sessionize::MESSAGE_TYPING_CHARS_PER_SEC;
+    let overhead = crate::sessionize::MESSAGE_READ_OVERHEAD_SECS;
+    let max_secs = crate::sessionize::SESSION_MAX_SECS;
+    let slack: Vec<SlackDayRow> = client
+        .query(&format!(
+            "WITH
+             msg AS (
+                 SELECT user_id, toInt64(message_ts / 1000000) AS ts,
+                        sum(char_length(text)) AS chars,
+                        count() AS msgs
+                 FROM slack_messages_by_user
+                 WHERE user_id NOT IN (SELECT user_id FROM users FINAL
+                                       WHERE is_bot = 1 OR is_deleted = 1)
+                 GROUP BY user_id, ts
+             ),
+             flagged AS (
+                 SELECT user_id, ts, chars, msgs,
+                     if(ts - lag(ts) OVER (PARTITION BY user_id ORDER BY ts) > {boundary}, 1, 0) AS boundary
+                 FROM msg
+             ),
+             sess AS (
+                 SELECT user_id, ts, chars, msgs,
+                     sum(boundary) OVER (PARTITION BY user_id ORDER BY ts) AS sid
+                 FROM flagged
+             ),
+             sessions AS (
+                 SELECT user_id, sid, min(ts) AS start_ts, max(ts) AS end_ts,
+                        argMin(chars, ts) AS first_chars,
+                        argMin(msgs, ts) AS first_msgs
+                 FROM sess
+                 GROUP BY user_id, sid
+             )
+             SELECT toDate(toDateTime(start_ts)) AS date,
+                    sum(toUInt64(least(end_ts - start_ts + (first_chars + {rate} - 1) / {rate} + first_msgs * {overhead}, {max_secs}))) AS total_time
+             FROM sessions
+             GROUP BY date
+             SETTINGS max_bytes_before_external_group_by = 268435456, max_bytes_before_external_sort = 268435456"
+        ))
+        .fetch_all()
+        .await?;
+
+    let mut by_day: std::collections::BTreeMap<time::Date, (u64, u64)> =
+        std::collections::BTreeMap::new();
+    for r in &coding {
+        by_day.entry(r.date).or_default().0 = r.minutes;
+    }
+    for r in &slack {
+        by_day.entry(r.date).or_default().1 = r.total_time;
+    }
+
+    #[derive(Debug, Row, Serialize)]
+    struct DailyStatsRow {
+        #[serde(with = "clickhouse::serde::time::date")]
+        date: time::Date,
+        coding_minutes: u64,
+        slack_secs: u64,
+    }
+
+    client
+        .query("DELETE FROM daily_stats WHERE 1 SETTINGS mutations_sync = 2")
+        .execute()
+        .await?;
+    let mut insert = client.insert::<DailyStatsRow>("daily_stats").await?;
+    for (date, (coding_minutes, slack_secs)) in by_day {
+        insert
+            .write(&DailyStatsRow {
+                date,
+                coding_minutes,
+                slack_secs,
+            })
+            .await?;
+    }
+    insert.end().await?;
     Ok(())
 }
 

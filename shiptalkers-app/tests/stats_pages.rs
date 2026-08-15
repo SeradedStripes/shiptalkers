@@ -43,3 +43,38 @@ async fn stats_routes_match() {
         );
     }
 }
+
+#[test]
+fn daily_chart_svg_renders_bars() {
+    let x = vec!["Sat 14".to_string(), "Sun 15".to_string()];
+    let chart = ship_talkers::website::daily_chart(
+        &[
+            ("2026-08-14".to_string(), 60, "1h 0m".to_string()),
+            ("2026-08-15".to_string(), 120, "2h 0m".to_string()),
+        ],
+        &x,
+    );
+    assert!(chart.svg.starts_with("<svg"));
+    assert!(chart.svg.contains("<title>2026-08-15: 2h 0m</title>"));
+    assert!(chart.svg.contains("<line"));
+    assert!(chart.svg.ends_with("</svg>"));
+    assert_eq!(chart.axis.len(), 5);
+    assert_eq!(chart.axis[4], "0s");
+    assert_eq!(chart.x, x);
+    let empty = ship_talkers::website::daily_chart(&[], &[]);
+    assert!(empty.svg.is_empty());
+    assert!(empty.axis.is_empty());
+    assert!(empty.x.is_empty());
+}
+
+#[test]
+fn fmt_axis_secs_compact() {
+    let f = ship_talkers::website::fmt_axis_secs;
+    assert_eq!(f(0), "0s");
+    assert_eq!(f(45), "45s");
+    assert_eq!(f(120), "2m");
+    assert_eq!(f(3600), "1.0h");
+    assert_eq!(f(10800), "3.0h");
+    assert_eq!(f(86400), "24h");
+    assert_eq!(f(2 * 86400), "2d");
+}

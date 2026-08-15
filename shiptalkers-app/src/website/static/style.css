@@ -93,6 +93,18 @@ body.stats .grid { grid-template-columns: repeat(4, 1fr); }
 .stat { background: #1a1a1a; border-radius: 12px; padding: 1.5rem; }
 body.stats .stat.double{ grid-column: span 2; }
 body.stats .stat.double .value { font-size: 2.25rem; }
+body.stats .stat.chart { grid-column: span 2; }
+body.stats .stat.chart .chart-wrap { display: flex; align-items: stretch; gap: 0.5rem; }
+body.stats .stat.chart .chart-axis {
+    display: flex; flex-direction: column; justify-content: space-between;
+    font-size: 0.625rem; color: #888; line-height: 1; text-align: right; white-space: nowrap;
+}
+body.stats .stat.chart .chart-plot { flex: 1; min-width: 0; }
+body.stats .stat.chart svg { display: block; width: 100%; height: 90px; }
+body.stats .stat.chart .chart-x { display: flex; margin-top: 0.4rem; }
+body.stats .stat.chart .chart-x span {
+    flex: 1; text-align: center; font-size: 0.625rem; color: #888; white-space: nowrap;
+}
 body.stats .stat.invisible { visibility: hidden; }
 .stat h3 { color: #888; font-size: 0.875rem; text-transform: uppercase; margin-bottom: 0.5rem; }
 .stat .value { font-size: 2rem; font-weight: 700; }
