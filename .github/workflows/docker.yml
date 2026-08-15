@@ -74,6 +74,10 @@ jobs:
             echo "::error::COOLIFY_TOKEN secret is not set. Add it in GitHub repo Settings > Secrets and variables > Actions."
             exit 1
           fi
-          curl --fail --silent --show-error \
+          curl \
+            --fail \
+            --silent \
+            --show-error \
+            -X POST \
             "https://coolify.kirze.de/api/v1/deploy?uuid=s352e8bj5qvtd4aiyzu6i08r&force=false" \
             -H "Authorization: Bearer ${COOLIFY_TOKEN}"
