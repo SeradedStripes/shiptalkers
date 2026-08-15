@@ -1,14 +1,14 @@
 services:
   app:
     build:
-      context: .
+      context: ./shiptalkers-app
       target: dev
     ports:
       - "3000:3000"
     volumes:
-      - .:/app
+      - ./shiptalkers-app:/app
       - cargo-cache:/usr/local/cargo/registry
-    env_file: .env
+    env_file: ./shiptalkers-app/.env
     environment:
       - CLICKHOUSE_DB=ship_talkers
       - CLICKHOUSE_USER=ship_talkers
