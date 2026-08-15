@@ -1069,7 +1069,7 @@ async fn scrape_one_channel(
                 .await
             }));
         }
-        for (skipped, inserted_replies, users) in futures::future::join_all(handles)
+        for (skipped, inserted_replies, users) in futures_util::future::join_all(handles)
             .await
             .into_iter()
             .flatten()

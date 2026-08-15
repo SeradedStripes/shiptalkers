@@ -1,4 +1,4 @@
-use futures::{SinkExt, StreamExt};
+use futures_util::{SinkExt, StreamExt};
 use reqwest::Client;
 use serde::Deserialize;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
@@ -104,7 +104,7 @@ pub async fn start_socket_mode(
         ));
     }
 
-    let results = futures::future::join_all(sockets).await;
+    let results = futures_util::future::join_all(sockets).await;
     let errors: Vec<String> = results
         .into_iter()
         .filter_map(|r| r.err())

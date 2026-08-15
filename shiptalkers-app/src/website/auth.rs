@@ -355,7 +355,7 @@ pub async fn sync_coding_activity(
         .collect();
 
     let mut rows = Vec::new();
-    for (date, minutes) in futures::future::join_all(fetches).await {
+    for (date, minutes) in futures_util::future::join_all(fetches).await {
         let minutes = match minutes {
             Ok(m) => m,
             Err((status, message)) => {

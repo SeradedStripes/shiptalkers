@@ -20,10 +20,10 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 axum = "0.8"
 askama = "0.16"
 tokio-tungstenite = { version = "0.30", features = ["rustls-tls-native-roots"] }
-futures = "0.3"
+futures-util = "0.3"
 rusqlite = { version = "0.40", features = ["bundled"] }
-resvg = "0.48"
-usvg = "0.48"
+resvg = { version = "0.48", default-features = false, features = ["text"] }
+usvg = { version = "0.48", default-features = false, features = ["text"] }
 mimalloc = "0.1"
 ttf-parser = "0.25"
 
