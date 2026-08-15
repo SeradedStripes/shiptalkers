@@ -115,9 +115,6 @@ pub struct Stats {
     pub coding_hours: String,
     pub slack_time: String,
     pub combined_time: String,
-    pub slack_chart: String,
-    pub slack_axis: Vec<String>,
-    pub slack_x: Vec<String>,
     pub db_size_label: String,
     pub signed_in: bool,
     pub page_load_ms: String,
@@ -1296,8 +1293,6 @@ async fn load_stats(state: &AppState, headers: &HeaderMap) -> Stats {
         prec = if db_size_gib < 10.0 { 5 } else { 3 }
     );
 
-    let slack = load_daily_charts(&state.clickhouse).await;
-
     Stats {
         total_messages: fmt_thousands(snapshot.total_messages),
         total_channels: fmt_thousands(snapshot.total_channels),
@@ -1305,139 +1300,9 @@ async fn load_stats(state: &AppState, headers: &HeaderMap) -> Stats {
         coding_hours: fmt_minutes(snapshot.coding_minutes),
         slack_time: fmt_duration(snapshot.slack_time_secs),
         combined_time: fmt_duration(snapshot.slack_time_secs + snapshot.coding_minutes * 60),
-        slack_chart: slack.svg,
-        slack_axis: slack.axis,
-        slack_x: slack.x,
         db_size_label,
         signed_in: signed_in(state, headers),
         page_load_ms: String::new(),
-    }
-}
-
-/// One stats page chart: the SVG bars plus the Y axis labels (HTML column beside
-/// it) and X axis labels (HTML row below it), since text would get stretched by
-/// the SVG's non-uniform scaling.
-pub struct DailyChart {
-    pub svg: String,
-    pub axis: Vec<String>,
-    pub x: Vec<String>,
-}
-
-/// Fetches the per-day Slack Time totals (rebuilt every 30m in the background
-/// by `refresh_daily_stats`) and renders the stats page chart over the last 7
-/// days.
-async fn load_daily_charts(ch: &clickhouse::Client) -> DailyChart {
-    #[derive(clickhouse::Row, serde::Deserialize)]
-    struct DailyRow {
-        #[serde(with = "clickhouse::serde::time::date")]
-        date: time::Date,
-        slack_secs: u64,
-    }
-    let rows: Vec<DailyRow> = ch
-        .query("SELECT date, slack_secs FROM daily_stats FINAL ORDER BY date")
-        .fetch_all()
-        .await
-        .unwrap_or_default();
-
-    let recent: Vec<&DailyRow> = rows
-        .iter()
-        .rev()
-        .take(7)
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .collect();
-    let x: Vec<String> = recent
-        .iter()
-        .map(|r| format!("{} {}", weekday_short(r.date.weekday()), r.date.day()))
-        .collect();
-
-    let slack: Vec<(String, u64, String)> = recent
-        .iter()
-        .map(|r| (r.date.to_string(), r.slack_secs, fmt_duration(r.slack_secs)))
-        .collect();
-
-    daily_chart(&slack, &x)
-}
-
-fn weekday_short(w: time::Weekday) -> &'static str {
-    match w {
-        time::Weekday::Monday => "Mon",
-        time::Weekday::Tuesday => "Tue",
-        time::Weekday::Wednesday => "Wed",
-        time::Weekday::Thursday => "Thu",
-        time::Weekday::Friday => "Fri",
-        time::Weekday::Saturday => "Sat",
-        time::Weekday::Sunday => "Sun",
-    }
-}
-
-/// Renders a bar-per-day chart. Each entry is (day label, value, formatted
-/// tooltip); bars are scaled against the series max, with native `<title>`
-/// tooltips on hover. The SVG carries horizontal gridlines (only the width
-/// stretches, so the Y gridlines stay put); `axis` and `x` hold the matching
-/// compact labels for the HTML column/row beside and below it.
-pub fn daily_chart(bars: &[(String, u64, String)], x_labels: &[String]) -> DailyChart {
-    let mut chart = DailyChart {
-        svg: String::new(),
-        axis: Vec::new(),
-        x: x_labels.to_vec(),
-    };
-    if bars.is_empty() {
-        return chart;
-    }
-    let max = bars.iter().map(|b| b.1).max().unwrap_or(1).max(1);
-    let slot: u64 = 18;
-    let height: u64 = 90;
-    let width = bars.len() as u64 * slot;
-    let mut svg = format!(
-        "<svg viewBox=\"0 0 {width} {height}\" preserveAspectRatio=\"none\" \
-         xmlns=\"http://www.w3.org/2000/svg\" role=\"img\">"
-    );
-    for f in [1.0, 0.75, 0.5, 0.25, 0.0] {
-        let y = 90.0 - f * 84.0;
-        svg.push_str(&format!(
-            "<line x1=\"0\" x2=\"{width}\" y1=\"{y}\" y2=\"{y}\" stroke=\"#2e2e2e\" \
-             stroke-width=\"1\"/>"
-        ));
-    }
-    for (i, (day, value, label)) in bars.iter().enumerate() {
-        let bar_height = if *value > 0 {
-            ((*value as f64 / max as f64) * 84.0) as u64 + 1
-        } else {
-            0
-        };
-        let y = height - bar_height;
-        svg.push_str(&format!(
-            "<rect x=\"{}\" y=\"{y}\" width=\"8\" height=\"{bar_height}\" rx=\"1\" \
-             fill=\"#f472b6\"><title>{day}: {label}</title></rect>",
-            i as u64 * slot + 5
-        ));
-    }
-    svg.push_str("</svg>");
-    chart.svg = svg;
-    chart.axis = [1.0, 0.75, 0.5, 0.25, 0.0]
-        .iter()
-        .map(|f| fmt_axis_secs((max as f64 * f) as u64))
-        .collect();
-    chart
-}
-
-/// Compact duration label for a chart axis tick (e.g. "14d", "3.2h", "45m").
-pub fn fmt_axis_secs(secs: u64) -> String {
-    if secs >= 2 * 86400 {
-        format!("{}d", secs / 86400)
-    } else if secs >= 3600 {
-        let h = secs as f64 / 3600.0;
-        if h >= 10.0 {
-            format!("{:.0}h", h)
-        } else {
-            format!("{:.1}h", h)
-        }
-    } else if secs >= 60 {
-        format!("{}m", secs / 60)
-    } else {
-        format!("{}s", secs)
     }
 }
 
