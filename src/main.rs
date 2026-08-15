@@ -59,33 +59,48 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!("Initializing ClickHouse tables...");
     db::clickhouse_db::init_tables(&database.clickhouse).await?;
 
-    let clickhouse_for_scraper = database.clickhouse.clone();
-    let settings_for_scraper = settings.clone();
+    let has_bot_tokens = !settings.get_list("SLACK_BOT_TOKENS").is_empty();
+    let has_user_tokens = !settings.get_list("SLACK_USER_TOKENS").is_empty();
+    let has_app_tokens = !settings.get_list("SLACK_APP_TOKENS").is_empty();
 
-    tokio::spawn(async move {
-        if let Err(e) = run_scraper(clickhouse_for_scraper, settings_for_scraper).await {
-            tracing::error!("Scraper error: {}", e);
-        }
-    });
+    if has_bot_tokens || has_user_tokens || has_app_tokens {
+        let clickhouse_for_scraper = database.clickhouse.clone();
+        let settings_for_scraper = settings.clone();
 
-    {
-        let clickhouse_for_users = database.clickhouse.clone();
-        let settings_for_users = settings.clone();
         tokio::spawn(async move {
-            loop {
-                let pool = slack::SlackClientPool::new(
-                    settings_for_users.get_list("SLACK_BOT_TOKENS"),
-                    Duration::from_millis(settings_for_users.get_u64("SLACK_USER_SYNC_DELAY_MS")),
-                    settings_for_users.get_u64("SLACK_MAX_INFLIGHT") as usize,
-                );
-                let ok = sync_users(&pool, &clickhouse_for_users).await;
-                let wait = if ok { 7200 } else { 300 };
-                tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
+            if let Err(e) = run_scraper(clickhouse_for_scraper, settings_for_scraper).await {
+                tracing::error!("Scraper error: {}", e);
             }
         });
+
+        if has_bot_tokens {
+            let clickhouse_for_users = database.clickhouse.clone();
+            let settings_for_users = settings.clone();
+            tokio::spawn(async move {
+                loop {
+                    let pool = slack::SlackClientPool::new(
+                        settings_for_users.get_list("SLACK_BOT_TOKENS"),
+                        Duration::from_millis(
+                            settings_for_users.get_u64("SLACK_USER_SYNC_DELAY_MS"),
+                        ),
+                        settings_for_users.get_u64("SLACK_MAX_INFLIGHT") as usize,
+                    );
+                    let ok = sync_users(&pool, &clickhouse_for_users).await;
+                    let wait = if ok { 7200 } else { 300 };
+                    tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
+                }
+            });
+        } else {
+            tracing::warn!("SLACK_BOT_TOKENS not set, user sync disabled");
+        }
+    } else {
+        tracing::warn!(
+            "No Slack tokens set (SLACK_BOT_TOKENS/SLACK_USER_TOKENS/SLACK_APP_TOKENS), \
+             skipping Slack API entirely and serving existing ClickHouse data"
+        );
     }
 
-    if !settings.get_list("SLACK_APP_TOKENS").is_empty() {
+    if has_app_tokens {
         let socket_config = slack::SocketConfig::new(settings.get_list("SLACK_APP_TOKENS"));
         let clickhouse_for_socket = database.clickhouse.clone();
         let auth_db_for_socket = auth_db.clone();
