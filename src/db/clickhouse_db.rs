@@ -366,6 +366,21 @@ pub async fn init_tables(client: &Client) -> Result<(), Box<dyn std::error::Erro
         .execute()
         .await?;
 
+    // Materialized per-word totals (bots/deleted excluded) so the Top Words
+    // leaderboard reads a small table instead of scanning every word_counts
+    // row. Maintained by `refresh_word_totals`.
+    client
+        .query(
+            "CREATE TABLE IF NOT EXISTS word_totals (
+                word String,
+                cnt UInt64,
+                updated UInt64
+            ) ENGINE = ReplacingMergeTree(updated)
+            ORDER BY word",
+        )
+        .execute()
+        .await?;
+
     client
         .query(
             "CREATE TABLE IF NOT EXISTS channel_scores (
@@ -986,6 +1001,41 @@ pub async fn insert_word_counts(
     }
     insert.end().await?;
     Ok(count)
+}
+
+/// Rebuilds the materialized `word_totals` summary from `word_counts`, so the
+/// Top Words leaderboard reads one small row per word instead of re-aggregating
+/// every word row on every page load. Only words whose count changed are
+/// re-inserted (as a new ReplacingMergeTree version), then the table is
+/// compacted back to one version per word. Runs in the background on a schedule.
+pub async fn refresh_word_totals(client: &Client) -> Result<(), Box<dyn std::error::Error>> {
+    let updated = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    client
+        .query(&format!(
+            "INSERT INTO word_totals (word, cnt, updated)
+             SELECT w.word, w.cnt, {updated}
+             FROM (
+                 SELECT word, sum(count) AS cnt
+                 FROM word_counts FINAL
+                 WHERE user_id NOT IN (SELECT user_id FROM users FINAL
+                                       WHERE is_bot = 1 OR is_deleted = 1)
+                 GROUP BY word
+             ) AS w
+             LEFT JOIN (SELECT word, cnt FROM word_totals FINAL) AS t
+               ON w.word = t.word
+             WHERE t.word IS NULL OR t.cnt != w.cnt"
+        ))
+        .execute()
+        .await?;
+    client
+        .query("OPTIMIZE TABLE word_totals FINAL")
+        .execute()
+        .await
+        .ok();
+    Ok(())
 }
 
 /// Recomputes Slack Time scores for the given users (or every user when `user_ids`

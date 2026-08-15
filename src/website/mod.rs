@@ -716,22 +716,18 @@ async fn get_leaderboard_category(
             None,
         ),
         "words" => {
-            let inner = format!(
-                "SELECT word AS id, toInt64(cnt) AS value, \
+            let inner = "SELECT word AS id, toInt64(cnt) AS value, \
                  CAST(NULL AS Nullable(Int64)) AS extra, rank \
                  FROM ( \
-                     SELECT word, sum(count) AS cnt, \
-                            row_number() OVER (ORDER BY sum(count) DESC) AS rank \
-                     FROM word_counts FINAL \
-                     WHERE {EXCLUDE_BOTS_DELETED} \
-                     GROUP BY word \
-                 )"
-            );
+                     SELECT word, cnt, \
+                            row_number() OVER (ORDER BY cnt DESC) AS rank \
+                     FROM word_totals FINAL \
+                 )";
             let (ranked, notice) = if q.is_empty() {
                 let cached = state
                     .cache
                     .words
-                    .get_or(async { fetch_rank_window(ch, &inner, 1, 100).await })
+                    .get_or(async { fetch_rank_window(ch, inner, 1, 100).await })
                     .await;
                 (cached, None)
             } else {
@@ -742,7 +738,7 @@ async fn get_leaderboard_category(
                      ORDER BY (id = '{}') DESC LIMIT 1",
                     eq, eq, eq
                 );
-                ranked_window(ch, &inner, q, parsed_rank, Some(&resolve)).await
+                ranked_window(ch, inner, q, parsed_rank, Some(&resolve)).await
             };
             let entries = ranked
                 .into_iter()

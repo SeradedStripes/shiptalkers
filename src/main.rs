@@ -63,6 +63,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let has_user_tokens = !settings.get_list("SLACK_USER_TOKENS").is_empty();
     let has_app_tokens = !settings.get_list("SLACK_APP_TOKENS").is_empty();
 
+    {
+        let clickhouse_for_words = database.clickhouse.clone();
+        tokio::spawn(async move {
+            loop {
+                if let Err(e) = db::clickhouse_db::refresh_word_totals(&clickhouse_for_words).await
+                {
+                    tracing::warn!("Failed to refresh word totals: {}", e);
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(30 * 60)).await;
+            }
+        });
+    }
+
     if has_bot_tokens || has_user_tokens || has_app_tokens {
         let clickhouse_for_scraper = database.clickhouse.clone();
         let settings_for_scraper = settings.clone();
