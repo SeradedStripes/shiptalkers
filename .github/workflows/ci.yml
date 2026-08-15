@@ -2,25 +2,24 @@ name: CI
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
     paths:
-      - "src/**"
-      - "tests/**"
-      - "templates/**"
-      - "Cargo.toml"
-      - "Cargo.lock"
+      - "**/src/**"
+      - "**/tests/**"
+      - "**/templates/**"
+      - "**/Cargo.toml"
+      - "**/Cargo.lock"
       - ".github/workflows/**"
       - ".github/actions/**"
   pull_request:
     branches:
       - main
     paths:
-      - "src/**"
-      - "tests/**"
-      - "templates/**"
-      - "Cargo.toml"
-      - "Cargo.lock"
+      - "**/src/**"
+      - "**/tests/**"
+      - "**/templates/**"
+      - "**/Cargo.toml"
+      - "**/Cargo.lock"
       - ".github/workflows/**"
       - ".github/actions/**"
   workflow_dispatch:
