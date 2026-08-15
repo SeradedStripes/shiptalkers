@@ -252,7 +252,7 @@ impl SlackClient {
         channel_id: &str,
         oldest: Option<&str>,
     ) -> Result<Vec<SlackMessage>, Box<dyn std::error::Error + Send + Sync>> {
-        self.fetch_paginated("conversations.history", channel_id, None, oldest)
+        self.collect_paginated("conversations.history", channel_id, None, oldest)
             .await
     }
 
@@ -262,18 +262,83 @@ impl SlackClient {
         thread_ts: &str,
         oldest: Option<&str>,
     ) -> Result<Vec<SlackMessage>, Box<dyn std::error::Error + Send + Sync>> {
-        self.fetch_paginated("conversations.replies", channel_id, Some(thread_ts), oldest)
+        self.collect_paginated("conversations.replies", channel_id, Some(thread_ts), oldest)
             .await
     }
 
-    async fn fetch_paginated(
+    /// Streams a channel's history page by page, invoking `on_page` for each
+    /// page as it arrives instead of buffering the whole channel in memory. The
+    /// scraper inserts each page immediately, so a full scrape of a huge channel
+    /// only ever holds one page (plus the per-thread buffers) at a time.
+    pub async fn stream_channel_history<F>(
+        &self,
+        channel_id: &str,
+        oldest: Option<&str>,
+        on_page: F,
+    ) -> Result<usize, Box<dyn std::error::Error + Send + Sync>>
+    where
+        F: FnMut(Vec<SlackMessage>) -> Pin<Box<dyn Future<Output = ()> + Send>>,
+    {
+        self.for_each_message_page("conversations.history", channel_id, None, oldest, on_page)
+            .await
+    }
+
+    /// Streams a thread's replies page by page, so a thread with thousands of
+    /// replies is never buffered whole.
+    pub async fn stream_thread_replies<F>(
+        &self,
+        channel_id: &str,
+        thread_ts: &str,
+        oldest: Option<&str>,
+        on_page: F,
+    ) -> Result<usize, Box<dyn std::error::Error + Send + Sync>>
+    where
+        F: FnMut(Vec<SlackMessage>) -> Pin<Box<dyn Future<Output = ()> + Send>>,
+    {
+        self.for_each_message_page(
+            "conversations.replies",
+            channel_id,
+            Some(thread_ts),
+            oldest,
+            on_page,
+        )
+        .await
+    }
+
+    async fn collect_paginated(
         &self,
         method: &str,
         channel_id: &str,
         thread_ts: Option<&str>,
         oldest: Option<&str>,
     ) -> Result<Vec<SlackMessage>, Box<dyn std::error::Error + Send + Sync>> {
-        let mut messages = Vec::new();
+        let all: std::sync::Arc<tokio::sync::Mutex<Vec<SlackMessage>>> =
+            std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let collected = all.clone();
+        self.for_each_message_page(method, channel_id, thread_ts, oldest, move |page| {
+            let collected = collected.clone();
+            Box::pin(async move {
+                collected.lock().await.extend(page);
+            })
+        })
+        .await?;
+        Ok(Arc::try_unwrap(all)
+            .map(|m| m.into_inner())
+            .unwrap_or_default())
+    }
+
+    async fn for_each_message_page<F>(
+        &self,
+        method: &str,
+        channel_id: &str,
+        thread_ts: Option<&str>,
+        oldest: Option<&str>,
+        mut on_page: F,
+    ) -> Result<usize, Box<dyn std::error::Error + Send + Sync>>
+    where
+        F: FnMut(Vec<SlackMessage>) -> Pin<Box<dyn Future<Output = ()> + Send>>,
+    {
+        let mut total = 0usize;
         let mut cursor: Option<String> = None;
         let mut seen_cursors = std::collections::HashSet::new();
         let mut page = 0u32;
@@ -319,66 +384,9 @@ impl SlackClient {
             }
 
             let resp = self.get(method, &params).await?;
-
-            if let Some(msgs) = resp.get("messages").and_then(|v| v.as_array()) {
-                for msg in msgs {
-                    let Some(text) = msg.get("text").and_then(|v| v.as_str()) else {
-                        continue;
-                    };
-                    let Some(ts) = msg.get("ts").and_then(|v| v.as_str()) else {
-                        continue;
-                    };
-                    // Classic-app and webhook bot messages carry `bot_id` but no
-                    // `user`; fall back to the bot id so those messages (and
-                    // threads rooted by them) are not dropped.
-                    let Some(user) = msg
-                        .get("user")
-                        .and_then(|v| v.as_str())
-                        .or_else(|| msg.get("bot_id").and_then(|v| v.as_str()))
-                    else {
-                        continue;
-                    };
-                    let thread = msg.get("thread_ts").and_then(|v| v.as_str());
-                    let bot_name = msg.get("username").and_then(|v| v.as_str()).or_else(|| {
-                        msg.get("bot_profile")
-                            .and_then(|p| p.get("name"))
-                            .and_then(|v| v.as_str())
-                    });
-                    let reactions = msg
-                        .get("reactions")
-                        .and_then(|v| v.as_array())
-                        .map(|arr| {
-                            arr.iter()
-                                .filter_map(|r| {
-                                    let name = r.get("name").and_then(|v| v.as_str())?;
-                                    let users = r
-                                        .get("users")
-                                        .and_then(|v| v.as_array())
-                                        .map(|u| {
-                                            u.iter()
-                                                .filter_map(|x| x.as_str().map(|s| s.to_string()))
-                                                .collect()
-                                        })
-                                        .unwrap_or_default();
-                                    Some(SlackReaction {
-                                        name: name.to_string(),
-                                        users,
-                                    })
-                                })
-                                .collect()
-                        })
-                        .unwrap_or_default();
-                    messages.push(SlackMessage {
-                        user: user.to_string(),
-                        bot_name: bot_name.map(|s| s.to_string()),
-                        text: text.to_string(),
-                        ts: ts.to_string(),
-                        channel: channel_id.to_string(),
-                        thread_ts: thread.map(|t| t.to_string()),
-                        reactions,
-                    });
-                }
-            }
+            let messages = parse_message_page(&resp, channel_id);
+            total += messages.len();
+            on_page(messages).await;
 
             let what = thread_ts.map_or("channel".to_string(), |ts| format!("thread {}", ts));
             if page.is_multiple_of(10) {
@@ -387,7 +395,7 @@ impl SlackClient {
                     channel_id,
                     page,
                     what,
-                    messages.len(),
+                    total,
                     start.elapsed().as_secs_f64()
                 );
             }
@@ -403,7 +411,7 @@ impl SlackClient {
                         channel_id,
                         what,
                         page,
-                        messages.len(),
+                        total,
                         start.elapsed().as_secs_f64()
                     );
                 }
@@ -422,8 +430,73 @@ impl SlackClient {
             }
         }
 
-        Ok(messages)
+        Ok(total)
     }
+}
+
+fn parse_message_page(resp: &serde_json::Value, channel_id: &str) -> Vec<SlackMessage> {
+    let mut messages = Vec::new();
+    let Some(msgs) = resp.get("messages").and_then(|v| v.as_array()) else {
+        return messages;
+    };
+    for msg in msgs {
+        let Some(text) = msg.get("text").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let Some(ts) = msg.get("ts").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        // Classic-app and webhook bot messages carry `bot_id` but no `user`;
+        // fall back to the bot id so those messages (and threads rooted by
+        // them) are not dropped.
+        let Some(user) = msg
+            .get("user")
+            .and_then(|v| v.as_str())
+            .or_else(|| msg.get("bot_id").and_then(|v| v.as_str()))
+        else {
+            continue;
+        };
+        let thread = msg.get("thread_ts").and_then(|v| v.as_str());
+        let bot_name = msg.get("username").and_then(|v| v.as_str()).or_else(|| {
+            msg.get("bot_profile")
+                .and_then(|p| p.get("name"))
+                .and_then(|v| v.as_str())
+        });
+        let reactions = msg
+            .get("reactions")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|r| {
+                        let name = r.get("name").and_then(|v| v.as_str())?;
+                        let users = r
+                            .get("users")
+                            .and_then(|v| v.as_array())
+                            .map(|u| {
+                                u.iter()
+                                    .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        Some(SlackReaction {
+                            name: name.to_string(),
+                            users,
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        messages.push(SlackMessage {
+            user: user.to_string(),
+            bot_name: bot_name.map(|s| s.to_string()),
+            text: text.to_string(),
+            ts: ts.to_string(),
+            channel: channel_id.to_string(),
+            thread_ts: thread.map(|t| t.to_string()),
+            reactions,
+        });
+    }
+    messages
 }
 
 #[derive(Clone)]

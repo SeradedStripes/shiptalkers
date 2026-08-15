@@ -351,7 +351,10 @@ pub async fn init_tables(client: &Client) -> Result<(), Box<dyn std::error::Erro
     // Per-message word frequencies driving the Top Words leaderboard. Rows are
     // written by the scraper for each newly inserted message (one per distinct
     // lowercase word, count = occurrences in that message) plus a one-time
-    // backfill; reads use FINAL so re-scans never double-count.
+    // backfill; reads use FINAL so re-scans never double-count. `inserted_at` is
+    // when the row was written (not `message_ts`), so thread re-scans that add
+    // replies to old threads still show up as dirty words for the incremental
+    // `word_totals` refresh.
     client
         .query(
             "CREATE TABLE IF NOT EXISTS word_counts (
@@ -359,12 +362,20 @@ pub async fn init_tables(client: &Client) -> Result<(), Box<dyn std::error::Erro
                 user_id String,
                 channel_id String,
                 message_ts UInt64,
-                count UInt64
+                count UInt64,
+                inserted_at UInt64 DEFAULT 0
             ) ENGINE = ReplacingMergeTree()
             ORDER BY (word, channel_id, message_ts)",
         )
         .execute()
         .await?;
+
+    // Add inserted_at column if it doesn't exist (migration for existing tables)
+    client
+        .query("ALTER TABLE word_counts ADD COLUMN IF NOT EXISTS inserted_at UInt64 DEFAULT 0")
+        .execute()
+        .await
+        .ok();
 
     // Materialized per-word totals (bots/deleted excluded) so the Top Words
     // leaderboard reads a small table instead of scanning every word_counts
@@ -414,6 +425,22 @@ pub async fn init_tables(client: &Client) -> Result<(), Box<dyn std::error::Erro
                 done UInt8
             ) ENGINE = ReplacingMergeTree()
             ORDER BY name",
+        )
+        .execute()
+        .await?;
+
+    // Watermarks for the incremental `word_totals` refresh: `watermark` is the
+    // `word_counts.inserted_at` cutoff already folded in (pre-existing rows fold
+    // at the first full rebuild), and `last_full` is when the last full rebuild
+    // ran, so a daily safety-net rebuild catches anything a watermark missed.
+    client
+        .query(
+            "CREATE TABLE IF NOT EXISTS word_refresh_meta (
+                id UInt8,
+                watermark UInt64,
+                last_full UInt64
+            ) ENGINE = ReplacingMergeTree()
+            ORDER BY id",
         )
         .execute()
         .await?;
@@ -975,18 +1002,20 @@ pub async fn insert_reactions(
     Ok(count)
 }
 
-#[derive(Debug, Row, Serialize)]
+#[derive(Debug, Clone, Row, Serialize)]
 pub struct WordCountRow {
     pub word: String,
     pub user_id: String,
     pub channel_id: String,
     pub message_ts: u64,
     pub count: u64,
+    pub inserted_at: u64,
 }
 
 /// Stores per-message word frequencies for newly inserted messages. Reads use
 /// FINAL on the ReplacingMergeTree, so the same (word, channel, message) key
-/// written twice never double-counts.
+/// written twice never double-counts. `inserted_at` is stamped here, so the
+/// incremental `word_totals` refresh can find rows regardless of `message_ts`.
 pub async fn insert_word_counts(
     client: &Client,
     rows: &[WordCountRow],
@@ -994,25 +1023,175 @@ pub async fn insert_word_counts(
     if rows.is_empty() {
         return Ok(0);
     }
+    let now = now_secs();
     let count = rows.len() as u64;
     let mut insert = client.insert::<WordCountRow>("word_counts").await?;
     for row in rows {
-        insert.write(row).await?;
+        let mut row = row.clone();
+        row.inserted_at = now;
+        insert.write(&row).await?;
     }
     insert.end().await?;
     Ok(count)
 }
 
+/// Seconds since the UNIX epoch, used for the `word_counts.inserted_at` stamp
+/// and the `word_totals.updated` version.
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// How often the `word_totals` refresh falls back to a full rebuild. The
+/// incremental pass recomputes only words with rows inserted since the last
+/// fold, which misses nothing for new data but would let a row inserted in the
+/// same instant as a fold slip through (and cannot undo a word whose author
+/// was just flagged bot/deleted), so a daily full rebuild is the safety net.
+const WORD_FULL_REBUILD_SECS: u64 = 24 * 3600;
+
 /// Rebuilds the materialized `word_totals` summary from `word_counts`, so the
 /// Top Words leaderboard reads one small row per word instead of re-aggregating
 /// every word row on every page load. Only words whose count changed are
 /// re-inserted (as a new ReplacingMergeTree version), then the table is
-/// compacted back to one version per word. Runs in the background on a schedule.
+/// compacted back to one version per word. Runs in the background on a schedule:
+/// each pass folds just the words touched since the last fold (tracked in
+/// `word_refresh_meta`), with a daily full rebuild as the safety net.
 pub async fn refresh_word_totals(client: &Client) -> Result<(), Box<dyn std::error::Error>> {
-    let updated = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+    let now = now_secs();
+    let (watermark, last_full) = read_word_refresh_meta(client).await;
+
+    // First run, or the safety-net rebuild is due: recompute the whole table.
+    // The watermark is set to now rather than max(inserted_at), because rows
+    // backfilled before the `inserted_at` column existed all carry 0 and must
+    // count as folded, not as dirty on every pass.
+    if watermark == 0 || now.saturating_sub(last_full) >= WORD_FULL_REBUILD_SECS {
+        refresh_word_totals_full(client, now).await?;
+        write_word_refresh_meta(client, now, now).await?;
+        return Ok(());
+    }
+
+    let words = dirty_words(client, watermark).await?;
+    if words.is_empty() {
+        // Nothing new since the last fold; advance the watermark so the scan
+        // does not re-read the same rows next pass.
+        write_word_refresh_meta(client, now, last_full).await?;
+        return Ok(());
+    }
+    refresh_word_totals_for_words(client, &words, now).await?;
+    write_word_refresh_meta(client, now, last_full).await?;
+    Ok(())
+}
+
+/// The `word_refresh_meta` row's watermark and last full rebuild, or (0, 0)
+/// when no fold has happened yet.
+async fn read_word_refresh_meta(client: &Client) -> (u64, u64) {
+    #[derive(Debug, Row, Deserialize)]
+    struct MetaRow {
+        watermark: u64,
+        last_full: u64,
+    }
+    client
+        .query("SELECT watermark, last_full FROM word_refresh_meta FINAL WHERE id = 1")
+        .fetch_optional()
+        .await
+        .ok()
+        .flatten()
+        .map(|r: MetaRow| (r.watermark, r.last_full))
+        .unwrap_or((0, 0))
+}
+
+/// Records the refresh progress. `last_full` is kept from the last full rebuild
+/// (passed back in on incremental passes) so it does not get bumped every 30m.
+async fn write_word_refresh_meta(
+    client: &Client,
+    watermark: u64,
+    last_full: u64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    #[derive(Debug, Row, Serialize)]
+    struct MetaRow {
+        id: u8,
+        watermark: u64,
+        last_full: u64,
+    }
+    let mut insert = client.insert::<MetaRow>("word_refresh_meta").await?;
+    insert
+        .write(&MetaRow {
+            id: 1,
+            watermark,
+            last_full,
+        })
+        .await?;
+    insert.end().await?;
+    Ok(())
+}
+
+/// Words with any `word_counts` row inserted after the watermark.
+async fn dirty_words(
+    client: &Client,
+    watermark: u64,
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    #[derive(Debug, Row, Deserialize)]
+    struct WordRow {
+        word: String,
+    }
+    Ok(client
+        .query(&format!(
+            "SELECT DISTINCT word FROM word_counts WHERE inserted_at > {}",
+            watermark
+        ))
+        .fetch_all::<WordRow>()
+        .await?
+        .into_iter()
+        .map(|r| r.word)
+        .collect())
+}
+
+/// Recomputes the totals for the given words (the ones touched since the last
+/// fold) and compacts `word_totals`. The `word IN (...)` filter runs on the
+/// table's primary key, so this is a few granules, not a full-table scan.
+async fn refresh_word_totals_for_words(
+    client: &Client,
+    words: &[String],
+    updated: u64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let in_list = words
+        .iter()
+        .map(|w| format!("'{}'", w.replace('\'', "\\'")))
+        .collect::<Vec<_>>()
+        .join(", ");
+    client
+        .query(&format!(
+            "INSERT INTO word_totals (word, cnt, updated)
+             SELECT w.word, w.cnt, {updated}
+             FROM (
+                 SELECT word, sum(count) AS cnt
+                 FROM word_counts FINAL
+                 WHERE word IN ({in_list})
+                   AND user_id NOT IN (SELECT user_id FROM users FINAL
+                                       WHERE is_bot = 1 OR is_deleted = 1)
+                 GROUP BY word
+             ) AS w
+             LEFT JOIN (SELECT word, cnt FROM word_totals FINAL) AS t
+               ON w.word = t.word
+             WHERE t.word IS NULL OR t.cnt != w.cnt"
+        ))
+        .execute()
+        .await?;
+    client
+        .query("OPTIMIZE TABLE word_totals FINAL")
+        .execute()
+        .await
+        .ok();
+    Ok(())
+}
+
+/// Recomputes the totals for every word from scratch.
+async fn refresh_word_totals_full(
+    client: &Client,
+    updated: u64,
+) -> Result<(), Box<dyn std::error::Error>> {
     client
         .query(&format!(
             "INSERT INTO word_totals (word, cnt, updated)

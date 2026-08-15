@@ -711,6 +711,9 @@ fn word_count_rows_from(
                 channel_id: channel_id.to_string(),
                 message_ts,
                 count,
+                // Stamped for real in insert_word_counts, so the incremental
+                // word_totals refresh can find rows inserted out of message order.
+                inserted_at: 0,
             });
         }
     }
@@ -740,6 +743,178 @@ async fn upsert_bot_users(clickhouse: &clickhouse::Client, messages: &[slack::Sl
     if let Err(e) = db::clickhouse_db::upsert_users(clickhouse, &bots).await {
         tracing::warn!("Failed to upsert bot users: {}", e);
     }
+}
+
+/// Per-page accumulation for a channel's history scrape. Lives behind a
+/// std Mutex because pages are processed inside the streaming fetch's callback.
+#[derive(Default)]
+struct ChannelPageAccum {
+    inserted: u64,
+    filtered_out: u64,
+    thread_roots: std::collections::HashSet<String>,
+}
+
+#[derive(Default)]
+struct ThreadPageAccum {
+    inserted: u64,
+    reply_users: Vec<String>,
+}
+
+/// Handles one page of channel history: filters dupes, inserts messages,
+/// reactions, word counts, and bot users, and records thread roots and touched
+/// users. Bounding all of that to a single page is what keeps a full scrape of
+/// a huge channel from buffering the whole history in memory.
+async fn process_channel_page(
+    clickhouse: &clickhouse::Client,
+    channel_id: &str,
+    oldest: Option<&str>,
+    page: Vec<slack::SlackMessage>,
+    accum: &std::sync::Mutex<ChannelPageAccum>,
+    total: &AtomicU64,
+    touched_users: &std::sync::Mutex<std::collections::HashSet<String>>,
+) {
+    let raw = page.len() as u64;
+    let page: Vec<_> = if let Some(o) = oldest {
+        page.into_iter().filter(|m| m.ts.as_str() > o).collect()
+    } else {
+        page
+    };
+    let filtered = raw.saturating_sub(page.len() as u64);
+
+    {
+        let mut a = accum.lock().unwrap();
+        a.filtered_out += filtered;
+        for m in &page {
+            if let Some(ref t) = m.thread_ts
+                && t == &m.ts
+            {
+                a.thread_roots.insert(t.clone());
+            }
+        }
+    }
+    for m in &page {
+        touched_users.lock().unwrap().insert(m.user.clone());
+    }
+
+    let rows: Vec<db::clickhouse_db::SlackMessageRow> = page
+        .iter()
+        .map(|m| db::clickhouse_db::SlackMessageRow {
+            user_id: m.user.clone(),
+            channel_id: m.channel.clone(),
+            message_ts: db::clickhouse_db::slack_ts_to_micros(&m.ts),
+            text: m.text.clone(),
+            thread_ts: m.thread_ts.clone(),
+        })
+        .collect();
+
+    let inserted = if rows.is_empty() {
+        0
+    } else {
+        db::clickhouse_db::insert_messages(clickhouse, &rows)
+            .await
+            .unwrap_or(0)
+    };
+    total.fetch_add(inserted, Ordering::Relaxed);
+    accum.lock().unwrap().inserted += inserted;
+
+    let reaction_rows = reaction_rows_from(&page, channel_id);
+    if !reaction_rows.is_empty()
+        && let Err(e) = db::clickhouse_db::insert_reactions(clickhouse, &reaction_rows).await
+    {
+        tracing::warn!("Failed to insert reactions for {}: {}", channel_id, e);
+    }
+
+    let word_rows = word_count_rows_from(&page, channel_id);
+    if !word_rows.is_empty()
+        && let Err(e) = db::clickhouse_db::insert_word_counts(clickhouse, &word_rows).await
+    {
+        tracing::warn!("Failed to insert word counts for {}: {}", channel_id, e);
+    }
+
+    upsert_bot_users(clickhouse, &page).await;
+}
+
+/// Handles one page of thread replies: filters the root message and dupes,
+/// inserts messages, reactions, word counts, and bot users, and records the
+/// replying users.
+async fn process_thread_page(
+    clickhouse: &clickhouse::Client,
+    channel_id: &str,
+    thread_ts: &str,
+    thread_oldest: Option<&str>,
+    page: Vec<slack::SlackMessage>,
+    accum: &std::sync::Mutex<ThreadPageAccum>,
+    total: &AtomicU64,
+) {
+    let page: Vec<_> = page
+        .into_iter()
+        .filter(|m| m.ts != thread_ts)
+        .filter(|m| match thread_oldest {
+            Some(o) => m.ts.as_str() > o,
+            None => true,
+        })
+        .collect();
+
+    let mut inserted = 0u64;
+    if !page.is_empty() {
+        let rows: Vec<db::clickhouse_db::SlackMessageRow> = page
+            .iter()
+            .map(|m| db::clickhouse_db::SlackMessageRow {
+                user_id: m.user.clone(),
+                channel_id: m.channel.clone(),
+                message_ts: db::clickhouse_db::slack_ts_to_micros(&m.ts),
+                text: m.text.clone(),
+                thread_ts: m.thread_ts.clone(),
+            })
+            .collect();
+        inserted = db::clickhouse_db::insert_messages(clickhouse, &rows)
+            .await
+            .unwrap_or(0);
+        total.fetch_add(inserted, Ordering::Relaxed);
+    }
+
+    {
+        let mut a = accum.lock().unwrap();
+        a.inserted += inserted;
+        for m in &page {
+            a.reply_users.push(m.user.clone());
+        }
+    }
+
+    if inserted > 0 {
+        tracing::debug!(
+            "Inserted {} thread replies from thread {} in {}",
+            inserted,
+            thread_ts,
+            channel_id
+        );
+    }
+
+    let reply_reactions = reaction_rows_from(&page, channel_id);
+    if !reply_reactions.is_empty()
+        && let Err(e) = db::clickhouse_db::insert_reactions(clickhouse, &reply_reactions).await
+    {
+        tracing::warn!(
+            "Failed to insert reactions for thread {} in {}: {}",
+            thread_ts,
+            channel_id,
+            e
+        );
+    }
+
+    let reply_words = word_count_rows_from(&page, channel_id);
+    if !reply_words.is_empty()
+        && let Err(e) = db::clickhouse_db::insert_word_counts(clickhouse, &reply_words).await
+    {
+        tracing::warn!(
+            "Failed to insert word counts for thread {} in {}: {}",
+            thread_ts,
+            channel_id,
+            e
+        );
+    }
+
+    upsert_bot_users(clickhouse, &page).await;
 }
 
 async fn scrape_one_channel(
@@ -801,15 +976,42 @@ async fn scrape_one_channel(
         }
     };
 
-    let raw_count;
-    let messages = match user_client
-        .get_channel_history(&channel_id, oldest.as_deref())
+    let accum = std::sync::Arc::new(std::sync::Mutex::new(ChannelPageAccum {
+        inserted: 0,
+        filtered_out: 0,
+        thread_roots: std::collections::HashSet::new(),
+    }));
+    let clickedhouse = clickhouse.clone();
+    let channel_id_for_stream = channel_id.clone();
+    let oldest_for_stream = oldest.clone();
+    let total_for_stream = total.clone();
+    let touched_users_for_stream = ctx.touched_users.clone();
+    let accum_for_stream = accum.clone();
+
+    let raw_count = match user_client
+        .stream_channel_history(&channel_id, oldest.as_deref(), move |page| {
+            let accum = accum_for_stream.clone();
+            let clickhouse = clickedhouse.clone();
+            let channel_id = channel_id_for_stream.clone();
+            let oldest = oldest_for_stream.clone();
+            let total = total_for_stream.clone();
+            let touched_users = touched_users_for_stream.clone();
+            Box::pin(async move {
+                process_channel_page(
+                    &clickhouse,
+                    &channel_id,
+                    oldest.as_deref(),
+                    page,
+                    &accum,
+                    &total,
+                    &touched_users,
+                )
+                .await;
+            })
+        })
         .await
     {
-        Ok(m) => {
-            raw_count = m.len();
-            m
-        }
+        Ok(n) => n,
         Err(e) => {
             if e.to_string().contains("channel_not_found") {
                 tracing::warn!(
@@ -847,73 +1049,23 @@ async fn scrape_one_channel(
         }
     };
 
-    // Filter out messages at or before the oldest timestamp to avoid duplicates
-    let messages: Vec<_> = if let Some(ref oldest_ts) = oldest {
-        messages.into_iter().filter(|m| m.ts > *oldest_ts).collect()
-    } else {
-        messages
-    };
-    let filtered_out = raw_count.saturating_sub(messages.len());
+    let acc = Arc::try_unwrap(accum)
+        .map(|m| m.into_inner().unwrap_or_default())
+        .unwrap_or_default();
+    let inserted = acc.inserted;
+    let filtered_out = acc.filtered_out;
+    let thread_roots = std::sync::Arc::new(std::sync::Mutex::new(acc.thread_roots));
 
-    // Insert main channel messages first, before thread replies
-    let rows: Vec<db::clickhouse_db::SlackMessageRow> = messages
-        .iter()
-        .map(|m| db::clickhouse_db::SlackMessageRow {
-            user_id: m.user.clone(),
-            channel_id: m.channel.clone(),
-            message_ts: db::clickhouse_db::slack_ts_to_micros(&m.ts),
-            text: m.text.clone(),
-            thread_ts: m.thread_ts.clone(),
-        })
-        .collect();
-
-    let mut inserted = 0u64;
-    if !rows.is_empty() {
-        inserted = db::clickhouse_db::insert_messages(clickhouse, &rows)
-            .await
-            .unwrap_or(0);
-        total.fetch_add(inserted, Ordering::Relaxed);
-        tracing::info!(
-            "[token {}][{}/{}] Inserted {} new messages from {} (fetched {}, dupes filtered {})",
-            token_idx,
-            idx,
-            total_channels,
-            inserted,
-            channel_id,
-            raw_count,
-            filtered_out
-        );
-    }
-
-    let reaction_rows = reaction_rows_from(&messages, &channel_id);
-    if !reaction_rows.is_empty()
-        && let Err(e) = db::clickhouse_db::insert_reactions(clickhouse, &reaction_rows).await
-    {
-        tracing::warn!(
-            "[token {}][{}/{}] Failed to insert reactions for {}: {}",
-            token_idx,
-            idx,
-            total_channels,
-            channel_id,
-            e
-        );
-    }
-
-    let word_rows = word_count_rows_from(&messages, &channel_id);
-    if !word_rows.is_empty()
-        && let Err(e) = db::clickhouse_db::insert_word_counts(clickhouse, &word_rows).await
-    {
-        tracing::warn!(
-            "[token {}][{}/{}] Failed to insert word counts for {}: {}",
-            token_idx,
-            idx,
-            total_channels,
-            channel_id,
-            e
-        );
-    }
-
-    upsert_bot_users(clickhouse, &messages).await;
+    tracing::info!(
+        "[token {}][{}/{}] Inserted {} new messages from {} (fetched {}, dupes filtered {})",
+        token_idx,
+        idx,
+        total_channels,
+        inserted,
+        channel_id,
+        raw_count,
+        filtered_out
+    );
 
     // Mark the channel as scraped as soon as its messages are stored, so a timeout
     // later in the thread phase doesn't force a full re-scrape next pass.
@@ -928,17 +1080,6 @@ async fn scrape_one_channel(
         );
     }
 
-    // Collect unique thread parents from replies
-    let mut thread_parents: Vec<String> = Vec::new();
-    for msg in &messages {
-        if let Some(ref t) = msg.thread_ts
-            && t == &msg.ts
-            && !thread_parents.contains(t)
-        {
-            thread_parents.push(t.clone());
-        }
-    }
-
     // If the channel's first scrape's thread phase was interrupted (messages
     // stored but threads never all fetched), pull every stored thread root so
     // old threads outside the rescan window still get their replies recovered.
@@ -949,10 +1090,12 @@ async fn scrape_one_channel(
             .await
             .unwrap_or_default();
         let mut added = 0usize;
-        for root in stored_roots {
-            if !thread_parents.contains(&root) {
-                thread_parents.push(root);
-                added += 1;
+        {
+            let mut set = thread_roots.lock().unwrap();
+            for root in stored_roots {
+                if set.insert(root) {
+                    added += 1;
+                }
             }
         }
         if added > 0 {
@@ -987,46 +1130,50 @@ async fn scrape_one_channel(
         // Record the attempt up front so a rescan that hangs or fails retries at
         // most every interval instead of on every pass.
         record_thread_rescan(&channel_id);
+        let thread_roots = thread_roots.clone();
+        let clickedhouse = clickhouse.clone();
+        let channel_id_for_rescan = channel_id.clone();
         match user_client
-            .get_channel_history(&channel_id, Some(&window_ts))
+            .stream_channel_history(&channel_id, Some(&window_ts), move |page| {
+                let thread_roots = thread_roots.clone();
+                let clickhouse = clickedhouse.clone();
+                let channel_id = channel_id_for_rescan.clone();
+                Box::pin(async move {
+                    let mut found = 0usize;
+                    {
+                        let mut set = thread_roots.lock().unwrap();
+                        for msg in &page {
+                            if let Some(ref t) = msg.thread_ts
+                                && t == &msg.ts
+                                && set.insert(t.clone())
+                            {
+                                found += 1;
+                            }
+                        }
+                    }
+                    if found > 0 {
+                        tracing::info!(
+                            "Thread re-scan of {} found {} new thread root(s)",
+                            channel_id,
+                            found
+                        );
+                    }
+                    let extra_reactions = reaction_rows_from(&page, &channel_id);
+                    if !extra_reactions.is_empty()
+                        && let Err(e) =
+                            db::clickhouse_db::insert_reactions(&clickhouse, &extra_reactions).await
+                    {
+                        tracing::warn!(
+                            "Failed to insert reactions from thread re-scan of {}: {}",
+                            channel_id,
+                            e
+                        );
+                    }
+                })
+            })
             .await
         {
-            Ok(extra) => {
-                let mut found = 0usize;
-                for msg in &extra {
-                    if let Some(ref t) = msg.thread_ts
-                        && t == &msg.ts
-                        && !thread_parents.contains(t)
-                    {
-                        thread_parents.push(t.clone());
-                        found += 1;
-                    }
-                }
-                if found > 0 {
-                    tracing::info!(
-                        "[token {}][{}/{}] Thread re-scan of {} found {} new thread roots",
-                        token_idx,
-                        idx,
-                        total_channels,
-                        channel_id,
-                        found
-                    );
-                }
-                let extra_reactions = reaction_rows_from(&extra, &channel_id);
-                if !extra_reactions.is_empty()
-                    && let Err(e) =
-                        db::clickhouse_db::insert_reactions(clickhouse, &extra_reactions).await
-                {
-                    tracing::warn!(
-                        "[token {}][{}/{}] Failed to insert reactions from thread re-scan of {}: {}",
-                        token_idx,
-                        idx,
-                        total_channels,
-                        channel_id,
-                        e
-                    );
-                }
-            }
+            Ok(_) => {}
             Err(e) => {
                 tracing::warn!(
                     "[token {}][{}/{}] Failed to re-scan recent history for threads in {}: {}",
@@ -1039,6 +1186,8 @@ async fn scrape_one_channel(
             }
         }
     }
+
+    let thread_parents: Vec<String> = thread_roots.lock().unwrap().iter().cloned().collect();
 
     let mut threads_found = 0usize;
     let mut thread_replies = 0u64;
@@ -1085,9 +1234,6 @@ async fn scrape_one_channel(
     // the pass instead of per channel.
     {
         let mut set = ctx.touched_users.lock().unwrap();
-        for m in &messages {
-            set.insert(m.user.clone());
-        }
         for u in thread_users {
             set.insert(u);
         }
@@ -1195,38 +1341,50 @@ async fn scrape_thread(
         None
     };
 
+    let accum = std::sync::Arc::new(std::sync::Mutex::new(ThreadPageAccum::default()));
+    let clickedhouse = clickhouse.clone();
+    let channel_id_for_stream = channel_id.clone();
+    let thread_ts_for_stream = thread_ts.clone();
+    let thread_oldest_for_stream = thread_oldest.clone();
+    let total_for_stream = total.clone();
+    let accum_for_stream = accum.clone();
+
     match user_client
-        .fetch_thread_replies(&channel_id, &thread_ts, thread_oldest.as_deref())
+        .stream_thread_replies(
+            &channel_id,
+            &thread_ts,
+            thread_oldest.as_deref(),
+            move |page| {
+                let accum = accum_for_stream.clone();
+                let clickhouse = clickedhouse.clone();
+                let channel_id = channel_id_for_stream.clone();
+                let thread_ts = thread_ts_for_stream.clone();
+                let thread_oldest = thread_oldest_for_stream.clone();
+                let total = total_for_stream.clone();
+                Box::pin(async move {
+                    process_thread_page(
+                        &clickhouse,
+                        &channel_id,
+                        &thread_ts,
+                        thread_oldest.as_deref(),
+                        page,
+                        &accum,
+                        &total,
+                    )
+                    .await;
+                })
+            },
+        )
         .await
     {
-        Ok(replies) => {
-            let replies: Vec<_> = replies
-                .into_iter()
-                .filter(|m| m.ts != thread_ts)
-                .filter(|m| match &thread_oldest {
-                    Some(o) => m.ts > *o,
-                    None => true,
-                })
-                .collect();
+        Ok(_) => {
+            let acc = Arc::try_unwrap(accum)
+                .map(|m| m.into_inner().unwrap_or_default())
+                .unwrap_or_default();
+            let inserted = acc.inserted;
+            let reply_users = acc.reply_users;
 
-            let mut inserted = 0u64;
-            let reply_users: Vec<String> = replies.iter().map(|m| m.user.clone()).collect();
-            if !replies.is_empty() {
-                let rows: Vec<db::clickhouse_db::SlackMessageRow> = replies
-                    .iter()
-                    .map(|m| db::clickhouse_db::SlackMessageRow {
-                        user_id: m.user.clone(),
-                        channel_id: m.channel.clone(),
-                        message_ts: db::clickhouse_db::slack_ts_to_micros(&m.ts),
-                        text: m.text.clone(),
-                        thread_ts: m.thread_ts.clone(),
-                    })
-                    .collect();
-
-                inserted = db::clickhouse_db::insert_messages(clickhouse, &rows)
-                    .await
-                    .unwrap_or(0);
-                total.fetch_add(inserted, Ordering::Relaxed);
+            if inserted > 0 {
                 tracing::debug!(
                     "[token {}][{}/{}] Inserted {} thread replies from thread {} in {}",
                     token_idx,
@@ -1237,40 +1395,6 @@ async fn scrape_thread(
                     channel_id
                 );
             }
-
-            let reply_reactions = reaction_rows_from(&replies, &channel_id);
-            if !reply_reactions.is_empty()
-                && let Err(e) =
-                    db::clickhouse_db::insert_reactions(clickhouse, &reply_reactions).await
-            {
-                tracing::warn!(
-                    "[token {}][{}/{}] Failed to insert reactions for thread {} in {}: {}",
-                    token_idx,
-                    idx,
-                    total_channels,
-                    thread_ts,
-                    channel_id,
-                    e
-                );
-            }
-
-            let reply_words = word_count_rows_from(&replies, &channel_id);
-            if !reply_words.is_empty()
-                && let Err(e) =
-                    db::clickhouse_db::insert_word_counts(clickhouse, &reply_words).await
-            {
-                tracing::warn!(
-                    "[token {}][{}/{}] Failed to insert word counts for thread {} in {}: {}",
-                    token_idx,
-                    idx,
-                    total_channels,
-                    thread_ts,
-                    channel_id,
-                    e
-                );
-            }
-
-            upsert_bot_users(clickhouse, &replies).await;
 
             if thread_oldest.is_none()
                 && let Err(e) = db::clickhouse_db::mark_thread_fully_scraped(
