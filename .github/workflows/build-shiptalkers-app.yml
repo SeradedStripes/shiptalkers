@@ -4,11 +4,10 @@ on:
   push:
     branches: [main]
     paths:
-      - "shiptalkers-app/src/**"
-      - "shiptalkers-app/templates/**"
-      - "shiptalkers-app/Cargo.toml"
-      - "shiptalkers-app/Cargo.lock"
-      - "shiptalkers-app/Dockerfile"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".dockerignore"
+      - "shiptalkers-app/**"
       - ".github/workflows/build-shiptalkers-app.yml"
   workflow_dispatch:
 
@@ -54,7 +53,7 @@ jobs:
       - name: Build and push
         uses: docker/build-push-action@v7
         with:
-          context: ./shiptalkers-app
+          context: .
           file: ./shiptalkers-app/Dockerfile
           push: true
           tags: ${{ steps.meta.outputs.tags }}

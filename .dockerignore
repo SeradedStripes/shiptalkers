@@ -1,6 +1,9 @@
-target
 .git
 .github
-.env
+scripts
+target
+data
+**/.env
+**/.env.output
 *.db
 compose*.yml

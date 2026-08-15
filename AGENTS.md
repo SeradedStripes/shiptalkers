@@ -32,7 +32,7 @@ Scrapes every public channel and thread reply (plus their reactions) from Hack C
 ## Repository Layout
 
 - `Cargo.toml` (root) - Cargo workspace with a single member, `shiptalkers-app`; run `cargo`/`just` from the repo root
-- `shiptalkers-app/` - the Rust app crate: `src/`, `templates/`, `tests/`, `Cargo.toml`, `Dockerfile`, `docker-entrypoint.sh`, `.env.example`
+- `shiptalkers-app/` - the Rust app crate: `src/`, `templates/`, `tests/`, `Cargo.toml`, `Dockerfile`, `docker-entrypoint.sh`, `.env.example`; built from the workspace root (single `Cargo.lock`, context is the repo root) so the app's `Dockerfile` is used as `shiptalkers-app/Dockerfile` from `docker-compose.yml` and the CI build workflow
 - `scripts/slack_app_creation/` - standalone Rust CLI (not a workspace member) for creating the Slack app and installing tokens
 - `.github/` - `workflows/` (CI, build/deploy) and `actions/setup-rust`
 - `docker-compose.yml` - local dev setup (app + ClickHouse)

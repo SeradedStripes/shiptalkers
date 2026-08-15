@@ -1,12 +1,13 @@
 services:
   app:
     build:
-      context: ./shiptalkers-app
+      context: .
+      dockerfile: shiptalkers-app/Dockerfile
       target: dev
     ports:
       - "3000:3000"
     volumes:
-      - ./shiptalkers-app:/app
+      - .:/app
       - cargo-cache:/usr/local/cargo/registry
     env_file: ./shiptalkers-app/.env
     environment:
