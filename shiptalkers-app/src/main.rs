@@ -15,6 +15,7 @@ use tokio::net::TcpListener;
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     dotenv().ok();
+    ship_talkers::init_tls();
 
     tracing_subscriber::fmt()
         .with_env_filter(

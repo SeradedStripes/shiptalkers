@@ -224,6 +224,7 @@ pub fn router(
     settings: RuntimeSettings,
     auth_db: std::sync::Arc<crate::db::sqlite::AuthDb>,
 ) -> Router {
+    crate::init_tls();
     let state = AppState {
         clickhouse,
         http: reqwest::Client::new(),
