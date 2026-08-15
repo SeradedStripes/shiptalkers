@@ -716,6 +716,31 @@ fn word_count_rows_from(
     rows
 }
 
+/// Ensures bots that only reach us via the `bot_id` fallback (classic apps and
+/// webhook integrations have no `user` and are absent from `users.list`) have a
+/// `users` row marked `is_bot = 1`, so they stay off leaderboards and get a
+/// searchable display name. Modern bots with a `user` id are already synced.
+async fn upsert_bot_users(clickhouse: &clickhouse::Client, messages: &[slack::SlackMessage]) {
+    let bots: Vec<db::clickhouse_db::SlackUserRow> = messages
+        .iter()
+        .filter(|m| m.user.starts_with('B'))
+        .map(|m| db::clickhouse_db::SlackUserRow {
+            user_id: m.user.clone(),
+            display_name: m.bot_name.clone().unwrap_or_else(|| m.user.clone()),
+            pfp: String::new(),
+            updated: 0,
+            is_bot: 1,
+            is_deleted: 0,
+        })
+        .collect();
+    if bots.is_empty() {
+        return;
+    }
+    if let Err(e) = db::clickhouse_db::upsert_users(clickhouse, &bots).await {
+        tracing::warn!("Failed to upsert bot users: {}", e);
+    }
+}
+
 async fn scrape_one_channel(
     user_client: &slack::SlackClient,
     clickhouse: &clickhouse::Client,
@@ -886,6 +911,8 @@ async fn scrape_one_channel(
             e
         );
     }
+
+    upsert_bot_users(clickhouse, &messages).await;
 
     // Mark the channel as scraped as soon as its messages are stored, so a timeout
     // later in the thread phase doesn't force a full re-scrape next pass.
@@ -1241,6 +1268,8 @@ async fn scrape_thread(
                     e
                 );
             }
+
+            upsert_bot_users(clickhouse, &replies).await;
 
             if thread_oldest.is_none()
                 && let Err(e) = db::clickhouse_db::mark_thread_fully_scraped(

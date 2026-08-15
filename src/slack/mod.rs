@@ -25,7 +25,12 @@ pub struct SlackReaction {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SlackMessage {
+    /// Message author: the `user` field when present, else the `bot_id` for
+    /// classic-app/webhook messages that carry no user.
     pub user: String,
+    /// Display name for bot authors (from `username` / `bot_profile.name`), so
+    /// bots surfaced via the `bot_id` fallback can be stored with a real name.
+    pub bot_name: Option<String>,
     pub text: String,
     pub ts: String,
     pub channel: String,
@@ -317,47 +322,61 @@ impl SlackClient {
 
             if let Some(msgs) = resp.get("messages").and_then(|v| v.as_array()) {
                 for msg in msgs {
-                    if let (Some(user), Some(text), Some(ts)) = (
-                        msg.get("user").and_then(|v| v.as_str()),
-                        msg.get("text").and_then(|v| v.as_str()),
-                        msg.get("ts").and_then(|v| v.as_str()),
-                    ) {
-                        let thread = msg.get("thread_ts").and_then(|v| v.as_str());
-                        let reactions = msg
-                            .get("reactions")
-                            .and_then(|v| v.as_array())
-                            .map(|arr| {
-                                arr.iter()
-                                    .filter_map(|r| {
-                                        let name = r.get("name").and_then(|v| v.as_str())?;
-                                        let users = r
-                                            .get("users")
-                                            .and_then(|v| v.as_array())
-                                            .map(|u| {
-                                                u.iter()
-                                                    .filter_map(|x| {
-                                                        x.as_str().map(|s| s.to_string())
-                                                    })
-                                                    .collect()
-                                            })
-                                            .unwrap_or_default();
-                                        Some(SlackReaction {
-                                            name: name.to_string(),
-                                            users,
+                    let Some(text) = msg.get("text").and_then(|v| v.as_str()) else {
+                        continue;
+                    };
+                    let Some(ts) = msg.get("ts").and_then(|v| v.as_str()) else {
+                        continue;
+                    };
+                    // Classic-app and webhook bot messages carry `bot_id` but no
+                    // `user`; fall back to the bot id so those messages (and
+                    // threads rooted by them) are not dropped.
+                    let Some(user) = msg
+                        .get("user")
+                        .and_then(|v| v.as_str())
+                        .or_else(|| msg.get("bot_id").and_then(|v| v.as_str()))
+                    else {
+                        continue;
+                    };
+                    let thread = msg.get("thread_ts").and_then(|v| v.as_str());
+                    let bot_name = msg.get("username").and_then(|v| v.as_str()).or_else(|| {
+                        msg.get("bot_profile")
+                            .and_then(|p| p.get("name"))
+                            .and_then(|v| v.as_str())
+                    });
+                    let reactions = msg
+                        .get("reactions")
+                        .and_then(|v| v.as_array())
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|r| {
+                                    let name = r.get("name").and_then(|v| v.as_str())?;
+                                    let users = r
+                                        .get("users")
+                                        .and_then(|v| v.as_array())
+                                        .map(|u| {
+                                            u.iter()
+                                                .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                                                .collect()
                                         })
+                                        .unwrap_or_default();
+                                    Some(SlackReaction {
+                                        name: name.to_string(),
+                                        users,
                                     })
-                                    .collect()
-                            })
-                            .unwrap_or_default();
-                        messages.push(SlackMessage {
-                            user: user.to_string(),
-                            text: text.to_string(),
-                            ts: ts.to_string(),
-                            channel: channel_id.to_string(),
-                            thread_ts: thread.map(|t| t.to_string()),
-                            reactions,
-                        });
-                    }
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    messages.push(SlackMessage {
+                        user: user.to_string(),
+                        bot_name: bot_name.map(|s| s.to_string()),
+                        text: text.to_string(),
+                        ts: ts.to_string(),
+                        channel: channel_id.to_string(),
+                        thread_ts: thread.map(|t| t.to_string()),
+                        reactions,
+                    });
                 }
             }
 
