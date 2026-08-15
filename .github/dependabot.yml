@@ -11,11 +11,21 @@ updates:
           - "*"
 
   - package-ecosystem: "cargo"
-    directory: "/"
+    directory: "/shiptalkers-app"
     schedule:
       interval: "daily"
     open-pull-requests-limit: 10
     groups:
-      all-dependencies:
+      shiptalkers-app-dependencies:
+        patterns:
+          - "*"
+
+  - package-ecosystem: "cargo"
+    directory: "/scripts/slack_app_creation"
+    schedule:
+      interval: "daily"
+    open-pull-requests-limit: 10
+    groups:
+      slack_app_creation-dependencies:
         patterns:
           - "*"
