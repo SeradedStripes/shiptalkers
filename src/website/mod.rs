@@ -561,15 +561,17 @@ async fn ranked_window(
     }
 }
 
-fn resolve_user_sql(q: &str) -> String {
+fn resolve_user_sql(inner: &str, q: &str) -> String {
     // LIKE is case-sensitive in ClickHouse, so lowercase the query to match the
-    // lower(display_name) comparison case-insensitively.
+    // lower(display_name) comparison case-insensitively. Only users already on
+    // the leaderboard are candidates, so a similarly-named user without scores
+    // can't shadow the one that's actually ranked.
     let eq = sql_escape(&q.to_lowercase());
     format!(
-        "SELECT user_id AS id FROM users FINAL \
-         WHERE is_bot = 0 AND is_deleted = 0 \
-           AND lower(display_name) LIKE '%{}%' \
-         ORDER BY (lower(display_name) = '{}') DESC, lower(display_name) \
+        "SELECT u.user_id AS id FROM users FINAL u \
+         JOIN ({inner}) lb ON u.user_id = lb.id \
+         WHERE lower(u.display_name) LIKE '%{}%' \
+         ORDER BY (lower(u.display_name) = '{}') DESC, lower(u.display_name) \
          LIMIT 1",
         eq, eq
     )
@@ -603,8 +605,14 @@ async fn get_leaderboard_category(
                  FROM user_scores FINAL \
                  WHERE {EXCLUDE_BOTS_DELETED}"
             );
-            let (ranked, notice) =
-                ranked_window(ch, &inner, q, parsed_rank, Some(&resolve_user_sql(q))).await;
+            let (ranked, notice) = ranked_window(
+                ch,
+                &inner,
+                q,
+                parsed_rank,
+                Some(&resolve_user_sql(&inner, q)),
+            )
+            .await;
             let rows = leaderboard_entries(
                 ch,
                 ranked,
@@ -637,8 +645,14 @@ async fn get_leaderboard_category(
                      GROUP BY user_id \
                  )"
             );
-            let (ranked, notice) =
-                ranked_window(ch, &inner, q, parsed_rank, Some(&resolve_user_sql(q))).await;
+            let (ranked, notice) = ranked_window(
+                ch,
+                &inner,
+                q,
+                parsed_rank,
+                Some(&resolve_user_sql(&inner, q)),
+            )
+            .await;
             let rows =
                 leaderboard_entries(ch, ranked, LeaderboardSource::Users, fmt_minutes, None).await;
             (
@@ -657,9 +671,10 @@ async fn get_leaderboard_category(
                  FROM channel_scores FINAL";
             let eq = sql_escape(&q.to_lowercase());
             let resolve = format!(
-                "SELECT channel_id AS id FROM slack_channels FINAL \
-                 WHERE lower(name) LIKE '%{}%' \
-                 ORDER BY (lower(name) = '{}') DESC, lower(name) \
+                "SELECT c.channel_id AS id FROM slack_channels FINAL c \
+                 JOIN ({inner}) lb ON c.channel_id = lb.id \
+                 WHERE lower(c.name) LIKE '%{}%' \
+                 ORDER BY (lower(c.name) = '{}') DESC, lower(c.name) \
                  LIMIT 1",
                 eq, eq
             );
