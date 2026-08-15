@@ -289,8 +289,7 @@ pub async fn auth_hackatime_callback(
     let clickhouse = state.clickhouse.clone();
     let slack_id = session.slack_id.clone();
     tokio::spawn(async move {
-        if let Err(e) = sync_coding_activity(&clickhouse, &http, &slack_id, Some(&token)).await
-        {
+        if let Err(e) = sync_coding_activity(&clickhouse, &http, &slack_id, Some(&token)).await {
             tracing::warn!("Coding activity sync failed for {}: {}", slack_id, e);
         }
     });

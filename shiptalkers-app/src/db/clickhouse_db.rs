@@ -1230,10 +1230,12 @@ pub async fn refresh_daily_stats(client: &Client) -> Result<(), Box<dyn std::err
         .await?;
     let mut insert = client.insert::<DailyStatsRow>("daily_stats").await?;
     for r in &slack {
-        insert.write(&DailyStatsRow {
-            date: r.date,
-            slack_secs: r.total_time,
-        }).await?;
+        insert
+            .write(&DailyStatsRow {
+                date: r.date,
+                slack_secs: r.total_time,
+            })
+            .await?;
     }
     insert.end().await?;
     Ok(())
