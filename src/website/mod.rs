@@ -562,7 +562,9 @@ async fn ranked_window(
 }
 
 fn resolve_user_sql(q: &str) -> String {
-    let eq = sql_escape(q);
+    // LIKE is case-sensitive in ClickHouse, so lowercase the query to match the
+    // lower(display_name) comparison case-insensitively.
+    let eq = sql_escape(&q.to_lowercase());
     format!(
         "SELECT user_id AS id FROM users FINAL \
          WHERE is_bot = 0 AND is_deleted = 0 \
@@ -653,7 +655,7 @@ async fn get_leaderboard_category(
                  toNullable(toInt64(messages)) AS extra, \
                  row_number() OVER (ORDER BY total_time DESC) AS rank \
                  FROM channel_scores FINAL";
-            let eq = sql_escape(q);
+            let eq = sql_escape(&q.to_lowercase());
             let resolve = format!(
                 "SELECT channel_id AS id FROM slack_channels FINAL \
                  WHERE lower(name) LIKE '%{}%' \
@@ -707,7 +709,8 @@ async fn get_leaderboard_category(
                     .await;
                 (cached, None)
             } else {
-                let eq = sql_escape(q);
+                // Words are stored lowercase, so match the query case-insensitively.
+                let eq = sql_escape(&q.to_lowercase());
                 let resolve = format!(
                     "SELECT id FROM ({inner}) WHERE id = '{}' OR id LIKE '{}%' \
                      ORDER BY (id = '{}') DESC LIMIT 1",
