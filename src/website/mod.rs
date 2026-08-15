@@ -463,7 +463,7 @@ async fn get_leaderboard(
     Ok(Html(html))
 }
 
-const RANK_WINDOW: u64 = 10;
+const RANK_WINDOW: u64 = 3;
 
 fn sql_escape(s: &str) -> String {
     s.replace('\\', "\\\\").replace('\'', "\\'")
