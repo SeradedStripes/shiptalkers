@@ -707,14 +707,55 @@ async fn get_leaderboard_category(
                 notice,
             )
         }
-        "combined" => (
-            "Top Combined".into(),
-            String::new(),
-            None,
-            true,
-            Vec::new(),
-            None,
-        ),
+        "combined" => {
+            // Slack Time seconds plus Coding Time (minutes) converted to seconds,
+            // summed per user and ranked. Bots/deleted users are excluded before
+            // ranking so ranks stay gap-free.
+            let inner = format!(
+                "SELECT user_id AS id, value, CAST(NULL AS Nullable(Int64)) AS extra, rank \
+                 FROM ( \
+                     SELECT user_id, value, row_number() OVER (ORDER BY value DESC) AS rank \
+                     FROM ( \
+                         SELECT user_id, sum(v) AS value \
+                         FROM ( \
+                             SELECT user_id, toInt64(total_time) AS v \
+                             FROM user_scores FINAL \
+                             UNION ALL \
+                             SELECT user_id, toInt64(m * 60) AS v \
+                             FROM ( \
+                                 SELECT user_id, sum(minutes) AS m \
+                                 FROM ( \
+                                     SELECT user_id, date, max(minutes) AS minutes \
+                                     FROM coding_activity \
+                                     GROUP BY user_id, date \
+                                 ) \
+                                 GROUP BY user_id \
+                             ) \
+                         ) \
+                         GROUP BY user_id \
+                     ) \
+                     WHERE {EXCLUDE_BOTS_DELETED} \
+                 )"
+            );
+            let (ranked, notice) = ranked_window(
+                ch,
+                &inner,
+                q,
+                parsed_rank,
+                Some(&resolve_user_sql(&inner, q)),
+            )
+            .await;
+            let rows =
+                leaderboard_entries(ch, ranked, LeaderboardSource::Users, fmt_duration, None).await;
+            (
+                "Top Combined".into(),
+                "Combined Time".into(),
+                None,
+                false,
+                rows,
+                notice,
+            )
+        }
         "words" => {
             let inner = "SELECT word AS id, toInt64(cnt) AS value, \
                  CAST(NULL AS Nullable(Int64)) AS extra, rank \
