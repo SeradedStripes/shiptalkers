@@ -3,3 +3,7 @@ target/
 **/.env.output
 ship-talkers.db
 data/
+
+# Added by cargo
+
+/target
