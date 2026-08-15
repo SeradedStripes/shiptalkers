@@ -42,7 +42,7 @@
                     <tr><td colspan="4" class="empty">No entries yet</td></tr>
                     {% else %}
                     {% for e in rows %}
-                    <tr>
+                    <tr{% if e.highlight %} class="highlighted"{% endif %}>
                         <td>{{ e.rank }}</td>
                         <td><span class="user-cell">{% if !e.pfp.is_empty() %}<img class="avatar" src="{{ e.pfp }}" alt="">{% endif %}{% if e.linked %}<a href="/stats/{{ e.user_id }}">{{ e.display_name }}</a>{% else %}{{ e.display_name }}{% endif %}</span></td>
                         <td>{{ e.value }}</td>

@@ -63,6 +63,7 @@ struct RankedRow {
     value: i64,
     extra: Option<i64>,
     rank: u64,
+    highlight: bool,
 }
 
 #[derive(Clone)]
@@ -204,6 +205,7 @@ pub struct LeaderboardEntry {
     pub extra: String,
     pub linked: bool,
     pub rank: u64,
+    pub highlight: bool,
 }
 
 pub struct SearchResult {
@@ -515,6 +517,7 @@ async fn fetch_rank_window(ch: &Client, inner: &str, lo: u64, hi: u64) -> Vec<Ra
         value: r.value,
         extra: r.extra,
         rank: r.rank,
+        highlight: false,
     })
     .collect()
 }
@@ -538,7 +541,11 @@ async fn ranked_window(
     {
         let lo = n.saturating_sub(RANK_WINDOW);
         let hi = n + RANK_WINDOW;
-        return (fetch_rank_window(ch, inner, lo, hi).await, None);
+        let mut rows = fetch_rank_window(ch, inner, lo, hi).await;
+        if let Some(r) = rows.iter_mut().find(|r| r.rank == n) {
+            r.highlight = true;
+        }
+        return (rows, None);
     }
     let id = match resolve_sql {
         Some(sql) => resolve_id(ch, sql).await,
@@ -552,7 +559,11 @@ async fn ranked_window(
         Some(rank) => {
             let lo = rank.saturating_sub(RANK_WINDOW);
             let hi = rank + RANK_WINDOW;
-            (fetch_rank_window(ch, inner, lo, hi).await, None)
+            let mut rows = fetch_rank_window(ch, inner, lo, hi).await;
+            if let Some(r) = rows.iter_mut().find(|r| r.id == id) {
+                r.highlight = true;
+            }
+            (rows, None)
         }
         None => (
             Vec::new(),
@@ -743,6 +754,7 @@ async fn get_leaderboard_category(
                     extra: String::new(),
                     linked: false,
                     rank: r.rank,
+                    highlight: r.highlight,
                 })
                 .collect();
             (
@@ -872,6 +884,7 @@ async fn leaderboard_entries(
                     .unwrap_or_default(),
                 linked: true,
                 rank: r.rank,
+                highlight: r.highlight,
             }
         })
         .collect()
