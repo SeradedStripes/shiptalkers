@@ -390,6 +390,19 @@ pub async fn init_tables(client: &Client) -> Result<(), Box<dyn std::error::Erro
         .execute()
         .await?;
 
+    // Records which one-time backfills have completed (currently `word_counts`),
+    // so a restart never re-runs a full-table scan that already finished.
+    client
+        .query(
+            "CREATE TABLE IF NOT EXISTS backfill_meta (
+                name String,
+                done UInt8
+            ) ENGINE = ReplacingMergeTree()
+            ORDER BY name",
+        )
+        .execute()
+        .await?;
+
     Ok(())
 }
 
@@ -433,14 +446,20 @@ pub async fn backfill_slack_messages_by_user(
 
 /// Builds word_counts for every existing slack_messages row once, so the Top
 /// Words leaderboard is all-time on first deploy. New inserts keep it in sync
-/// from then on; it only runs when the table is empty.
+/// from then on. Completion is recorded in `backfill_meta`, so the full-table
+/// scan runs exactly once and never again on later restarts; a non-empty
+/// `word_counts` (e.g. deployments that predate the marker) counts as done too.
 pub async fn backfill_word_counts(client: &Client) -> Result<(), Box<dyn std::error::Error>> {
+    if word_counts_backfilled(client).await {
+        return Ok(());
+    }
     let count: u64 = client
         .query("SELECT count() FROM word_counts")
         .fetch_one()
         .await
         .unwrap_or(0);
     if count > 0 {
+        mark_word_counts_backfilled(client).await?;
         return Ok(());
     }
     tracing::info!("Backfilling word_counts from slack_messages...");
@@ -458,7 +477,44 @@ pub async fn backfill_word_counts(client: &Client) -> Result<(), Box<dyn std::er
         )
         .execute()
         .await?;
+    mark_word_counts_backfilled(client).await?;
     tracing::info!("word_counts backfill complete");
+    Ok(())
+}
+
+/// Whether the word_counts one-time backfill has already completed, read from
+/// `backfill_meta`. A transient DB failure falls back to false, which only
+/// re-attempts the backfill.
+async fn word_counts_backfilled(client: &Client) -> bool {
+    #[derive(Debug, Row, Deserialize)]
+    struct BackfillMetaRead {
+        done: u8,
+    }
+    client
+        .query("SELECT done FROM backfill_meta FINAL WHERE name = 'word_counts'")
+        .fetch_optional()
+        .await
+        .ok()
+        .flatten()
+        .map(|r: BackfillMetaRead| r.done == 1)
+        .unwrap_or(false)
+}
+
+/// Records that the word_counts backfill is complete.
+async fn mark_word_counts_backfilled(client: &Client) -> Result<(), Box<dyn std::error::Error>> {
+    #[derive(Debug, Row, Serialize)]
+    struct BackfillMetaRow {
+        name: String,
+        done: u8,
+    }
+    let mut insert = client.insert::<BackfillMetaRow>("backfill_meta").await?;
+    insert
+        .write(&BackfillMetaRow {
+            name: "word_counts".to_string(),
+            done: 1,
+        })
+        .await?;
+    insert.end().await?;
     Ok(())
 }
 
