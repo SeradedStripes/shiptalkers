@@ -16,7 +16,7 @@ const SESSION_COOKIE: &str = "st_session";
 const STATE_COOKIE: &str = "st_state";
 const START_DATE: &str = "2024-01-01";
 
-/// Per-user lock so a link-time full sync and the hourly resync_all never run
+/// Per-user lock so a link-time full sync and the resync_all pass never run
 /// clear+insert for the same user at the same time. Concurrent syncs were
 /// inserting duplicate rows into coding_activity.
 static CODING_SYNC_LOCKS: OnceLock<std::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>> =
@@ -289,8 +289,7 @@ pub async fn auth_hackatime_callback(
     let clickhouse = state.clickhouse.clone();
     let slack_id = session.slack_id.clone();
     tokio::spawn(async move {
-        if let Err(e) =
-            sync_coding_activity(&clickhouse, &http, &slack_id, &token, START_DATE).await
+        if let Err(e) = sync_coding_activity(&clickhouse, &http, &slack_id, Some(&token)).await
         {
             tracing::warn!("Coding activity sync failed for {}: {}", slack_id, e);
         }
@@ -323,125 +322,123 @@ pub async fn auth_hackatime_disconnect(
     Ok(Redirect::to("/link"))
 }
 
+/// Why a coding sync could not complete. `PrivateProfile` and `NoAccount` are
+/// permanent given the current account state (the resync loop records them so
+/// it does not retry every cycle); `Message` is transient.
+#[derive(Debug)]
+pub enum SyncFailure {
+    /// Public stats are disabled for this user and there is no token to fall
+    /// back on, so only the OAuth path could read them.
+    PrivateProfile,
+    /// No hackatime account exists for this Slack UID.
+    NoAccount,
+    /// Transient failure (rate limit, outage, bad response, ...).
+    Message(String),
+}
+
+impl std::fmt::Display for SyncFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SyncFailure::PrivateProfile => write!(f, "profile is not public"),
+            SyncFailure::NoAccount => write!(f, "no hackatime account"),
+            SyncFailure::Message(m) => write!(f, "{m}"),
+        }
+    }
+}
+
+/// Fetches the total coding minutes for one user and stores it. With a token
+/// the stats endpoint is called authenticated (so private profiles of the
+/// token's owner work too); without one, the public stats API (keyed by Slack
+/// UID) is used, which only works for public profiles. The fetch runs before
+/// any DB write, so a failed sync leaves the old total intact.
 pub async fn sync_coding_activity(
     clickhouse: &clickhouse::Client,
     http: &reqwest::Client,
     slack_id: &str,
-    access_token: &str,
-    start_date: &str,
-) -> Result<(), String> {
+    access_token: Option<&str>,
+) -> Result<(), SyncFailure> {
     let lock = coding_sync_lock(slack_id);
     let _guard = lock.lock().await;
     let today = auth::today_utc();
 
-    let mut dates = Vec::new();
-    let mut date = start_date.to_string();
-    while date <= today {
-        dates.push(date.clone());
-        date = auth::next_date(&date);
-    }
-
-    let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(24));
-    let fetches: Vec<_> = dates
-        .into_iter()
-        .map(|date| {
-            let sem = sem.clone();
-            async move {
-                let _permit = sem.acquire().await.expect("semaphore");
-                let minutes = auth::fetch_hours_for_day(http, access_token, &date).await;
-                (date, minutes)
-            }
-        })
-        .collect();
-
-    let mut rows = Vec::new();
-    for (date, minutes) in futures_util::future::join_all(fetches).await {
-        let minutes = match minutes {
-            Ok(m) => m,
-            Err((status, message)) => {
+    let minutes = match auth::fetch_total_minutes(http, slack_id, access_token, START_DATE).await {
+        Ok(m) => m,
+        Err((status, message)) => match (access_token, status) {
+            (Some(_), Some(401 | 403)) => {
                 // A 401/403 can mean a dead token or an outage in front of
                 // hackatime (maintenance, auth proxy). Confirm the token is
                 // really dead with the me endpoint before removing the link;
                 // otherwise keep it and let the next sync retry. Any other
                 // failure (HTTP 5xx, or no response at all) means hackatime is
                 // simply down, so the link is kept.
-                if matches!(status, Some(401 | 403)) {
-                    match auth::fetch_hackatime_me(http, access_token).await {
-                        Err((Some(401 | 403), _)) => {
-                            tracing::warn!(
-                                "Hackatime token for {} is invalid, removing link",
-                                slack_id
-                            );
-                            clickhouse_db::delete_hackatime_connection(clickhouse, slack_id)
-                                .await
-                                .map_err(|e| format!("delete stale hackatime connection: {}", e))?;
-                            return Ok(());
-                        }
-                        _ => {
-                            return Err(format!(
-                                "hackatime returned 401/403 for {} but the me check did not confirm \
-                                 a dead token (likely down), keeping link: {}",
-                                date, message
-                            ));
-                        }
+                match auth::fetch_hackatime_me(http, access_token.unwrap()).await {
+                    Err((Some(401 | 403), _)) => {
+                        tracing::warn!(
+                            "Hackatime token for {} is invalid, removing link",
+                            slack_id
+                        );
+                        clickhouse_db::delete_hackatime_connection(clickhouse, slack_id)
+                            .await
+                            .map_err(|e| {
+                                SyncFailure::Message(format!(
+                                    "delete stale hackatime connection: {}",
+                                    e
+                                ))
+                            })?;
+                        return Ok(());
+                    }
+                    _ => {
+                        return Err(SyncFailure::Message(format!(
+                            "hackatime returned 401/403 but the me check did not confirm a dead \
+                             token (likely down), keeping link: {message}"
+                        )));
                     }
                 }
-                let reason = match status {
-                    Some(code) => format!("HTTP {code}"),
-                    None => "unreachable".to_string(),
-                };
-                return Err(format!(
-                    "hackatime {reason} for {} (down, keeping link): {}",
-                    date, message
-                ));
             }
-        };
-        if let Some(minutes) = minutes.filter(|&m| m > 0) {
-            let date = clickhouse_db::parse_date(&date)
-                .ok_or_else(|| format!("invalid date from hackatime: {}", date))?;
-            rows.push(clickhouse_db::CodingActivityRow {
-                user_id: slack_id.to_string(),
-                date,
-                minutes: minutes as i64,
-                language: None,
-            });
-        }
-    }
-
-    clickhouse_db::clear_coding_activity_from(clickhouse, slack_id, start_date)
-        .await
-        .map_err(|e| e.to_string())?;
-    clickhouse_db::insert_coding_activity(clickhouse, &rows)
-        .await
-        .map_err(|e| e.to_string())?;
+            (None, Some(403)) => return Err(SyncFailure::PrivateProfile),
+            (None, Some(404)) => return Err(SyncFailure::NoAccount),
+            (_, Some(code)) => {
+                return Err(SyncFailure::Message(format!(
+                    "hackatime HTTP {code} (down, keeping data): {message}"
+                )));
+            }
+            (_, None) => {
+                return Err(SyncFailure::Message(format!(
+                    "hackatime unreachable (down, keeping data): {message}"
+                )));
+            }
+        },
+    };
 
     let conn = clickhouse_db::HackatimeConnectionRow {
         slack_id: slack_id.to_string(),
-        access_token: access_token.to_string(),
+        access_token: access_token.unwrap_or("").to_string(),
         last_synced_date: Some(today),
+        status: String::new(),
+        total_minutes: minutes,
     };
     clickhouse_db::update_hackatime_connection(clickhouse, &conn)
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| SyncFailure::Message(e.to_string()))?;
 
-    if rows.is_empty() {
-        tracing::debug!(
-            "Synced 0 days of coding activity for {} from {}",
-            slack_id,
-            start_date
-        );
-    } else {
-        tracing::info!(
-            "Synced {} days of coding activity for {} from {}",
-            rows.len(),
-            slack_id,
-            start_date
-        );
-    }
+    tracing::info!("Synced {} coding minutes for {}", minutes, slack_id);
     Ok(())
 }
 
+const NO_ACCOUNT_RETRY_DAYS: u64 = 30;
+
+/// Periodic hackatime resync over every user (every 30m). Users with an OAuth
+/// connection sync through it; everyone else is fetched from the public stats
+/// API by Slack UID. Public profiles that 404 (no account) or 403 (private,
+/// no token to fall back on) are recorded so they are not retried every cycle.
 pub async fn resync_all(clickhouse: &clickhouse::Client, http: &reqwest::Client) {
+    let user_ids = match clickhouse_db::get_coding_user_ids(clickhouse).await {
+        Ok(ids) => ids,
+        Err(e) => {
+            tracing::error!("Failed to list users for hackatime resync: {}", e);
+            return;
+        }
+    };
     let connections = match clickhouse_db::get_hackatime_connections(clickhouse).await {
         Ok(c) => c,
         Err(e) => {
@@ -449,19 +446,74 @@ pub async fn resync_all(clickhouse: &clickhouse::Client, http: &reqwest::Client)
             return;
         }
     };
-    for conn in connections {
-        let start = match conn.last_synced_date {
-            Some(ref d) if !d.is_empty() => auth::next_date(d),
-            _ => START_DATE.to_string(),
-        };
-        if let Err(e) =
-            sync_coding_activity(clickhouse, http, &conn.slack_id, &conn.access_token, &start).await
-        {
-            tracing::warn!(
-                "Incremental coding sync failed for {}: {}",
-                conn.slack_id,
-                e
-            );
+    let conns: HashMap<String, clickhouse_db::HackatimeConnectionReadRow> = connections
+        .into_iter()
+        .map(|c| (c.slack_id.clone(), c))
+        .collect();
+    let retry_cutoff = auth::date_days_ago(NO_ACCOUNT_RETRY_DAYS);
+    let mut synced = 0u64;
+    let mut skipped = 0u64;
+    for user_id in user_ids {
+        let conn = conns.get(&user_id);
+        if let Some(c) = conn {
+            if c.status == "no_account" {
+                let probed = c.last_synced_date.as_deref().unwrap_or("");
+                if probed >= retry_cutoff.as_str() {
+                    skipped += 1;
+                    continue;
+                }
+            }
+            if c.status == "private" && c.access_token.is_empty() {
+                skipped += 1;
+                continue;
+            }
         }
+        let token = conn.and_then(|c| {
+            if c.access_token.is_empty() {
+                None
+            } else {
+                Some(c.access_token.as_str())
+            }
+        });
+        let result = sync_coding_activity(clickhouse, http, &user_id, token).await;
+        match result {
+            Ok(()) => synced += 1,
+            Err(SyncFailure::PrivateProfile) => {
+                record_hackatime_status(clickhouse, &user_id, "private").await;
+                tracing::info!("{} has a private hackatime profile, needs OAuth", user_id);
+            }
+            Err(SyncFailure::NoAccount) => {
+                record_hackatime_status(clickhouse, &user_id, "no_account").await;
+                tracing::debug!("{} has no hackatime account", user_id);
+            }
+            Err(SyncFailure::Message(e)) => {
+                tracing::warn!("Coding sync failed for {}: {}", user_id, e);
+            }
+        }
+    }
+    tracing::info!(
+        "hackatime resync pass done: {} synced, {} skipped (no account / private)",
+        synced,
+        skipped
+    );
+}
+
+/// Records why a public-only user cannot be synced (or that a user just
+/// disappeared from hackatime) so the resync loop skips them until the state
+/// changes.
+async fn record_hackatime_status(clickhouse: &clickhouse::Client, slack_id: &str, status: &str) {
+    if let Err(e) = clickhouse_db::update_hackatime_connection(
+        clickhouse,
+        &clickhouse_db::HackatimeConnectionRow {
+            slack_id: slack_id.to_string(),
+            access_token: String::new(),
+            last_synced_date: Some(auth::today_utc()),
+            status: status.to_string(),
+            total_minutes: 0,
+        },
+    )
+    .await
+    {
+        tracing::warn!("Failed to record hackatime status {status} for {slack_id}: {e}");
     }
 }

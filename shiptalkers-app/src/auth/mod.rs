@@ -12,7 +12,7 @@ const HCA_ME_URL: &str = "https://auth.hackclub.com/api/v1/me";
 const HACKATIME_AUTHORIZE_URL: &str = "https://hackatime.hackclub.com/oauth/authorize";
 const HACKATIME_TOKEN_URL: &str = "https://hackatime.hackclub.com/oauth/token";
 const HACKATIME_ME_URL: &str = "https://hackatime.hackclub.com/api/v1/authenticated/me";
-const HACKATIME_HOURS_URL: &str = "https://hackatime.hackclub.com/api/v1/authenticated/hours";
+const HACKATIME_USER_STATS_URL: &str = "https://hackatime.hackclub.com/api/v1/users";
 
 #[derive(Clone)]
 pub struct AuthConfig {
@@ -208,20 +208,30 @@ pub async fn fetch_hackatime_me(
     Ok(me.slack_id)
 }
 
-/// First tuple element is the HTTP status when the failure was an HTTP error,
-/// None for transport or parse failures.
-pub async fn fetch_hours_for_day(
+/// Fetches the total coding minutes for a Slack user from hackatime. The stats
+/// endpoint is keyed by Slack UID; unauthenticated it only works for profiles
+/// with public stats lookup enabled, and with a token it also reads the token
+/// owner's private profile. Returns the total seconds in `[start_date, today)`
+/// as minutes. A 403 means public stats are disabled (only reachable on the
+/// unauthenticated path) and a 404 means no hackatime account exists for this
+/// Slack UID; both must be distinguished by the caller.
+pub async fn fetch_total_minutes(
     client: &reqwest::Client,
-    access_token: &str,
-    date: &str,
-) -> Result<Option<u64>, (Option<u16>, String)> {
-    let response = client
-        .get(HACKATIME_HOURS_URL)
-        .bearer_auth(access_token)
-        .query(&[("start_date", date), ("end_date", date)])
-        .send()
-        .await
-        .map_err(|e| (None, e.to_string()))?;
+    slack_uid: &str,
+    token: Option<&str>,
+    start_date: &str,
+) -> Result<u64, (Option<u16>, String)> {
+    let mut request = client
+        .get(format!("{HACKATIME_USER_STATS_URL}/{slack_uid}/stats"))
+        .query(&[
+            ("total_seconds", "true"),
+            ("start_date", start_date),
+            ("end_date", &today_utc()),
+        ]);
+    if let Some(tok) = token {
+        request = request.bearer_auth(tok);
+    }
+    let response = request.send().await.map_err(|e| (None, e.to_string()))?;
     let status = response.status();
     let body = response
         .text()
@@ -233,40 +243,7 @@ pub async fn fetch_hours_for_day(
     let hours: HoursResponse =
         serde_json::from_str(&body).map_err(|e| (None, format!("bad JSON ({body:?}): {e}")))?;
     let seconds = hours.total_seconds.unwrap_or(0.0);
-    Ok(Some((seconds / 60.0).round() as u64))
-}
-
-pub fn next_date(date: &str) -> String {
-    let mut parts = date
-        .split('-')
-        .map(|p| p.parse::<u32>().expect("date component"));
-    let (mut year, mut month, mut day) = (
-        parts.next().expect("year"),
-        parts.next().expect("month"),
-        parts.next().expect("day"),
-    );
-    day += 1;
-    let days_in_month = match month {
-        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
-        4 | 6 | 9 | 11 => 30,
-        2 => {
-            if (year % 4 == 0 && year % 100 != 0) || year % 400 == 0 {
-                29
-            } else {
-                28
-            }
-        }
-        _ => 30,
-    };
-    if day > days_in_month {
-        day = 1;
-        month += 1;
-        if month > 12 {
-            month = 1;
-            year += 1;
-        }
-    }
-    format!("{year:04}-{month:02}-{day:02}")
+    Ok((seconds / 60.0).round() as u64)
 }
 
 pub fn today_utc() -> String {
@@ -279,6 +256,16 @@ pub fn today_utc() -> String {
     let (mut year, month, day) = civil_from_days(days as i64);
     let _ = secs_of_day;
     let _ = &mut year;
+    format!("{year:04}-{month:02}-{day:02}")
+}
+
+/// UTC date `days` days before today, e.g. the no-account retry cutoff.
+pub fn date_days_ago(days: u64) -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let (year, month, day) = civil_from_days((secs / 86400) as i64 - days as i64);
     format!("{year:04}-{month:02}-{day:02}")
 }
 

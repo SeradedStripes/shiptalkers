@@ -443,7 +443,7 @@ async fn handle_message(
 
 async fn query_stats(clickhouse: &clickhouse::Client, user: &str, range: &TimeRange) -> (u64, u64) {
     let slack = query_slack_seconds(clickhouse, user, range).await;
-    let coding = query_coding_seconds(clickhouse, user, range).await;
+    let coding = query_coding_seconds(clickhouse, user).await;
     (slack, coding)
 }
 
@@ -516,33 +516,15 @@ async fn query_slack_seconds(
         .unwrap_or(0)
 }
 
-async fn query_coding_seconds(
-    clickhouse: &clickhouse::Client,
-    user: &str,
-    range: &TimeRange,
-) -> u64 {
-    let mut sql = String::from(
-        "SELECT sum(minutes) FROM (
-             SELECT max(minutes) AS minutes
-             FROM coding_activity
-             WHERE user_id = ?",
-    );
-    if range.start_date().is_some() {
-        sql.push_str(" AND date >= ?");
-    }
-    if range.end_date().is_some() {
-        sql.push_str(" AND date < ?");
-    }
-    sql.push_str(" GROUP BY date )");
-    let mut query = clickhouse.query(&sql);
-    query = query.bind(user);
-    if let Some(start_date) = range.start_date() {
-        query = query.bind(&start_date);
-    }
-    if let Some(end_date) = range.end_date() {
-        query = query.bind(&end_date);
-    }
-    let minutes: i64 = query.fetch_one().await.unwrap_or(0);
+/// Total coding time for a user (hackatime sync stores one total per user, not
+/// per-day, so the requested range does not apply to coding).
+async fn query_coding_seconds(clickhouse: &clickhouse::Client, user: &str) -> u64 {
+    let minutes: i64 = clickhouse
+        .query("SELECT total_minutes FROM hackatime_connections FINAL WHERE slack_id = ?")
+        .bind(user)
+        .fetch_one()
+        .await
+        .unwrap_or(0);
     minutes.max(0) as u64 * 60
 }
 

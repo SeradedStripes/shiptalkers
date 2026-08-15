@@ -165,22 +165,6 @@ pub async fn init_tables(client: &Client) -> Result<(), Box<dyn std::error::Erro
 
     client
         .query(
-            "CREATE TABLE IF NOT EXISTS coding_activity (
-                user_id String,
-                date Date,
-                minutes Int64,
-                language Nullable(String)
-            ) ENGINE = ReplacingMergeTree()
-            ORDER BY (user_id, date)",
-        )
-        .execute()
-        .await?;
-
-    // Migrate date from String ("YYYY-MM-DD") to Date
-    migrate_coding_activity_date(client).await?;
-
-    client
-        .query(
             "CREATE TABLE IF NOT EXISTS scrape_checkpoints (
                 channel_id String,
                 fully_scraped UInt8
@@ -282,6 +266,27 @@ pub async fn init_tables(client: &Client) -> Result<(), Box<dyn std::error::Erro
     client
         .query(
             "ALTER TABLE hackatime_connections ADD COLUMN IF NOT EXISTS last_synced_date Nullable(String)",
+        )
+        .execute()
+        .await
+        .ok();
+
+    // Sync state for users without an OAuth connection: '' when synced via the
+    // public API, 'private' when the profile hides public stats (no token to
+    // fall back on), 'no_account' when hackatime has no user for the Slack UID.
+    client
+        .query(
+            "ALTER TABLE hackatime_connections ADD COLUMN IF NOT EXISTS status String DEFAULT ''",
+        )
+        .execute()
+        .await
+        .ok();
+
+    // Per-user total coding minutes fetched from hackatime (public API or
+    // OAuth). There is no per-day coding data anymore, just this total.
+    client
+        .query(
+            "ALTER TABLE hackatime_connections ADD COLUMN IF NOT EXISTS total_minutes UInt64 DEFAULT 0",
         )
         .execute()
         .await
@@ -445,20 +450,25 @@ pub async fn init_tables(client: &Client) -> Result<(), Box<dyn std::error::Erro
         .execute()
         .await?;
 
-    // Per-day totals for the stats page charts (coding minutes and Slack Time
-    // seconds, both over all history). Refreshed on a background schedule by
-    // `refresh_daily_stats` so the sessionizer never runs on a page load.
+    // Per-day Slack Time seconds for the stats page chart. Refreshed on a
+    // background schedule by `refresh_daily_stats` so the sessionizer never runs
+    // on a page load. Coding time stopped being per-day, so the old
+    // `coding_minutes` column is dropped on existing deployments.
     client
         .query(
             "CREATE TABLE IF NOT EXISTS daily_stats (
                 date Date,
-                coding_minutes UInt64,
                 slack_secs UInt64
             ) ENGINE = ReplacingMergeTree()
             ORDER BY date",
         )
         .execute()
         .await?;
+    client
+        .query("ALTER TABLE daily_stats DROP COLUMN IF EXISTS coding_minutes")
+        .execute()
+        .await
+        .ok();
 
     Ok(())
 }
@@ -884,84 +894,6 @@ async fn migrate_slack_messages_ts(client: &Client) -> Result<(), Box<dyn std::e
     Ok(())
 }
 
-async fn migrate_coding_activity_date(client: &Client) -> Result<(), Box<dyn std::error::Error>> {
-    #[derive(Debug, Row, Deserialize)]
-    struct TypeRow {
-        type_: String,
-    }
-
-    let current: Option<TypeRow> = client
-        .query(
-            "SELECT type AS type_ FROM system.columns
-             WHERE database = currentDatabase() AND table = 'coding_activity' AND name = 'date'",
-        )
-        .fetch_optional()
-        .await?;
-
-    if current
-        .as_ref()
-        .map(|r| r.type_.as_str() == "Date")
-        .unwrap_or(false)
-    {
-        return Ok(());
-    }
-    if current.is_none() {
-        return Ok(());
-    }
-
-    tracing::info!("Migrating coding_activity.date to Date...");
-
-    client
-        .query("DROP TABLE IF EXISTS coding_activity_new")
-        .execute()
-        .await?;
-    client
-        .query(
-            "CREATE TABLE IF NOT EXISTS coding_activity_new (
-            user_id String,
-            date Date,
-            minutes Int64,
-            language Nullable(String)
-        ) ENGINE = ReplacingMergeTree()
-        ORDER BY (user_id, date)",
-        )
-        .execute()
-        .await?;
-
-    client
-        .query(
-            "INSERT INTO coding_activity_new
-             SELECT user_id, toDateOrZero(date), minutes, language FROM coding_activity",
-        )
-        .execute()
-        .await?;
-
-    client
-        .query("DROP TABLE IF EXISTS coding_activity_old")
-        .execute()
-        .await?;
-    client
-        .query("RENAME TABLE coding_activity TO coding_activity_old, coding_activity_new TO coding_activity")
-        .execute()
-        .await?;
-    client
-        .query("DROP TABLE IF EXISTS coding_activity_old")
-        .execute()
-        .await?;
-    client
-        .query("OPTIMIZE TABLE coding_activity FINAL")
-        .execute()
-        .await?;
-
-    let count: u64 = client
-        .query("SELECT count() FROM coding_activity")
-        .fetch_one()
-        .await
-        .unwrap_or(0);
-    tracing::info!("coding_activity.date migration complete ({} rows)", count);
-    Ok(())
-}
-
 pub async fn insert_messages(
     client: &Client,
     messages: &[SlackMessageRow],
@@ -1232,32 +1164,11 @@ async fn refresh_word_totals_full(
     Ok(())
 }
 
-/// Rebuilds `daily_stats` (per-day coding minutes and Slack Time seconds over
-/// all history) for the stats page charts. Runs in the background on a schedule
-/// because the Slack Time half is a sessionizer pass over every message; the
-/// whole table is replaced so no stale day survives. Coding minutes match the
-/// headline total (everyone, including bots), while Slack Time excludes
-/// bot/deleted users like `user_scores` does.
+/// Rebuilds `daily_stats` (per-day Slack Time seconds over all history) for the
+/// stats page chart. Runs in the background on a schedule because it is a
+/// sessionizer pass over every message; the whole table is replaced so no stale
+/// day survives. Slack Time excludes bot/deleted users like `user_scores` does.
 pub async fn refresh_daily_stats(client: &Client) -> Result<(), Box<dyn std::error::Error>> {
-    #[derive(Debug, Row, Deserialize)]
-    struct CodingDayRow {
-        #[serde(with = "clickhouse::serde::time::date")]
-        date: time::Date,
-        minutes: u64,
-    }
-    let coding: Vec<CodingDayRow> = client
-        .query(
-            "SELECT date, sum(toUInt64(minutes)) AS minutes
-             FROM (
-                 SELECT user_id, date, max(minutes) AS minutes
-                 FROM coding_activity
-                 GROUP BY user_id, date
-             )
-             GROUP BY date",
-        )
-        .fetch_all()
-        .await?;
-
     #[derive(Debug, Row, Deserialize)]
     struct SlackDayRow {
         #[serde(with = "clickhouse::serde::time::date")]
@@ -1306,20 +1217,10 @@ pub async fn refresh_daily_stats(client: &Client) -> Result<(), Box<dyn std::err
         .fetch_all()
         .await?;
 
-    let mut by_day: std::collections::BTreeMap<time::Date, (u64, u64)> =
-        std::collections::BTreeMap::new();
-    for r in &coding {
-        by_day.entry(r.date).or_default().0 = r.minutes;
-    }
-    for r in &slack {
-        by_day.entry(r.date).or_default().1 = r.total_time;
-    }
-
     #[derive(Debug, Row, Serialize)]
     struct DailyStatsRow {
         #[serde(with = "clickhouse::serde::time::date")]
         date: time::Date,
-        coding_minutes: u64,
         slack_secs: u64,
     }
 
@@ -1328,14 +1229,11 @@ pub async fn refresh_daily_stats(client: &Client) -> Result<(), Box<dyn std::err
         .execute()
         .await?;
     let mut insert = client.insert::<DailyStatsRow>("daily_stats").await?;
-    for (date, (coding_minutes, slack_secs)) in by_day {
-        insert
-            .write(&DailyStatsRow {
-                date,
-                coding_minutes,
-                slack_secs,
-            })
-            .await?;
+    for r in &slack {
+        insert.write(&DailyStatsRow {
+            date: r.date,
+            slack_secs: r.total_time,
+        }).await?;
     }
     insert.end().await?;
     Ok(())
@@ -2044,6 +1942,8 @@ pub struct HackatimeConnectionRow {
     pub slack_id: String,
     pub access_token: String,
     pub last_synced_date: Option<String>,
+    pub status: String,
+    pub total_minutes: u64,
 }
 
 #[derive(Debug, Row, Deserialize)]
@@ -2051,6 +1951,8 @@ pub struct HackatimeConnectionReadRow {
     pub slack_id: String,
     pub access_token: String,
     pub last_synced_date: Option<String>,
+    pub status: String,
+    pub total_minutes: u64,
 }
 
 pub async fn upsert_hackatime_connection(
@@ -2066,6 +1968,8 @@ pub async fn upsert_hackatime_connection(
             slack_id: slack_id.to_string(),
             access_token: access_token.to_string(),
             last_synced_date: None,
+            status: String::new(),
+            total_minutes: 0,
         })
         .await?;
     insert.end().await?;
@@ -2088,7 +1992,10 @@ pub async fn get_hackatime_connections(
     client: &Client,
 ) -> Result<Vec<HackatimeConnectionReadRow>, Box<dyn std::error::Error>> {
     let rows: Vec<HackatimeConnectionReadRow> = client
-        .query("SELECT slack_id, access_token, last_synced_date FROM hackatime_connections FINAL")
+        .query(
+            "SELECT slack_id, access_token, last_synced_date, status, total_minutes \
+             FROM hackatime_connections FINAL",
+        )
         .fetch_all()
         .await?;
     Ok(rows)
@@ -2116,9 +2023,13 @@ pub async fn is_hackatime_connected(
     struct CountRow {
         count: u64,
     }
+    // Only rows with a real token count as connected; the sync-state rows kept
+    // for public-only / private / no-account users must not hide the connect
+    // button on the link page.
     let row: Option<CountRow> = client
         .query(&format!(
-            "SELECT count() as count FROM hackatime_connections FINAL WHERE slack_id = '{}'",
+            "SELECT count() as count FROM hackatime_connections FINAL \
+             WHERE slack_id = '{}' AND access_token != ''",
             slack_id
         ))
         .fetch_optional()
@@ -2126,43 +2037,17 @@ pub async fn is_hackatime_connected(
     Ok(row.map(|r| r.count > 0).unwrap_or(false))
 }
 
-pub async fn clear_coding_activity_from(
+/// Every non-bot, non-deleted Slack user, for the periodic hackatime resync.
+pub async fn get_coding_user_ids(
     client: &Client,
-    slack_id: &str,
-    from_date: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
-    client
-        .query(&format!(
-            "ALTER TABLE coding_activity DELETE WHERE user_id = '{}' AND date >= '{}' SETTINGS mutations_sync = 2",
-            slack_id, from_date
-        ))
-        .execute()
-        .await?;
-    Ok(())
-}
-
-pub async fn insert_coding_activity(
-    client: &Client,
-    rows: &[CodingActivityRow],
-) -> Result<(), Box<dyn std::error::Error>> {
-    if rows.is_empty() {
-        return Ok(());
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    #[derive(Debug, Row, Deserialize)]
+    struct IdRow {
+        user_id: String,
     }
-    let mut insert = client
-        .insert::<CodingActivityRow>("coding_activity")
+    let rows: Vec<IdRow> = client
+        .query("SELECT user_id FROM users FINAL WHERE is_bot = 0 AND is_deleted = 0")
+        .fetch_all()
         .await?;
-    for row in rows {
-        insert.write(row).await?;
-    }
-    insert.end().await?;
-    Ok(())
-}
-
-#[derive(Debug, Row, Serialize)]
-pub struct CodingActivityRow {
-    pub user_id: String,
-    #[serde(with = "clickhouse::serde::time::date")]
-    pub date: time::Date,
-    pub minutes: i64,
-    pub language: Option<String>,
+    Ok(rows.into_iter().map(|r| r.user_id).collect())
 }

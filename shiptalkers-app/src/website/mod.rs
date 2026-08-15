@@ -115,15 +115,9 @@ pub struct Stats {
     pub coding_hours: String,
     pub slack_time: String,
     pub combined_time: String,
-    pub coding_chart: String,
     pub slack_chart: String,
-    pub combined_chart: String,
-    pub coding_axis: Vec<String>,
     pub slack_axis: Vec<String>,
-    pub combined_axis: Vec<String>,
-    pub coding_x: Vec<String>,
     pub slack_x: Vec<String>,
-    pub combined_x: Vec<String>,
     pub db_size_label: String,
     pub signed_in: bool,
     pub page_load_ms: String,
@@ -653,15 +647,10 @@ async fn get_leaderboard_category(
             let inner = format!(
                 "SELECT user_id AS id, value, CAST(NULL AS Nullable(Int64)) AS extra, rank \
                  FROM ( \
-                     SELECT user_id, sum(m) AS value, \
-                            row_number() OVER (ORDER BY sum(m) DESC) AS rank \
-                     FROM ( \
-                         SELECT user_id, date, max(minutes) AS m \
-                         FROM coding_activity \
-                         GROUP BY user_id, date \
-                     ) \
+                     SELECT user_id, toInt64(total_minutes) AS value, \
+                            row_number() OVER (ORDER BY total_minutes DESC) AS rank \
+                     FROM hackatime_connections FINAL \
                      WHERE {EXCLUDE_BOTS_DELETED} \
-                     GROUP BY user_id \
                  )"
             );
             let (ranked, notice) = ranked_window(
@@ -716,9 +705,9 @@ async fn get_leaderboard_category(
             )
         }
         "combined" => {
-            // Slack Time seconds plus Coding Time (minutes) converted to seconds,
-            // summed per user and ranked. Bots/deleted users are excluded before
-            // ranking so ranks stay gap-free.
+            // Slack Time seconds plus total Coding Time (minutes) converted to
+            // seconds, summed per user and ranked. Bots/deleted users are
+            // excluded before ranking so ranks stay gap-free.
             let inner = format!(
                 "SELECT user_id AS id, value, CAST(NULL AS Nullable(Int64)) AS extra, rank \
                  FROM ( \
@@ -729,16 +718,8 @@ async fn get_leaderboard_category(
                              SELECT user_id, toInt64(total_time) AS v \
                              FROM user_scores FINAL \
                              UNION ALL \
-                             SELECT user_id, toInt64(m * 60) AS v \
-                             FROM ( \
-                                 SELECT user_id, sum(minutes) AS m \
-                                 FROM ( \
-                                     SELECT user_id, date, max(minutes) AS minutes \
-                                     FROM coding_activity \
-                                     GROUP BY user_id, date \
-                                 ) \
-                                 GROUP BY user_id \
-                             ) \
+                             SELECT user_id, toInt64(total_minutes * 60) AS v \
+                             FROM hackatime_connections FINAL \
                          ) \
                          GROUP BY user_id \
                      ) \
@@ -1013,14 +994,7 @@ async fn get_user_stats(
         .unwrap_or(None);
 
     let coding_minutes: i64 = ch
-        .query(
-            "SELECT sum(minutes) FROM (
-                 SELECT max(minutes) AS minutes
-                 FROM coding_activity
-                 WHERE user_id = ?
-                 GROUP BY date
-             )",
-        )
+        .query("SELECT total_minutes FROM hackatime_connections FINAL WHERE slack_id = ?")
         .bind(slack_id)
         .fetch_one()
         .await
@@ -1322,7 +1296,7 @@ async fn load_stats(state: &AppState, headers: &HeaderMap) -> Stats {
         prec = if db_size_gib < 10.0 { 5 } else { 3 }
     );
 
-    let (coding, slack, combined) = load_daily_charts(&state.clickhouse).await;
+    let slack = load_daily_charts(&state.clickhouse).await;
 
     Stats {
         total_messages: fmt_thousands(snapshot.total_messages),
@@ -1331,15 +1305,9 @@ async fn load_stats(state: &AppState, headers: &HeaderMap) -> Stats {
         coding_hours: fmt_minutes(snapshot.coding_minutes),
         slack_time: fmt_duration(snapshot.slack_time_secs),
         combined_time: fmt_duration(snapshot.slack_time_secs + snapshot.coding_minutes * 60),
-        coding_chart: coding.svg,
-        coding_axis: coding.axis,
-        coding_x: coding.x,
         slack_chart: slack.svg,
         slack_axis: slack.axis,
         slack_x: slack.x,
-        combined_chart: combined.svg,
-        combined_axis: combined.axis,
-        combined_x: combined.x,
         db_size_label,
         signed_in: signed_in(state, headers),
         page_load_ms: String::new(),
@@ -1355,19 +1323,18 @@ pub struct DailyChart {
     pub x: Vec<String>,
 }
 
-/// Fetches the per-day totals (rebuilt every 30m in the background by
-/// `refresh_daily_stats`) and renders the three stats page charts over the last
-/// 7 days. Returns the (coding, slack, combined) charts.
-async fn load_daily_charts(ch: &clickhouse::Client) -> (DailyChart, DailyChart, DailyChart) {
+/// Fetches the per-day Slack Time totals (rebuilt every 30m in the background
+/// by `refresh_daily_stats`) and renders the stats page chart over the last 7
+/// days.
+async fn load_daily_charts(ch: &clickhouse::Client) -> DailyChart {
     #[derive(clickhouse::Row, serde::Deserialize)]
     struct DailyRow {
         #[serde(with = "clickhouse::serde::time::date")]
         date: time::Date,
-        coding_minutes: u64,
         slack_secs: u64,
     }
     let rows: Vec<DailyRow> = ch
-        .query("SELECT date, coding_minutes, slack_secs FROM daily_stats FINAL ORDER BY date")
+        .query("SELECT date, slack_secs FROM daily_stats FINAL ORDER BY date")
         .fetch_all()
         .await
         .unwrap_or_default();
@@ -1385,33 +1352,12 @@ async fn load_daily_charts(ch: &clickhouse::Client) -> (DailyChart, DailyChart, 
         .map(|r| format!("{} {}", weekday_short(r.date.weekday()), r.date.day()))
         .collect();
 
-    let coding: Vec<(String, u64, String)> = recent
-        .iter()
-        .map(|r| {
-            (
-                r.date.to_string(),
-                r.coding_minutes,
-                fmt_minutes(r.coding_minutes),
-            )
-        })
-        .collect();
     let slack: Vec<(String, u64, String)> = recent
         .iter()
         .map(|r| (r.date.to_string(), r.slack_secs, fmt_duration(r.slack_secs)))
         .collect();
-    let combined: Vec<(String, u64, String)> = recent
-        .iter()
-        .map(|r| {
-            let secs = r.coding_minutes * 60 + r.slack_secs;
-            (r.date.to_string(), secs, fmt_duration(secs))
-        })
-        .collect();
 
-    (
-        daily_chart(&coding, &x),
-        daily_chart(&slack, &x),
-        daily_chart(&combined, &x),
-    )
+    daily_chart(&slack, &x)
 }
 
 fn weekday_short(w: time::Weekday) -> &'static str {
@@ -1516,13 +1462,7 @@ async fn compute_stats(state: &AppState) -> StatsSnapshot {
         .unwrap_or(0);
 
     let coding_minutes: u64 = ch
-        .query(
-            "SELECT sum(toUInt64(minutes)) FROM (
-                 SELECT max(minutes) AS minutes
-                 FROM coding_activity
-                 GROUP BY user_id, date
-             )",
-        )
+        .query("SELECT sum(toUInt64(total_minutes)) FROM hackatime_connections FINAL")
         .fetch_one()
         .await
         .unwrap_or(0);
