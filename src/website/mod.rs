@@ -576,13 +576,14 @@ fn resolve_user_sql(inner: &str, q: &str) -> String {
     // LIKE is case-sensitive in ClickHouse, so lowercase the query to match the
     // lower(display_name) comparison case-insensitively. Only users already on
     // the leaderboard are candidates, so a similarly-named user without scores
-    // can't shadow the one that's actually ranked.
+    // can't shadow the one that's actually ranked. Ties (duplicate display
+    // names) break by rank, so the highest-ranked match wins.
     let eq = sql_escape(&q.to_lowercase());
     format!(
-        "SELECT u.user_id AS id FROM users FINAL u \
+        "SELECT u.user_id AS id FROM users AS u FINAL \
          JOIN ({inner}) lb ON u.user_id = lb.id \
          WHERE lower(u.display_name) LIKE '%{}%' \
-         ORDER BY (lower(u.display_name) = '{}') DESC, lower(u.display_name) \
+         ORDER BY (lower(u.display_name) = '{}') DESC, lb.rank, lower(u.display_name) \
          LIMIT 1",
         eq, eq
     )
@@ -682,10 +683,10 @@ async fn get_leaderboard_category(
                  FROM channel_scores FINAL";
             let eq = sql_escape(&q.to_lowercase());
             let resolve = format!(
-                "SELECT c.channel_id AS id FROM slack_channels FINAL c \
+                "SELECT c.channel_id AS id FROM slack_channels AS c FINAL \
                  JOIN ({inner}) lb ON c.channel_id = lb.id \
                  WHERE lower(c.name) LIKE '%{}%' \
-                 ORDER BY (lower(c.name) = '{}') DESC, lower(c.name) \
+                 ORDER BY (lower(c.name) = '{}') DESC, lb.rank, lower(c.name) \
                  LIMIT 1",
                 eq, eq
             );
