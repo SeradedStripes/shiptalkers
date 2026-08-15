@@ -2,16 +2,16 @@
 
 ## Overview
 
-You link your slack and hackatime accounts. You can message the bot in HC Slack to see a chart comparing your Hackatime coding activity to your Slack activity.
-
-Additionally, it has a full website and many more features will be added in the future!
+Shiptalkers is a Slack bot & Website that scrapes Hack Club Slack and displays your estimated slack time to your Hackatime coding time.  
+It is a fun way to see how much time you spend on Slack vs coding!  
+Are you a real maker or is it all just shiptalk? Drop a message in the [#shiptalkers](https://hackclub.enterprise.slack.com/archives/C07TCQ45NTS) channel to find out!
 
 ## How it works
 
-It gets Slack message count by scraping channels, messages & thread replies through the Slack API.  
-It pulls and stores coding activity from Hackatime via OAuth.  
-It has an algorithm that compares your Slack activity to your Hackatime activity and generates a chart.  
-The bot then shows you a chart comparing your Slack activity to your Hackatime activity.  
+It uses bot & user tokens to access the Slack API then scrapes everything.  
+When you send a message or look at the website, it uses your stored data to display any analytical data we have.  
+It pulls your Hackatime data using the Hackatime OAuth2 API (Which is why you have to link your accounts)  
+It then runs a comparison between your Hackatime coding time and your Slack time to give you a percentage of how much time you spend on Slack vs coding.
 
 ## Needed Scopes
 
