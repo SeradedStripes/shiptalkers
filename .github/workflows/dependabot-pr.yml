@@ -1,0 +1,35 @@
+name: Dependabot Auto-Merge
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  pull-requests: write
+  contents: write
+
+jobs:
+  auto-merge:
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.user.login == 'dependabot[bot]'
+    steps:
+      - name: Wait for CI to pass
+        run: |
+          until gh pr checks "$PR_URL" --json name,state,conclusion \
+            --jq '[.[] | select(.name != "auto-merge")] as $c | ($c | length) > 0 and ($c | all(.state == "COMPLETED"))' \
+            | grep -qx true; do
+            sleep 30
+          done
+          gh pr checks "$PR_URL" --json name,state,conclusion \
+            --jq '[.[] | select(.name != "auto-merge")] | all(.conclusion == "SUCCESS")' \
+            | grep -qx true
+        timeout-minutes: 60
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Enable auto-merge
+        run: gh pr merge --auto --squash "$PR_URL"
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
