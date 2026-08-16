@@ -136,6 +136,7 @@ pub struct UserTemplate {
     pub leaderboard_rank: String,
     pub active_hour: String,
     pub top_channels: Vec<ChannelStats>,
+    pub show_coding_prompt: bool,
     pub signed_in: bool,
     pub found: bool,
     pub page_load_ms: String,
@@ -990,11 +991,12 @@ async fn get_user_stats(
         .await
         .unwrap_or(None);
 
-    let coding_minutes: i64 = ch
+    let coding_minutes: u64 = ch
         .query("SELECT total_minutes FROM hackatime_connections FINAL WHERE slack_id = ?")
         .bind(slack_id)
-        .fetch_one()
+        .fetch_optional()
         .await
+        .unwrap_or(None)
         .unwrap_or(0);
 
     #[derive(clickhouse::Row, serde::Deserialize)]
@@ -1119,7 +1121,7 @@ async fn get_user_stats(
         pfp,
         slack_id: slack_id.to_string(),
         total_messages: fmt_thousands(total_messages),
-        coding_hours: fmt_minutes(coding_minutes.max(0) as u64),
+        coding_hours: fmt_minutes(coding_minutes),
         channels: fmt_thousands(scores.as_ref().map(|s| s.channels).unwrap_or(0)),
         slack_time_total,
         slack_time_avg,
@@ -1128,6 +1130,7 @@ async fn get_user_stats(
         leaderboard_rank,
         active_hour,
         top_channels,
+        show_coding_prompt: !is_bot && !is_deleted && coding_minutes == 0,
         signed_in,
         found,
         page_load_ms: format!("{}ms", started.elapsed().as_millis()),

@@ -21,6 +21,14 @@
             </div>
         </div>
 
+        {% if show_coding_prompt %}
+        <div class="card">
+            <h2>Coding Time</h2>
+            <p class="status">You have no Hackatime Data, or it is private, please link your account to continue (or make it public)</p>
+            <a href="/link" class="btn" style="margin-top: 1rem;">Link Account</a>
+        </div>
+        {% endif %}
+
         <div class="grid">
             <div class="stat">
                 <h3>Total Messages</h3>
