@@ -16,9 +16,8 @@ const SESSION_COOKIE: &str = "st_session";
 const STATE_COOKIE: &str = "st_state";
 const START_DATE: &str = "2024-01-01";
 
-/// Per-user lock so a link-time full sync and the resync_all pass never run
-/// clear+insert for the same user at the same time. Concurrent syncs were
-/// inserting duplicate rows into coding_activity.
+/// Per-user lock so a link-time sync and the resync_all pass never write the
+/// same user's connection row at the same time.
 static CODING_SYNC_LOCKS: OnceLock<std::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>> =
     OnceLock::new();
 
