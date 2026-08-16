@@ -292,6 +292,26 @@ pub async fn init_tables(client: &Client) -> Result<(), Box<dyn std::error::Erro
         .await
         .ok();
 
+    // Per-user coding spans from hackatime, so the stats bot can scope coding
+    // time to the requested range (Slack time is range-scoped already).
+    // Fetched via the public spans API with exact timestamps; spans are
+    // block-shaped (end - start == duration), so the card sums each span's
+    // exact overlap with the range. ReplacingMergeTree(updated) makes
+    // re-fetched spans idempotent. `total_minutes` in hackatime_connections is
+    // derived from this table.
+    client
+        .query(
+            "CREATE TABLE IF NOT EXISTS hackatime_spans (
+                slack_id String,
+                start_ts UInt64,
+                duration UInt64,
+                updated UInt64
+            ) ENGINE = ReplacingMergeTree(updated)
+            ORDER BY (slack_id, start_ts)",
+        )
+        .execute()
+        .await?;
+
     // Secondary copy of slack_messages sorted by user so per-user reads (stats
     // pages and score recompute) only touch that user's granules instead of
     // scanning the whole table. Kept in sync by the materialized view plus a
@@ -2001,6 +2021,71 @@ pub async fn get_hackatime_connections(
         .fetch_all()
         .await?;
     Ok(rows)
+}
+
+pub async fn get_hackatime_connection(
+    client: &Client,
+    slack_id: &str,
+) -> Result<Option<HackatimeConnectionReadRow>, Box<dyn std::error::Error>> {
+    let row: Option<HackatimeConnectionReadRow> = client
+        .query(
+            "SELECT slack_id, access_token, last_synced_date, status, total_minutes \
+             FROM hackatime_connections FINAL WHERE slack_id = ?",
+        )
+        .bind(slack_id)
+        .fetch_optional()
+        .await?;
+    Ok(row)
+}
+
+#[derive(Debug, Row, Serialize)]
+pub struct HackatimeSpanRow {
+    pub slack_id: String,
+    pub start_ts: u64,
+    pub duration: u64,
+    pub updated: u64,
+}
+
+pub async fn insert_hackatime_spans(
+    client: &Client,
+    rows: &[HackatimeSpanRow],
+) -> Result<(), Box<dyn std::error::Error>> {
+    if rows.is_empty() {
+        return Ok(());
+    }
+    let mut insert = client.insert::<HackatimeSpanRow>("hackatime_spans").await?;
+    for row in rows {
+        insert.write(row).await?;
+    }
+    insert.end().await?;
+    Ok(())
+}
+
+/// Total coding seconds across all of a user's `hackatime_spans` rows.
+pub async fn get_hackatime_total_seconds(
+    client: &Client,
+    slack_id: &str,
+) -> Result<u64, Box<dyn std::error::Error>> {
+    let seconds: u64 = client
+        .query("SELECT sum(toUInt64(duration)) FROM hackatime_spans FINAL WHERE slack_id = ?")
+        .bind(slack_id)
+        .fetch_one()
+        .await?;
+    Ok(seconds)
+}
+
+/// Number of `hackatime_spans` rows for one user, to tell an unsynced user
+/// from a caught-up one.
+pub async fn get_hackatime_span_count(
+    client: &Client,
+    slack_id: &str,
+) -> Result<u64, Box<dyn std::error::Error>> {
+    let count: u64 = client
+        .query("SELECT count() FROM hackatime_spans FINAL WHERE slack_id = ?")
+        .bind(slack_id)
+        .fetch_one()
+        .await?;
+    Ok(count)
 }
 
 pub async fn delete_hackatime_connection(

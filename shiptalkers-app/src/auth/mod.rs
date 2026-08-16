@@ -54,8 +54,15 @@ struct HackatimeMeResponse {
 }
 
 #[derive(Deserialize)]
-struct HoursResponse {
-    total_seconds: Option<f64>,
+struct SpansResponse {
+    spans: Vec<CodingSpan>,
+}
+
+#[derive(Deserialize)]
+pub struct CodingSpan {
+    pub start_time: f64,
+    pub end_time: f64,
+    pub duration: f64,
 }
 
 fn sign(data: &str, secret: &[u8]) -> String {
@@ -208,26 +215,26 @@ pub async fn fetch_hackatime_me(
     Ok(me.slack_id)
 }
 
-/// Fetches the total coding minutes for a Slack user from hackatime. The stats
-/// endpoint is keyed by Slack UID; unauthenticated it only works for profiles
-/// with public stats lookup enabled, and with a token it also reads the token
-/// owner's private profile. Returns the total seconds in `[start_date, now)` as
-/// minutes. A 403 means public stats are disabled (only reachable on the
+/// Fetches coding spans for a Slack user from hackatime over the
+/// `[start_date, end_date)` window. The endpoint is keyed by Slack UID;
+/// unauthenticated it only works for profiles with public stats lookup
+/// enabled, and with a token it also reads the token owner's private profile.
+/// One request covers the whole window, so a full-history backfill is a single
+/// call. A 403 means public stats are disabled (only reachable on the
 /// unauthenticated path) and a 404 means no hackatime account exists for this
 /// Slack UID; both must be distinguished by the caller.
-pub async fn fetch_total_minutes(
+pub async fn fetch_coding_spans(
     client: &reqwest::Client,
     slack_uid: &str,
     token: Option<&str>,
     start_date: &str,
-) -> Result<u64, (Option<u16>, String)> {
+    end_date: &str,
+) -> Result<Vec<CodingSpan>, (Option<u16>, String)> {
     let mut request = client
-        .get(format!("{HACKATIME_USER_STATS_URL}/{slack_uid}/stats"))
-        .query(&[
-            ("total_seconds", "true"),
-            ("start_date", start_date),
-            ("end_date", &days_from_now(1)),
-        ]);
+        .get(format!(
+            "{HACKATIME_USER_STATS_URL}/{slack_uid}/heartbeats/spans"
+        ))
+        .query(&[("start_date", start_date), ("end_date", end_date)]);
     if let Some(tok) = token {
         request = request.bearer_auth(tok);
     }
@@ -240,10 +247,34 @@ pub async fn fetch_total_minutes(
     if !status.is_success() {
         return Err((Some(status.as_u16()), body));
     }
-    let hours: HoursResponse =
+    let spans: SpansResponse =
         serde_json::from_str(&body).map_err(|e| (None, format!("bad JSON ({body:?}): {e}")))?;
-    let seconds = hours.total_seconds.unwrap_or(0.0);
-    Ok((seconds / 60.0).round() as u64)
+    Ok(spans.spans)
+}
+
+/// Seconds of a coding span (stored as `start_ts` micros + `duration` seconds)
+/// that fall inside the range `[range_start, range_end)` (unix seconds; `None`
+/// means unbounded). Mirrors the overlap math in the ClickHouse query in
+/// `slack/socket.rs` so tests can pin the exact-overlap semantics.
+pub fn span_overlap_seconds(
+    start_ts: u64,
+    duration: u64,
+    range_start: Option<i64>,
+    range_end: Option<i64>,
+) -> u64 {
+    let start = start_ts / 1_000_000;
+    let end = start + duration;
+    let start = match range_start {
+        Some(rs) if end > rs as u64 => start.max(rs as u64),
+        Some(_) => return 0,
+        None => start,
+    };
+    let end = match range_end {
+        Some(re) if start < re as u64 => end.min(re as u64),
+        Some(_) => return 0,
+        None => end,
+    };
+    end - start
 }
 
 pub fn today_utc() -> String {
@@ -273,6 +304,36 @@ pub fn days_from_now(days: i64) -> String {
 /// UTC date `days` days before today, e.g. the no-account retry cutoff.
 pub fn date_days_ago(days: u64) -> String {
     days_from_now(-(days as i64))
+}
+
+/// UTC date `days` days after the given `YYYY-MM-DD` date, e.g. the start of an
+/// incremental hackatime window one day before the last sync.
+pub fn date_plus_days(date: &str, days: i64) -> Option<String> {
+    let (y, m, d) = parse_iso_date(date)?;
+    let day = days_from_civil(y, m, d) + days;
+    let (y, m, d) = civil_from_days(day);
+    Some(format!("{y:04}-{m:02}-{d:02}"))
+}
+
+fn parse_iso_date(date: &str) -> Option<(i64, i64, i64)> {
+    let mut parts = date.split('-');
+    let y = parts.next()?.parse().ok()?;
+    let m = parts.next()?.parse().ok()?;
+    let d = parts.next()?.parse().ok()?;
+    if parts.next().is_some() || !(1..=12).contains(&m) || !(1..=31).contains(&d) {
+        return None;
+    }
+    Some((y, m, d))
+}
+
+fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = (if y >= 0 { y } else { y - 399 }) / 400;
+    let yoe = y - era * 400;
+    let mp = if m > 2 { m - 3 } else { m + 9 };
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146097 + doe - 719468
 }
 
 pub fn civil_from_days(z: i64) -> (u32, u32, u32) {

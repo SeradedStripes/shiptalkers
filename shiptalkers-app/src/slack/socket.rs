@@ -443,7 +443,7 @@ async fn handle_message(
 
 async fn query_stats(clickhouse: &clickhouse::Client, user: &str, range: &TimeRange) -> (u64, u64) {
     let slack = query_slack_seconds(clickhouse, user, range).await;
-    let coding = query_coding_seconds(clickhouse, user).await;
+    let coding = query_coding_seconds(clickhouse, user, range).await;
     (slack, coding)
 }
 
@@ -516,16 +516,59 @@ async fn query_slack_seconds(
         .unwrap_or(0)
 }
 
-/// Total coding time for a user (hackatime sync stores one total per user, not
-/// per-day, so the requested range does not apply to coding).
-async fn query_coding_seconds(clickhouse: &clickhouse::Client, user: &str) -> u64 {
-    let minutes: u64 = clickhouse
-        .query("SELECT total_minutes FROM hackatime_connections FINAL WHERE slack_id = ?")
+/// Coding seconds for a user within the requested range, summed as the exact
+/// overlap of the `hackatime_spans` rows with the range (spans crossing the
+/// boundaries only count the part inside). When the user has no span rows yet
+/// (never synced), falls back to the all-time `total_minutes` so the card
+/// still shows a number.
+async fn query_coding_seconds(
+    clickhouse: &clickhouse::Client,
+    user: &str,
+    range: &TimeRange,
+) -> u64 {
+    let has_rows: u64 = clickhouse
+        .query("SELECT count() FROM hackatime_spans FINAL WHERE slack_id = ?")
         .bind(user)
         .fetch_one()
         .await
         .unwrap_or(0);
-    minutes * 60
+    if has_rows == 0 {
+        return query_total_minutes(clickhouse, user).await * 60;
+    }
+    // start_ts is stored as microseconds, durations as seconds; work in
+    // seconds so a span overlapping a range boundary only counts the part
+    // inside the range.
+    let span_start = "toUInt64(start_ts / 1000000)";
+    let span_end = "toUInt64(start_ts / 1000000) + duration";
+    let (expr, binds) = match (range.start_ts(), range.end_ts()) {
+        (Some(start), Some(end)) => (
+            format!(
+                "sum(if({span_end} > ? AND {span_start} < ?, \
+                 least({span_end}, ?) - greatest({span_start}, ?), 0))"
+            ),
+            vec![start as u64, end as u64, end as u64, start as u64],
+        ),
+        (Some(start), None) => (
+            format!("sum(if({span_end} > ?, {span_end} - greatest({span_start}, ?), 0))"),
+            vec![start as u64, start as u64],
+        ),
+        (None, _) => (String::from("sum(duration)"), Vec::new()),
+    };
+    let sql = format!("SELECT {expr} FROM hackatime_spans FINAL WHERE slack_id = ?");
+    let mut query = clickhouse.query(&sql).bind(user);
+    for b in binds {
+        query = query.bind(b);
+    }
+    query.fetch_one().await.unwrap_or(0)
+}
+
+async fn query_total_minutes(clickhouse: &clickhouse::Client, user: &str) -> u64 {
+    clickhouse
+        .query("SELECT total_minutes FROM hackatime_connections FINAL WHERE slack_id = ?")
+        .bind(user)
+        .fetch_one()
+        .await
+        .unwrap_or(0)
 }
 
 async fn user_display_name(clickhouse: &clickhouse::Client, user: &str) -> String {

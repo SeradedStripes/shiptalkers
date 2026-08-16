@@ -344,11 +344,16 @@ impl std::fmt::Display for SyncFailure {
     }
 }
 
-/// Fetches the total coding minutes for one user and stores it. With a token
-/// the stats endpoint is called authenticated (so private profiles of the
-/// token's owner work too); without one, the public stats API (keyed by Slack
-/// UID) is used, which only works for public profiles. The fetch runs before
-/// any DB write, so a failed sync leaves the old total intact.
+/// Fetches one user's coding spans from hackatime and stores them in
+/// `hackatime_spans`, then rewrites the connection's `total_minutes` from the
+/// span sum. With a token the spans endpoint is called authenticated (so
+/// private profiles of the token's owner work too); without one, the public
+/// API (keyed by Slack UID) is used, which only works for public profiles.
+/// The fetch runs before any DB write, so a failed sync leaves the old data
+/// intact. A user with no `hackatime_spans` rows yet (new, or predating span
+/// storage) backfills everything since `START_DATE`; otherwise the window
+/// starts one day before the last sync (covering in-flight sessions) and ends
+/// tomorrow.
 pub async fn sync_coding_activity(
     clickhouse: &clickhouse::Client,
     http: &reqwest::Client,
@@ -359,8 +364,27 @@ pub async fn sync_coding_activity(
     let _guard = lock.lock().await;
     let today = auth::today_utc();
 
-    let minutes = match auth::fetch_total_minutes(http, slack_id, access_token, START_DATE).await {
-        Ok(m) => m,
+    let conn = clickhouse_db::get_hackatime_connection(clickhouse, slack_id)
+        .await
+        .map_err(|e| SyncFailure::Message(format!("read hackatime connection: {e}")))?;
+    let last_synced = conn.and_then(|c| c.last_synced_date).unwrap_or_default();
+    let span_count = clickhouse_db::get_hackatime_span_count(clickhouse, slack_id)
+        .await
+        .map_err(|e| SyncFailure::Message(format!("read hackatime_spans count: {e}")))?;
+    // No spans yet means the user is new or predates span storage (total-only
+    // scheme), so backfill everything; otherwise refetch from one day before
+    // the last sync so in-flight sessions crossing midnight are re-covered.
+    let start_date = if span_count == 0 {
+        START_DATE.to_string()
+    } else {
+        auth::date_plus_days(&last_synced, -1).unwrap_or_else(|| START_DATE.to_string())
+    };
+    let end_date = auth::days_from_now(1);
+
+    let spans = match auth::fetch_coding_spans(http, slack_id, access_token, &start_date, &end_date)
+        .await
+    {
+        Ok(s) => s,
         Err((status, message)) => match (access_token, status) {
             (Some(_), Some(401 | 403)) => {
                 // A 401/403 can mean a dead token or an outage in front of
@@ -408,6 +432,28 @@ pub async fn sync_coding_activity(
         },
     };
 
+    let updated = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let rows: Vec<clickhouse_db::HackatimeSpanRow> = spans
+        .iter()
+        .map(|s| clickhouse_db::HackatimeSpanRow {
+            slack_id: slack_id.to_string(),
+            start_ts: s.start_time as u64,
+            duration: s.duration.round() as u64,
+            updated,
+        })
+        .collect();
+    clickhouse_db::insert_hackatime_spans(clickhouse, &rows)
+        .await
+        .map_err(|e| SyncFailure::Message(e.to_string()))?;
+
+    let total_seconds = clickhouse_db::get_hackatime_total_seconds(clickhouse, slack_id)
+        .await
+        .map_err(|e| SyncFailure::Message(e.to_string()))?;
+    let minutes = (total_seconds as f64 / 60.0).round() as u64;
+
     let conn = clickhouse_db::HackatimeConnectionRow {
         slack_id: slack_id.to_string(),
         access_token: access_token.unwrap_or("").to_string(),
@@ -419,7 +465,12 @@ pub async fn sync_coding_activity(
         .await
         .map_err(|e| SyncFailure::Message(e.to_string()))?;
 
-    tracing::info!("Synced {} coding minutes for {}", minutes, slack_id);
+    tracing::info!(
+        "Synced {} coding spans, {} total minutes for {}",
+        rows.len(),
+        minutes,
+        slack_id
+    );
     Ok(())
 }
 
