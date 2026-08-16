@@ -130,16 +130,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if has_app_tokens {
         let socket_config = slack::SocketConfig::new(settings.get_list("SLACK_APP_TOKENS"));
         let clickhouse_for_socket = database.clickhouse.clone();
-        let auth_db_for_socket = auth_db.clone();
         let settings_for_socket = settings.clone();
         tokio::spawn(async move {
-            if let Err(e) = slack::start_socket_mode(
-                socket_config,
-                clickhouse_for_socket,
-                auth_db_for_socket,
-                settings_for_socket,
-            )
-            .await
+            if let Err(e) =
+                slack::start_socket_mode(socket_config, clickhouse_for_socket, settings_for_socket)
+                    .await
             {
                 tracing::error!("Socket Mode error: {}", e);
             }

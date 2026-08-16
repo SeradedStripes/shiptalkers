@@ -5,7 +5,6 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 use crate::bot_image;
 use crate::db::clickhouse_db::{self, SlackChannelRow};
-use crate::db::sqlite::AuthDb;
 use crate::settings::RuntimeSettings;
 
 #[derive(Debug, Deserialize)]
@@ -74,7 +73,6 @@ impl SocketConfig {
 pub async fn start_socket_mode(
     config: SocketConfig,
     clickhouse: clickhouse::Client,
-    auth_db: std::sync::Arc<AuthDb>,
     settings: RuntimeSettings,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     if config.app_tokens.is_empty() {
@@ -92,14 +90,12 @@ pub async fn start_socket_mode(
     let mut sockets = Vec::with_capacity(num_sockets);
     for (socket_idx, app_token) in config.app_tokens.iter().enumerate() {
         let clickhouse = clickhouse.clone();
-        let auth_db = auth_db.clone();
         let settings = settings.clone();
         sockets.push(run_socket(
             socket_idx,
             num_sockets,
             app_token.clone(),
             clickhouse,
-            auth_db,
             settings,
         ));
     }
@@ -123,7 +119,6 @@ async fn run_socket(
     num_sockets: usize,
     app_token: String,
     clickhouse: clickhouse::Client,
-    auth_db: std::sync::Arc<AuthDb>,
     settings: RuntimeSettings,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let client = Client::new();
@@ -136,7 +131,6 @@ async fn run_socket(
             num_sockets,
             &app_token,
             &clickhouse,
-            &auth_db,
             &settings,
         )
         .await
@@ -177,7 +171,6 @@ async fn serve_socket(
     num_sockets: usize,
     app_token: &str,
     clickhouse: &clickhouse::Client,
-    auth_db: &std::sync::Arc<AuthDb>,
     settings: &RuntimeSettings,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let resp: ConnectionsOpenResponse = client
@@ -254,7 +247,6 @@ async fn serve_socket(
                                             client,
                                             socket_idx,
                                             num_sockets,
-                                            auth_db,
                                             clickhouse,
                                             settings,
                                             event,
@@ -324,7 +316,6 @@ async fn handle_message(
     client: &Client,
     socket_idx: usize,
     num_sockets: usize,
-    auth_db: &std::sync::Arc<AuthDb>,
     clickhouse: &clickhouse::Client,
     settings: &RuntimeSettings,
     event: &serde_json::Value,
@@ -378,10 +369,16 @@ async fn handle_message(
     };
     let base_url = settings.get("BASE_URL");
 
-    if !auth_db.is_linked(&user).await {
-        tracing::info!("Stats bot: {} is not linked, sending link prompt", user);
+    // Linking is never required: coding data comes from the public hackatime
+    // spans endpoint. If we have no usable coding data on the user (private or
+    // no-account profile, never synced, or a genuine zero total), prompt
+    // instead of the card.
+    if !has_coding_data(clickhouse, &user).await {
+        tracing::info!("Stats bot: no coding data for {}, sending prompt", user);
         let reply = format!(
-            "You aren't linked yet. Link your account here to get your stats: {}/link",
+            "Either you have no coding time, or your coding time is private. \
+             If it is private, link your account here: {}/link. \
+             If you don't have coding time, go do some coding; it resyncs every 30 minutes.",
             base_url.trim_end_matches('/')
         );
         if let Err(e) = post_reply(client, &bot_token, &msg.channel, &msg.ts, &reply).await {
@@ -569,6 +566,28 @@ async fn query_total_minutes(clickhouse: &clickhouse::Client, user: &str) -> u64
         .fetch_one()
         .await
         .unwrap_or(0)
+}
+
+/// Whether the stats bot has usable all-time coding data on a user: a synced
+/// `hackatime_connections` row (empty `status`; `private`/`no_account` rows
+/// carry none) with a nonzero total. The 30m resync loop fills this in, so a
+/// fresh user may get the prompt until their first sync lands.
+async fn has_coding_data(clickhouse: &clickhouse::Client, user: &str) -> bool {
+    #[derive(clickhouse::Row, serde::Deserialize)]
+    struct CodingRow {
+        status: String,
+        total_minutes: u64,
+    }
+    let row: Option<CodingRow> = clickhouse
+        .query("SELECT status, total_minutes FROM hackatime_connections FINAL WHERE slack_id = ?")
+        .bind(user)
+        .fetch_optional()
+        .await
+        .unwrap_or(None);
+    match row {
+        Some(r) => r.status.is_empty() && r.total_minutes > 0,
+        None => false,
+    }
 }
 
 async fn user_display_name(clickhouse: &clickhouse::Client, user: &str) -> String {
