@@ -519,13 +519,13 @@ async fn query_slack_seconds(
 /// Total coding time for a user (hackatime sync stores one total per user, not
 /// per-day, so the requested range does not apply to coding).
 async fn query_coding_seconds(clickhouse: &clickhouse::Client, user: &str) -> u64 {
-    let minutes: i64 = clickhouse
+    let minutes: u64 = clickhouse
         .query("SELECT total_minutes FROM hackatime_connections FINAL WHERE slack_id = ?")
         .bind(user)
         .fetch_one()
         .await
         .unwrap_or(0);
-    minutes.max(0) as u64 * 60
+    minutes * 60
 }
 
 async fn user_display_name(clickhouse: &clickhouse::Client, user: &str) -> String {
