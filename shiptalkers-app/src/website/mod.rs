@@ -644,7 +644,7 @@ async fn get_leaderboard_category(
             let inner = format!(
                 "SELECT user_id AS id, value, CAST(NULL AS Nullable(Int64)) AS extra, rank \
                  FROM ( \
-                     SELECT user_id, toInt64(total_minutes) AS value, \
+                     SELECT slack_id AS user_id, toInt64(total_minutes) AS value, \
                             row_number() OVER (ORDER BY total_minutes DESC) AS rank \
                      FROM hackatime_connections FINAL \
                      WHERE {EXCLUDE_BOTS_DELETED} \
@@ -715,7 +715,7 @@ async fn get_leaderboard_category(
                              SELECT user_id, toInt64(total_time) AS v \
                              FROM user_scores FINAL \
                              UNION ALL \
-                             SELECT user_id, toInt64(total_minutes * 60) AS v \
+                             SELECT slack_id AS user_id, toInt64(total_minutes * 60) AS v \
                              FROM hackatime_connections FINAL \
                          ) \
                          GROUP BY user_id \

@@ -211,8 +211,8 @@ pub async fn fetch_hackatime_me(
 /// Fetches the total coding minutes for a Slack user from hackatime. The stats
 /// endpoint is keyed by Slack UID; unauthenticated it only works for profiles
 /// with public stats lookup enabled, and with a token it also reads the token
-/// owner's private profile. Returns the total seconds in `[start_date, today)`
-/// as minutes. A 403 means public stats are disabled (only reachable on the
+/// owner's private profile. Returns the total seconds in `[start_date, now)` as
+/// minutes. A 403 means public stats are disabled (only reachable on the
 /// unauthenticated path) and a 404 means no hackatime account exists for this
 /// Slack UID; both must be distinguished by the caller.
 pub async fn fetch_total_minutes(
@@ -226,7 +226,7 @@ pub async fn fetch_total_minutes(
         .query(&[
             ("total_seconds", "true"),
             ("start_date", start_date),
-            ("end_date", &today_utc()),
+            ("end_date", &days_from_now(1)),
         ]);
     if let Some(tok) = token {
         request = request.bearer_auth(tok);
@@ -259,14 +259,20 @@ pub fn today_utc() -> String {
     format!("{year:04}-{month:02}-{day:02}")
 }
 
-/// UTC date `days` days before today, e.g. the no-account retry cutoff.
-pub fn date_days_ago(days: u64) -> String {
+/// UTC date `days` days after today, e.g. the end boundary for an all-time
+/// hackatime total: tomorrow at midnight includes everything up to now.
+pub fn days_from_now(days: i64) -> String {
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let (year, month, day) = civil_from_days((secs / 86400) as i64 - days as i64);
+    let (year, month, day) = civil_from_days((secs / 86400) as i64 + days);
     format!("{year:04}-{month:02}-{day:02}")
+}
+
+/// UTC date `days` days before today, e.g. the no-account retry cutoff.
+pub fn date_days_ago(days: u64) -> String {
+    days_from_now(-(days as i64))
 }
 
 pub fn civil_from_days(z: i64) -> (u32, u32, u32) {
