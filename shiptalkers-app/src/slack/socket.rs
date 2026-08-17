@@ -532,11 +532,11 @@ async fn query_coding_seconds(
     if has_rows == 0 {
         return query_total_minutes(clickhouse, user).await * 60;
     }
-    // start_ts is stored as microseconds, durations as seconds; work in
-    // seconds so a span overlapping a range boundary only counts the part
-    // inside the range.
-    let span_start = "toUInt64(start_ts / 1000000)";
-    let span_end = "toUInt64(start_ts / 1000000) + duration";
+    // start_ts is stored as unix seconds (from the hackatime API), durations
+    // also in seconds; work in seconds so a span overlapping a range boundary
+    // only counts the part inside the range.
+    let span_start = "start_ts";
+    let span_end = "start_ts + duration";
     let (expr, binds) = match (range.start_ts(), range.end_ts()) {
         (Some(start), Some(end)) => (
             format!(

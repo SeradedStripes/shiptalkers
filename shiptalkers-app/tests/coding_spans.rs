@@ -1,18 +1,14 @@
 use ship_talkers::auth::{date_plus_days, span_overlap_seconds};
 
-fn micros(secs: u64) -> u64 {
-    secs * 1_000_000
-}
-
 #[test]
 fn span_within_range_counts_in_full() {
     // 2026-08-10 12:00 -> 12:30 UTC, range 00:00 -> midnight
     assert_eq!(
         span_overlap_seconds(
-            micros(1_786_363_200),
+            1_786_363_200,
             1800,
             Some(1_786_320_000),
-            Some(1_786_406_400),
+            Some(1_786_406_400)
         ),
         1800
     );
@@ -23,10 +19,10 @@ fn range_inside_span_counts_in_full() {
     // span 2026-08-10 11:00 -> 13:00 UTC, range 12:00 -> 12:30
     assert_eq!(
         span_overlap_seconds(
-            micros(1_786_359_600),
+            1_786_359_600,
             7200,
             Some(1_786_363_200),
-            Some(1_786_365_000),
+            Some(1_786_365_000)
         ),
         1800
     );
@@ -37,10 +33,10 @@ fn span_crossing_range_start_counts_only_overlap() {
     // span 11:00 -> 13:00 UTC, range 12:00 -> 14:00 = 1h
     assert_eq!(
         span_overlap_seconds(
-            micros(1_786_359_600),
+            1_786_359_600,
             7200,
             Some(1_786_363_200),
-            Some(1_786_370_400),
+            Some(1_786_370_400)
         ),
         3600
     );
@@ -51,10 +47,10 @@ fn span_crossing_range_end_counts_only_overlap() {
     // span 12:00 -> 14:00 UTC, range 11:00 -> 13:00 = 1h
     assert_eq!(
         span_overlap_seconds(
-            micros(1_786_363_200),
+            1_786_363_200,
             7200,
             Some(1_786_320_000),
-            Some(1_786_366_800),
+            Some(1_786_366_800)
         ),
         3600
     );
@@ -63,12 +59,7 @@ fn span_crossing_range_end_counts_only_overlap() {
 #[test]
 fn span_entirely_before_range_counts_zero() {
     assert_eq!(
-        span_overlap_seconds(
-            micros(1_786_363_200),
-            600,
-            Some(1_786_366_800),
-            Some(1_786_449_600),
-        ),
+        span_overlap_seconds(1_786_363_200, 600, Some(1_786_366_800), Some(1_786_449_600)),
         0
     );
 }
@@ -76,43 +67,32 @@ fn span_entirely_before_range_counts_zero() {
 #[test]
 fn span_entirely_after_range_counts_zero() {
     assert_eq!(
-        span_overlap_seconds(
-            micros(1_786_449_600),
-            600,
-            Some(1_786_320_000),
-            Some(1_786_366_800),
-        ),
+        span_overlap_seconds(1_786_449_600, 600, Some(1_786_320_000), Some(1_786_366_800)),
         0
     );
 }
 
 #[test]
 fn unbounded_range_counts_full_duration() {
-    assert_eq!(
-        span_overlap_seconds(micros(1_786_363_200), 5400, None, None),
-        5400
-    );
+    assert_eq!(span_overlap_seconds(1_786_363_200, 5400, None, None), 5400);
 }
 
 #[test]
 fn since_only_range_clips_the_start() {
     // span 11:00 -> 13:00 UTC, range starting 12:00 = 1h
     assert_eq!(
-        span_overlap_seconds(micros(1_786_359_600), 7200, Some(1_786_363_200), None),
+        span_overlap_seconds(1_786_359_600, 7200, Some(1_786_363_200), None),
         3600
     );
 }
 
 #[test]
-fn fractional_start_seconds_truncate_like_sql() {
-    // start_ts has a sub-second fraction; SQL truncates via integer division
+fn start_time_fraction_is_truncated_at_insert() {
+    // The API returns a fractional f64 which is truncated to whole seconds
+    // by `as u64` in the insert; span_overlap_seconds receives already-truncated
+    // seconds, so 1786363200.157 becomes 1786363200.
     assert_eq!(
-        span_overlap_seconds(
-            micros(1_786_363_200) + 157_000,
-            300,
-            Some(1_786_320_000),
-            Some(1_786_406_400),
-        ),
+        span_overlap_seconds(1_786_363_200, 300, Some(1_786_320_000), Some(1_786_406_400)),
         300
     );
 }

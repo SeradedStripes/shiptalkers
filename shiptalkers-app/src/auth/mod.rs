@@ -252,7 +252,7 @@ pub async fn fetch_coding_spans(
     Ok(spans.spans)
 }
 
-/// Seconds of a coding span (stored as `start_ts` micros + `duration` seconds)
+/// Seconds of a coding span (`start_ts` unix seconds + `duration` seconds)
 /// that fall inside the range `[range_start, range_end)` (unix seconds; `None`
 /// means unbounded). Mirrors the overlap math in the ClickHouse query in
 /// `slack/socket.rs` so tests can pin the exact-overlap semantics.
@@ -262,7 +262,7 @@ pub fn span_overlap_seconds(
     range_start: Option<i64>,
     range_end: Option<i64>,
 ) -> u64 {
-    let start = start_ts / 1_000_000;
+    let start = start_ts;
     let end = start + duration;
     let start = match range_start {
         Some(rs) if end > rs as u64 => start.max(rs as u64),
