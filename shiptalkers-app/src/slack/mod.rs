@@ -1,6 +1,8 @@
 mod socket;
 
-pub use socket::{SocketConfig, TimeRange, parse_time_range_at, start_socket_mode};
+pub use socket::{
+    SocketConfig, TimeRange, build_coding_query, parse_time_range_at, start_socket_mode,
+};
 
 use reqwest::Client;
 use serde::{Deserialize, Serialize};

@@ -532,9 +532,19 @@ async fn query_coding_seconds(
     if has_rows == 0 {
         return query_total_minutes(clickhouse, user).await * 60;
     }
-    // start_ts is stored as unix seconds (from the hackatime API), durations
-    // also in seconds; work in seconds so a span overlapping a range boundary
-    // only counts the part inside the range.
+    let (sql, binds) = build_coding_query(range);
+    let mut query = clickhouse.query(&sql);
+    for b in binds {
+        query = query.bind(b);
+    }
+    query = query.bind(user);
+    query.fetch_one().await.unwrap_or(0)
+}
+
+/// Builds the SQL expression and bind values for the coding-overlap query.
+/// The returned `sql` always ends with `WHERE slack_id = ?` as its final
+/// placeholder, which the caller must bind after the range values in `binds`.
+pub fn build_coding_query(range: &TimeRange) -> (String, Vec<u64>) {
     let span_start = "start_ts";
     let span_end = "start_ts + duration";
     let (expr, binds) = match (range.start_ts(), range.end_ts()) {
@@ -552,12 +562,7 @@ async fn query_coding_seconds(
         (None, _) => (String::from("sum(duration)"), Vec::new()),
     };
     let sql = format!("SELECT {expr} FROM hackatime_spans FINAL WHERE slack_id = ?");
-    let mut query = clickhouse.query(&sql);
-    for b in binds {
-        query = query.bind(b);
-    }
-    query = query.bind(user);
-    query.fetch_one().await.unwrap_or(0)
+    (sql, binds)
 }
 
 async fn query_total_minutes(clickhouse: &clickhouse::Client, user: &str) -> u64 {

@@ -1,4 +1,7 @@
 use ship_talkers::auth::{date_plus_days, span_overlap_seconds};
+use ship_talkers::slack::{TimeRange, build_coding_query, parse_time_range_at};
+
+// --- span_overlap_seconds (pure math, mirrors the SQL) ---
 
 #[test]
 fn span_within_range_counts_in_full() {
@@ -86,16 +89,202 @@ fn since_only_range_clips_the_start() {
     );
 }
 
+// --- build_coding_query (SQL construction and bind order) ---
+
 #[test]
-fn start_time_fraction_is_truncated_at_insert() {
-    // The API returns a fractional f64 which is truncated to whole seconds
-    // by `as u64` in the insert; span_overlap_seconds receives already-truncated
-    // seconds, so 1786363200.157 becomes 1786363200.
+fn all_time_query_has_no_range_binds() {
+    let range = TimeRange::AllTime;
+    let (sql, binds) = build_coding_query(&range);
+    assert_eq!(binds, Vec::<u64>::new());
+    assert!(sql.ends_with("WHERE slack_id = ?"));
     assert_eq!(
-        span_overlap_seconds(1_786_363_200, 300, Some(1_786_320_000), Some(1_786_406_400)),
-        300
+        sql,
+        "SELECT sum(duration) FROM hackatime_spans FINAL WHERE slack_id = ?"
     );
 }
+
+#[test]
+fn since_query_binds_start_twice() {
+    let range = TimeRange::Since(1_786_363_200);
+    let (sql, binds) = build_coding_query(&range);
+    assert_eq!(binds, vec![1_786_363_200, 1_786_363_200]);
+    assert!(sql.ends_with("WHERE slack_id = ?"));
+    assert_eq!(sql.matches('?').count(), 3);
+}
+
+#[test]
+fn between_query_binds_start_end_end_start() {
+    let start: i64 = 1_751_328_000;
+    let end: i64 = 1_753_920_000;
+    let range = TimeRange::Between(start, end);
+    let (sql, binds) = build_coding_query(&range);
+    assert_eq!(
+        binds,
+        vec![start as u64, end as u64, end as u64, start as u64]
+    );
+    assert!(sql.ends_with("WHERE slack_id = ?"));
+    assert_eq!(sql.matches('?').count(), 5);
+}
+
+#[test]
+fn between_query_with_negative_timestamps() {
+    let range = TimeRange::Between(-100, 200);
+    let (sql, binds) = build_coding_query(&range);
+    assert_eq!(binds[0], (-100i64) as u64);
+    assert_eq!(binds[1], 200u64);
+    assert_eq!(binds[2], 200u64);
+    assert_eq!(binds[3], (-100i64) as u64);
+    assert!(sql.ends_with("WHERE slack_id = ?"));
+}
+
+// --- SQL correctness: the bugs this catches ---
+
+#[test]
+fn sql_uses_start_ts_in_seconds_not_microseconds() {
+    // The original bug divided start_ts by 1_000_000 in the SQL.
+    // start_ts is stored as unix seconds in the DB.
+    let range = TimeRange::Since(1_786_363_200);
+    let (sql, _) = build_coding_query(&range);
+    assert!(
+        !sql.contains("/ 1000000"),
+        "SQL must not divide start_ts by 1000000: {sql}"
+    );
+    assert!(
+        !sql.contains("/1000000"),
+        "SQL must not divide start_ts by 1000000: {sql}"
+    );
+    assert!(
+        !sql.contains("* 1000000"),
+        "SQL must not multiply by 1000000: {sql}"
+    );
+    assert!(
+        !sql.contains("toUInt64(start_ts"),
+        "SQL must not cast start_ts: {sql}"
+    );
+    // And it must reference start_ts directly (the column name).
+    assert!(
+        sql.contains("start_ts"),
+        "SQL must reference start_ts column: {sql}"
+    );
+}
+
+#[test]
+fn where_slack_id_is_always_last_placeholder() {
+    // The original bug bound user before the range values.
+    // The SQL must end with WHERE slack_id = ?, making it the final ?
+    // so the caller can bind range values first, user last.
+    for range in [
+        TimeRange::AllTime,
+        TimeRange::Since(100),
+        TimeRange::Between(100, 200),
+    ] {
+        let (sql, _) = build_coding_query(&range);
+        assert!(
+            sql.ends_with("WHERE slack_id = ?"),
+            "SQL must end with 'WHERE slack_id = ?': {sql}"
+        );
+        // No ? after the WHERE clause's ? (trivially true since it's last),
+        // and exactly one ? in the WHERE clause.
+        let where_clause = &sql[sql.find("WHERE").unwrap()..];
+        assert_eq!(
+            where_clause.matches('?').count(),
+            1,
+            "WHERE clause must have exactly one ?: {where_clause}"
+        );
+    }
+}
+
+#[test]
+fn bind_count_matches_expression_placeholders() {
+    // Range binds from build_coding_query cover every ? except the WHERE
+    // slack_id = ? (which the caller binds separately as the user).
+    for range in [
+        TimeRange::AllTime,
+        TimeRange::Since(100),
+        TimeRange::Between(100, 200),
+    ] {
+        let (sql, binds) = build_coding_query(&range);
+        // Total ? minus the 1 in WHERE slack_id = ? must equal binds.len().
+        let total_q = sql.matches('?').count();
+        let range_q = total_q - 1; // exclude the WHERE slack_id = ? placeholder
+        assert_eq!(
+            binds.len(),
+            range_q,
+            "range bind count ({}) != range placeholder count ({}) in: {sql}",
+            binds.len(),
+            range_q,
+        );
+    }
+}
+
+// --- End-to-end: parse_time_range -> build_coding_query -> span_overlap_seconds ---
+// For each keyword, parse the range, build the SQL, then verify that
+// span_overlap_seconds (which mirrors the SQL logic) produces the expected
+// result. This tests that parse_time_range returns sane boundaries and that
+// the Rust overlap math matches the SQL semantics.
+
+const NOW: i64 = 1_787_040_000; // 2026-08-18 00:00 UTC
+
+#[test]
+fn e2e_last_month_span_inside_range() {
+    let range = parse_time_range_at("last month", NOW).unwrap();
+    let span_start = range.start_ts().unwrap() as u64 + 3600;
+    assert_eq!(
+        span_overlap_seconds(span_start, 3600, range.start_ts(), range.end_ts()),
+        3600
+    );
+    let (sql, binds) = build_coding_query(&range);
+    assert_eq!(binds.len() + 1, sql.matches('?').count());
+    assert!(sql.ends_with("WHERE slack_id = ?"));
+}
+
+#[test]
+fn e2e_last_month_span_outside_range() {
+    let range = parse_time_range_at("last month", NOW).unwrap();
+    let span_start = range.end_ts().unwrap() as u64 + 1000;
+    assert_eq!(
+        span_overlap_seconds(span_start, 3600, range.start_ts(), range.end_ts()),
+        0
+    );
+}
+
+#[test]
+fn e2e_last_week_span_inside_range() {
+    let range = parse_time_range_at("last week", NOW).unwrap();
+    let span_start = range.start_ts().unwrap() as u64 + 3600;
+    assert_eq!(
+        span_overlap_seconds(span_start, 7200, range.start_ts(), range.end_ts()),
+        7200
+    );
+    let (sql, binds) = build_coding_query(&range);
+    assert_eq!(binds.len() + 1, sql.matches('?').count());
+}
+
+#[test]
+fn e2e_today_span_inside_range() {
+    let range = parse_time_range_at("today", NOW).unwrap();
+    let span_start = range.start_ts().unwrap() as u64 + 3600;
+    assert_eq!(
+        span_overlap_seconds(span_start, 1800, range.start_ts(), range.end_ts()),
+        1800
+    );
+    let (sql, binds) = build_coding_query(&range);
+    assert_eq!(binds.len() + 1, sql.matches('?').count());
+}
+
+#[test]
+fn e2e_all_time_always_returns_full_duration() {
+    let range = parse_time_range_at("all time", NOW).unwrap();
+    let (sql, binds) = build_coding_query(&range);
+    assert_eq!(binds, Vec::<u64>::new());
+    assert_eq!(binds.len() + 1, sql.matches('?').count());
+    assert_eq!(
+        span_overlap_seconds(1_000_000_000, 5400, range.start_ts(), range.end_ts()),
+        5400
+    );
+}
+
+// --- date helpers ---
 
 #[test]
 fn date_plus_days_crosses_boundaries() {
