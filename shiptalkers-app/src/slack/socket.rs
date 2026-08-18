@@ -552,10 +552,11 @@ async fn query_coding_seconds(
         (None, _) => (String::from("sum(duration)"), Vec::new()),
     };
     let sql = format!("SELECT {expr} FROM hackatime_spans FINAL WHERE slack_id = ?");
-    let mut query = clickhouse.query(&sql).bind(user);
+    let mut query = clickhouse.query(&sql);
     for b in binds {
         query = query.bind(b);
     }
+    query = query.bind(user);
     query.fetch_one().await.unwrap_or(0)
 }
 
