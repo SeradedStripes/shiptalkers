@@ -150,8 +150,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let http_for_resync = reqwest::Client::new();
         tokio::spawn(async move {
             loop {
-                tokio::time::sleep(std::time::Duration::from_secs(1800)).await;
                 website::auth::resync_all(&clickhouse_for_resync, &http_for_resync).await;
+                tokio::time::sleep(std::time::Duration::from_secs(1800)).await;
             }
         });
     }
