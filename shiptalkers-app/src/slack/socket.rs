@@ -530,15 +530,44 @@ async fn query_coding_seconds(
         .await
         .unwrap_or(0);
     if has_rows == 0 {
+        tracing::info!(
+            user,
+            "query_coding_seconds: no hackatime_spans rows, falling back to total_minutes"
+        );
         return query_total_minutes(clickhouse, user).await * 60;
     }
     let (sql, binds) = build_coding_query(range);
+    let start_date = range.start_date().unwrap_or_default();
+    let end_date = range.end_date().unwrap_or_default();
     let mut query = clickhouse.query(&sql);
-    for b in binds {
+    for b in &binds {
         query = query.bind(b);
     }
     query = query.bind(user);
-    query.fetch_one().await.unwrap_or(0)
+    match query.fetch_one::<u64>().await {
+        Ok(secs) => {
+            tracing::info!(
+                user,
+                start_date,
+                end_date,
+                secs,
+                "query_coding_seconds: result"
+            );
+            secs
+        }
+        Err(e) => {
+            tracing::info!(
+                user,
+                start_date,
+                end_date,
+                error = %e,
+                sql = sql.as_str(),
+                ?binds,
+                "query_coding_seconds: fetch failed, returning 0"
+            );
+            0
+        }
+    }
 }
 
 /// Builds the SQL expression and bind values for the coding-overlap query.
@@ -743,6 +772,7 @@ fn start_of_year(ts: i64) -> i64 {
     days_from_civil(year as i64, 1, 1) * 86400
 }
 
+#[derive(Debug)]
 pub enum TimeRange {
     AllTime,
     Since(i64),
