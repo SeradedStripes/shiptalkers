@@ -169,6 +169,19 @@ fn sql_uses_start_ts_in_seconds_not_microseconds() {
 }
 
 #[test]
+fn sql_if_fallback_is_uint64_not_int64() {
+    // ClickHouse types the 0 literal in if() as Int64, which the clickhouse
+    // crate rejects when deserializing into u64. Must use toUInt64(0).
+    for range in [TimeRange::Since(100), TimeRange::Between(100, 200)] {
+        let (sql, _) = build_coding_query(&range);
+        assert!(
+            sql.contains("toUInt64(0)"),
+            "SQL must use toUInt64(0) not bare 0 to avoid Int64 type mismatch: {sql}"
+        );
+    }
+}
+
+#[test]
 fn where_slack_id_is_always_last_placeholder() {
     // The original bug bound user before the range values.
     // The SQL must end with WHERE slack_id = ?, making it the final ?

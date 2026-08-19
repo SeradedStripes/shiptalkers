@@ -580,12 +580,12 @@ pub fn build_coding_query(range: &TimeRange) -> (String, Vec<u64>) {
         (Some(start), Some(end)) => (
             format!(
                 "sum(if({span_end} > ? AND {span_start} < ?, \
-                 least({span_end}, ?) - greatest({span_start}, ?), 0))"
+                 least({span_end}, ?) - greatest({span_start}, ?), toUInt64(0)))"
             ),
             vec![start as u64, end as u64, end as u64, start as u64],
         ),
         (Some(start), None) => (
-            format!("sum(if({span_end} > ?, {span_end} - greatest({span_start}, ?), 0))"),
+            format!("sum(if({span_end} > ?, {span_end} - greatest({span_start}, ?), toUInt64(0)))"),
             vec![start as u64, start as u64],
         ),
         (None, _) => (String::from("sum(duration)"), Vec::new()),
