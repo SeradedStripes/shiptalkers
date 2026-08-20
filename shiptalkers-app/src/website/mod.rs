@@ -69,7 +69,6 @@ struct RankedRow {
 pub struct AppCache {
     stats: Arc<TtlCache<StatsSnapshot>>,
     words: Arc<TtlCache<Vec<RankedRow>>>,
-    excluded_users: Arc<TtlCache<Vec<String>>>,
 }
 
 impl AppCache {
@@ -77,35 +76,7 @@ impl AppCache {
         Self {
             stats: Arc::new(TtlCache::new(Duration::from_secs(30))),
             words: Arc::new(TtlCache::new(Duration::from_secs(600))),
-            excluded_users: Arc::new(TtlCache::new(Duration::from_secs(300))),
         }
-    }
-
-    async fn excluded_users_filter(&self, ch: &Client) -> String {
-        #[derive(clickhouse::Row, serde::Deserialize)]
-        struct ExcludedRow {
-            user_id: String,
-        }
-        let ids = self
-            .excluded_users
-            .get_or(async {
-                ch.query("SELECT user_id FROM users FINAL WHERE is_bot = 1 OR is_deleted = 1")
-                    .fetch_all::<ExcludedRow>()
-                    .await
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|r| r.user_id)
-                    .collect::<Vec<_>>()
-            })
-            .await;
-        if ids.is_empty() {
-            return EXCLUDE_BOTS_DELETED.to_string();
-        }
-        let list: Vec<String> = ids
-            .iter()
-            .map(|id| format!("'{}'", id.replace('\'', "\\'")))
-            .collect();
-        format!("user_id NOT IN ({})", list.join(", "))
     }
 }
 
@@ -629,7 +600,6 @@ async fn get_leaderboard_category(
     let query = params.get("q").cloned().unwrap_or_default();
     let q = query.trim();
     let parsed_rank: Option<u64> = q.parse().ok();
-    let exclude_filter = state.cache.excluded_users_filter(ch).await;
 
     let (title, unit, extra_unit, coming_soon, rows, notice): (
         String,
@@ -644,7 +614,7 @@ async fn get_leaderboard_category(
                 "SELECT user_id AS id, score AS value, toNullable(toInt64(messages)) AS extra, \
                  row_number() OVER (ORDER BY score DESC) AS rank \
                  FROM user_scores FINAL \
-                 WHERE {exclude_filter}"
+                 WHERE {EXCLUDE_BOTS_DELETED}"
             );
             let (ranked, notice) = ranked_window(
                 ch,
@@ -678,7 +648,7 @@ async fn get_leaderboard_category(
                      SELECT slack_id AS user_id, toInt64(total_minutes) AS value, \
                             row_number() OVER (ORDER BY total_minutes DESC) AS rank \
                      FROM hackatime_connections FINAL \
-                     WHERE {exclude_filter} \
+                     WHERE {EXCLUDE_BOTS_DELETED} \
                  )"
             );
             let (ranked, notice) = ranked_window(
@@ -751,7 +721,7 @@ async fn get_leaderboard_category(
                          ) \
                          GROUP BY user_id \
                      ) \
-                     WHERE {exclude_filter} \
+                     WHERE {EXCLUDE_BOTS_DELETED} \
                  )"
             );
             let (ranked, notice) = ranked_window(
@@ -975,7 +945,6 @@ async fn get_user_stats(
     let started = Instant::now();
     let ch = &state.clickhouse;
     let signed_in = signed_in(state, headers);
-    let exclude_filter = state.cache.excluded_users_filter(ch).await;
 
     #[derive(clickhouse::Row, serde::Deserialize)]
     struct UserInfoRow {
@@ -1128,7 +1097,7 @@ async fn get_user_stats(
                         "SELECT count() AS rank
                          FROM (
                              SELECT user_id FROM user_scores FINAL
-                              WHERE {exclude_filter} AND score > ?
+                              WHERE {EXCLUDE_BOTS_DELETED} AND score > ?
                          )"
                     ))
                     .bind(s.score)
@@ -1180,7 +1149,6 @@ async fn get_channel_stats(
     let started = Instant::now();
     let ch = &state.clickhouse;
     let signed_in = signed_in(state, headers);
-    let exclude_filter = state.cache.excluded_users_filter(ch).await;
 
     let channel_name: String = ch
         .query("SELECT name FROM slack_channels FINAL WHERE channel_id = ?")
@@ -1199,7 +1167,7 @@ async fn get_channel_stats(
     let active_users: u64 = ch
         .query(&format!(
             "SELECT uniqExact(user_id) FROM slack_messages
-             WHERE channel_id = ? AND {exclude_filter}"
+             WHERE channel_id = ? AND {EXCLUDE_BOTS_DELETED}"
         ))
         .bind(channel_id)
         .fetch_one()
@@ -1230,7 +1198,7 @@ async fn get_channel_stats(
         .query(&format!(
             "SELECT user_id, count() as messages
              FROM slack_messages
-             WHERE channel_id = ? AND {exclude_filter}
+             WHERE channel_id = ? AND {EXCLUDE_BOTS_DELETED}
              GROUP BY user_id
              ORDER BY messages DESC
              LIMIT 10"
@@ -1343,7 +1311,6 @@ async fn load_stats(state: &AppState, headers: &HeaderMap) -> Stats {
 
 async fn compute_stats(state: &AppState) -> StatsSnapshot {
     let ch = &state.clickhouse;
-    let exclude_filter = state.cache.excluded_users_filter(ch).await;
     let total_messages: u64 = ch
         .query("SELECT count() FROM slack_messages")
         .fetch_one()
@@ -1370,7 +1337,7 @@ async fn compute_stats(state: &AppState) -> StatsSnapshot {
 
     let slack_time_secs: u64 = ch
         .query(&format!(
-            "SELECT sum(toUInt64(total_time)) FROM user_scores FINAL WHERE {exclude_filter}"
+            "SELECT sum(toUInt64(total_time)) FROM user_scores FINAL WHERE {EXCLUDE_BOTS_DELETED}"
         ))
         .fetch_one()
         .await
