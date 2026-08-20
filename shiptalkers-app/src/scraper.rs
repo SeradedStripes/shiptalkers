@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 pub fn insert_page(
     clickhouse: clickhouse::Client,
     page: Vec<slack::SlackChannel>,
+    known_channels: Arc<Mutex<std::collections::HashSet<String>>>,
 ) -> Pin<Box<dyn Future<Output = ()> + Send>> {
     Box::pin(async move {
         let rows: Vec<db::clickhouse_db::SlackChannelRow> = page
@@ -24,9 +25,20 @@ pub fn insert_page(
             })
             .collect();
 
+        let new_rows: Vec<_> = {
+            let mut guard = known_channels.lock().unwrap();
+            rows.into_iter()
+                .filter(|ch| guard.insert(ch.channel_id.clone()))
+                .collect()
+        };
+
+        if new_rows.is_empty() {
+            return;
+        }
+
         match tokio::time::timeout(
             Duration::from_secs(120),
-            db::clickhouse_db::insert_new_channels(&clickhouse, &rows),
+            db::clickhouse_db::insert_new_channels_rows(&clickhouse, &new_rows),
         )
         .await
         {
@@ -378,7 +390,7 @@ async fn scrape_channel_list(
         };
         let clickhouse = clickhouse.clone();
         let next = next.clone();
-        let channels = channels.to_vec();
+        let channels = Arc::new(channels.to_vec());
         workers.push(tokio::spawn(async move {
             scrape_shard(&client, &clickhouse, channels, next, ctx, rx).await;
         }));
@@ -413,7 +425,7 @@ struct ShardCtx {
 async fn scrape_shard(
     user_client: &slack::SlackClient,
     clickhouse: &clickhouse::Client,
-    channels: Vec<String>,
+    channels: Arc<Vec<String>>,
     next: Arc<AtomicUsize>,
     ctx: ShardCtx,
     rx: tokio::sync::mpsc::Receiver<usize>,
@@ -1225,9 +1237,18 @@ async fn full_fetch(
     slack_pool: &slack::SlackClientPool,
     clickhouse: &clickhouse::Client,
 ) -> Result<(), String> {
+    let known = match db::clickhouse_db::get_known_channel_ids(clickhouse).await {
+        Ok(ids) => ids.into_iter().collect(),
+        Err(e) => {
+            tracing::warn!("Failed to pre-fetch known channel IDs: {}", e);
+            std::collections::HashSet::new()
+        }
+    };
+    let known_channels = Arc::new(Mutex::new(known));
     let ch = clickhouse.clone();
+    let kc = known_channels;
     let total = slack_pool
-        .fetch_channels_paginated(move |page| insert_page(ch.clone(), page), None)
+        .fetch_channels_paginated(move |page| insert_page(ch.clone(), page, kc.clone()), None)
         .await
         .map_err(|e| e.to_string())?;
 

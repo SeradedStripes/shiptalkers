@@ -1,9 +1,20 @@
 use askama::Template;
 use resvg::tiny_skia;
+use std::sync::OnceLock;
 
 const FONT: &[u8] = include_bytes!("assets/fonts/DejaVuSans.ttf");
 const FONT_BOLD: &[u8] = include_bytes!("assets/fonts/DejaVuSans-Bold.ttf");
 const CSS: &str = include_str!("website/static/slack_image_stats.css");
+
+fn font_db() -> &'static usvg::fontdb::Database {
+    static DB: OnceLock<usvg::fontdb::Database> = OnceLock::new();
+    DB.get_or_init(|| {
+        let mut db = usvg::fontdb::Database::new();
+        db.load_font_data(FONT.to_vec());
+        db.load_font_data(FONT_BOLD.to_vec());
+        db
+    })
+}
 
 pub const NAME_FONT_SIZE: f32 = 40.0;
 const NAME_MAX_WIDTH: f32 = 580.0;
@@ -69,8 +80,7 @@ pub fn render_stats_image(s: &StatsImage) -> Result<Vec<u8>, String> {
         .map_err(|e| format!("template render error: {e}"))?;
 
     let mut opt = usvg::Options::default();
-    opt.fontdb_mut().load_font_data(FONT.to_vec());
-    opt.fontdb_mut().load_font_data(FONT_BOLD.to_vec());
+    *opt.fontdb_mut() = font_db().clone();
 
     let tree = usvg::Tree::from_str(&svg, &opt).map_err(|e| format!("svg parse error: {e}"))?;
     let size = tree.size();

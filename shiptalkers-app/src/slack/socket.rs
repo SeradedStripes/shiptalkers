@@ -308,7 +308,13 @@ async fn handle_channel_created(
         name: created.channel.name,
     };
 
-    if let Err(e) = clickhouse_db::insert_new_channels(clickhouse, &[row]).await {
+    if let Err(e) = clickhouse_db::insert_new_channels(
+        clickhouse,
+        &[row],
+        &mut std::collections::HashSet::new(),
+    )
+    .await
+    {
         tracing::error!("Failed to insert new channel: {}", e);
     }
 }

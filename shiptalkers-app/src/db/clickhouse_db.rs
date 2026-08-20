@@ -873,11 +873,11 @@ pub async fn get_known_channel_ids(
 pub async fn insert_new_channels(
     client: &Client,
     channels: &[SlackChannelRow],
+    known: &mut std::collections::HashSet<String>,
 ) -> Result<u64, Box<dyn std::error::Error>> {
-    let known = get_known_channel_ids(client).await?;
     let new_channels: Vec<&SlackChannelRow> = channels
         .iter()
-        .filter(|ch| !known.contains(&ch.channel_id))
+        .filter(|ch| known.insert(ch.channel_id.clone()))
         .collect();
 
     if new_channels.is_empty() {
@@ -891,6 +891,23 @@ pub async fn insert_new_channels(
     }
     insert.end().await?;
 
+    tracing::info!("Inserted {} new channels into ClickHouse", count);
+    Ok(count)
+}
+
+pub async fn insert_new_channels_rows(
+    client: &Client,
+    channels: &[SlackChannelRow],
+) -> Result<u64, Box<dyn std::error::Error>> {
+    if channels.is_empty() {
+        return Ok(0);
+    }
+    let count = channels.len() as u64;
+    let mut insert = client.insert::<SlackChannelRow>("slack_channels").await?;
+    for ch in channels {
+        insert.write(ch).await?;
+    }
+    insert.end().await?;
     tracing::info!("Inserted {} new channels into ClickHouse", count);
     Ok(count)
 }

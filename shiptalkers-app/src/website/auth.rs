@@ -5,6 +5,7 @@ use axum::extract::{Query, State};
 use axum::http::header::{COOKIE, SET_COOKIE};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{Html, IntoResponse, Redirect};
+use futures_util::stream::{self, StreamExt};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
@@ -499,31 +500,53 @@ pub async fn resync_all(clickhouse: &clickhouse::Client, http: &reqwest::Client)
         .map(|c| (c.slack_id.clone(), c))
         .collect();
     let retry_cutoff = auth::date_days_ago(NO_ACCOUNT_RETRY_DAYS);
-    let mut synced = 0u64;
-    let mut skipped = 0u64;
-    for user_id in user_ids {
-        let conn = conns.get(&user_id);
-        if let Some(c) = conn {
-            if c.status == "no_account" {
-                let probed = c.last_synced_date.as_deref().unwrap_or("");
-                if probed >= retry_cutoff.as_str() {
-                    skipped += 1;
-                    continue;
+
+    let total_users = user_ids.len() as u64;
+
+    let work: Vec<(String, Option<String>)> = user_ids
+        .into_iter()
+        .filter_map(|user_id| {
+            let conn = conns.get(&user_id);
+            if let Some(c) = conn {
+                if c.status == "no_account" {
+                    let probed = c.last_synced_date.as_deref().unwrap_or("");
+                    if probed >= retry_cutoff.as_str() {
+                        return None;
+                    }
+                }
+                if c.status == "private" && c.access_token.is_empty() {
+                    return None;
                 }
             }
-            if c.status == "private" && c.access_token.is_empty() {
-                skipped += 1;
-                continue;
+            let token = conn.and_then(|c| {
+                if c.access_token.is_empty() {
+                    None
+                } else {
+                    Some(c.access_token.clone())
+                }
+            });
+            Some((user_id, token))
+        })
+        .collect();
+
+    let skipped = total_users - work.len() as u64;
+    let ch = clickhouse.clone();
+    let hc = http.clone();
+    let results: Vec<_> = stream::iter(work)
+        .map(|(user_id, token)| {
+            let ch = ch.clone();
+            let hc = hc.clone();
+            async move {
+                let result = sync_coding_activity(&ch, &hc, &user_id, token.as_deref()).await;
+                (user_id, result)
             }
-        }
-        let token = conn.and_then(|c| {
-            if c.access_token.is_empty() {
-                None
-            } else {
-                Some(c.access_token.as_str())
-            }
-        });
-        let result = sync_coding_activity(clickhouse, http, &user_id, token).await;
+        })
+        .buffer_unordered(8)
+        .collect()
+        .await;
+
+    let mut synced = 0u64;
+    for (user_id, result) in results {
         match result {
             Ok(()) => synced += 1,
             Err(SyncFailure::PrivateProfile) => {
