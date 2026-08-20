@@ -75,6 +75,34 @@ pub fn render_stats_image(s: &StatsImage) -> Result<Vec<u8>, String> {
         user_font_size: fit_font_size(s.user),
         css: CSS,
     };
+    render_svg_template(&t)
+}
+
+pub struct SlackOnlyImage<'a> {
+    pub user: &'a str,
+    pub slack_time: &'a str,
+}
+
+#[derive(Template)]
+#[template(path = "slack_image_slack_only.html")]
+struct SlackOnlyTemplate<'a> {
+    user: &'a str,
+    slack_time: &'a str,
+    user_font_size: u32,
+    css: &'static str,
+}
+
+pub fn render_slack_only_image(s: &SlackOnlyImage) -> Result<Vec<u8>, String> {
+    let t = SlackOnlyTemplate {
+        user: s.user,
+        slack_time: s.slack_time,
+        user_font_size: fit_font_size(s.user),
+        css: CSS,
+    };
+    render_svg_template(&t)
+}
+
+fn render_svg_template(t: &impl Template) -> Result<Vec<u8>, String> {
     let svg = t
         .render()
         .map_err(|e| format!("template render error: {e}"))?;

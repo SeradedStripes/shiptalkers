@@ -378,17 +378,39 @@ async fn handle_message(
     };
     let base_url = settings.get("BASE_URL");
 
-    // Linking is never required: coding data comes from the public hackatime
-    // spans endpoint. If we have no usable coding data on the user (private or
-    // no-account profile, never synced, or a genuine zero total), prompt
-    // instead of the card.
+    // If we have no usable coding data on the user (private or no-account
+    // profile, never synced, or a genuine zero total), still show their
+    // slack time as a card and explain the situation.
     if !has_coding_data(clickhouse, &user).await {
-        tracing::info!("Stats bot: no coding data for {}, sending prompt", user);
+        tracing::info!(
+            "Stats bot: no coding data for {}, sending slack-only card",
+            user
+        );
+        let slack_seconds = query_slack_seconds(clickhouse, &user, &range).await;
+        let user_name = user_display_name(clickhouse, &user).await;
+        let slack_time = fmt_span(slack_seconds);
+
+        let image = bot_image::SlackOnlyImage {
+            user: &user_name,
+            slack_time: &slack_time,
+        };
+        match bot_image::render_slack_only_image(&image) {
+            Ok(png) => {
+                if let Err(e) = upload_image(client, &bot_token, &msg.channel, &msg.ts, png).await {
+                    tracing::error!("Stats bot: failed to upload slack-only image: {}", e);
+                }
+            }
+            Err(e) => {
+                tracing::error!("Stats bot: failed to render slack-only image: {}", e);
+            }
+        }
+
+        let link = format!("{}/link", base_url.trim_end_matches('/'));
         let reply = format!(
-            "Either you have no coding time, or your coding time is private. \
-             If it is private, link your account here: {}/link. \
-             If you don't have coding time, go do some coding; it resyncs every 30 minutes.",
-            base_url.trim_end_matches('/')
+            "No Hackatime Data available, your coding time is either private or you have none. \
+             If it is private link your account here to see your stats: {link}, \
+             if you have no coding time then get coding :thumbsup:. \
+             For now here's just your slack time data"
         );
         if let Err(e) = post_reply(client, &bot_token, &msg.channel, &msg.ts, &reply).await {
             tracing::error!("Stats bot: failed to post reply: {}", e);
