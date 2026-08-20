@@ -409,7 +409,7 @@ async fn handle_message(
         let reply = format!(
             "No Hackatime Data available, your coding time is either private or you have none. \
              If it is private link your account here to see your stats: {link}, \
-             if you have no coding time then get coding :thumbsup:. \
+             if you have no coding time then get coding :thumbs-up:. \
              For now here's just your slack time data"
         );
         if let Err(e) = post_reply(client, &bot_token, &msg.channel, &msg.ts, &reply).await {
