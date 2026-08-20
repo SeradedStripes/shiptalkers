@@ -1,6 +1,9 @@
 use clickhouse::Client;
 
 pub mod clickhouse_db;
+pub mod hackatime;
+pub mod refresh;
+pub mod scores;
 pub mod sqlite;
 
 /// Converts a Coolify-style internal ClickHouse URL

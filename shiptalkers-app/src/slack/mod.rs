@@ -1,8 +1,8 @@
 mod socket;
+pub(crate) mod time_range;
 
-pub use socket::{
-    SocketConfig, TimeRange, build_coding_query, parse_time_range_at, start_socket_mode,
-};
+pub use socket::{SocketConfig, build_coding_query, start_socket_mode};
+pub use time_range::{TimeRange, parse_time_range_at};
 
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
