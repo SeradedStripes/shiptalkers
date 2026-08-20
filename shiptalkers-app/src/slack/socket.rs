@@ -357,15 +357,17 @@ async fn handle_message(
         return;
     }
 
-    let user = msg.user.unwrap_or_default();
+    let sender = msg.user.unwrap_or_default();
     let text = msg.text.unwrap_or_default();
 
     let Some(range) = time_range::parse_time_range_at(&text, now_unix()) else {
         return;
     };
+    let user = extract_mentioned_user(&text).unwrap_or_else(|| sender.clone());
     tracing::info!(
-        "Stats bot: stats request from {} in {} ({:?})",
+        "Stats bot: stats request for {} (from {}) in {} ({:?})",
         user,
+        sender,
         msg.channel,
         text
     );
@@ -722,6 +724,20 @@ async fn upload_image(
         ));
     }
     Ok(())
+}
+
+/// Extracts the first user ID from Slack mention syntax (`<@U123456>` or
+/// `<@U123456|display_name>`) in the message text.
+fn extract_mentioned_user(text: &str) -> Option<String> {
+    let start = text.find("<@")?;
+    let after_at = start + 2;
+    let id_end = text[after_at..].find('>')? + after_at;
+    let id = &text[after_at..id_end];
+    let id = id.split('|').next()?;
+    if id.is_empty() {
+        return None;
+    }
+    Some(id.to_string())
 }
 
 fn fmt_span(secs: u64) -> String {
