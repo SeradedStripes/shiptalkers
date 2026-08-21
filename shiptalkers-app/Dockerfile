@@ -12,24 +12,30 @@ CMD ["cargo", "watch", "-w", "shiptalkers-app/src", "-x", "run"]
 # Production build. The default target is the `runtime` stage, so a plain
 # `docker build .` / the CI workflow produce the production image.
 # Build from the workspace root so the root Cargo.lock is the single lock.
+#
+# Dependency caching is done with cargo-chef: `prepare` distills the
+# workspace into recipe.json (only changes when manifests change), and
+# `cook` compiles all dependencies in a layer that stays cached while
+# source edits flow through.
 
-FROM rust:1.95-alpine3.22 AS builder
+FROM rust:1.95-alpine3.22 AS chef
 
-RUN apk add --no-cache build-base
+RUN apk add --no-cache build-base \
+    && cargo install cargo-chef --locked
 
 WORKDIR /app
 
-COPY Cargo.toml Cargo.lock ./
-COPY shiptalkers-app/Cargo.toml ./shiptalkers-app/Cargo.toml
-RUN mkdir -p shiptalkers-app/src \
-    && echo "fn main() {}" > shiptalkers-app/src/main.rs \
-    && echo "pub fn f() {}" > shiptalkers-app/src/lib.rs \
-    && cargo build --release --locked \
-    && cargo clean -p ship-talkers --release \
-    && rm -rf shiptalkers-app/src
+FROM chef AS planner
 
-COPY shiptalkers-app/src ./shiptalkers-app/src
-COPY shiptalkers-app/templates ./shiptalkers-app/templates
+COPY . .
+RUN cargo chef prepare --recipe-path recipe.json
+
+FROM chef AS builder
+
+COPY --from=planner /app/recipe.json recipe.json
+RUN cargo chef cook --release --recipe-path recipe.json
+
+COPY . .
 RUN cargo build --release --locked
 
 FROM alpine:3.22 AS runtime
