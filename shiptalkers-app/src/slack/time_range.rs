@@ -95,6 +95,7 @@ pub fn parse_time_range_at(text: &str, now: i64) -> Option<TimeRange> {
     let this_year_start = start_of_year(now);
     let ranges: Vec<(&str, TimeRange)> = vec![
         ("all time", TimeRange::AllTime),
+        ("time all", TimeRange::AllTime),
         ("alltime", TimeRange::AllTime),
         ("48 hours", TimeRange::Since(now - 2 * 86400)),
         ("24 hours", TimeRange::Since(now - 86400)),
