@@ -64,10 +64,68 @@ fn rolling_ranges() {
 }
 
 #[test]
+fn digit_count_ranges() {
+    assert_eq!(range("2 days"), (Some(NOW - 2 * 86400), None));
+    assert_eq!(range("12 hours"), (Some(NOW - 12 * 3600), None));
+    assert_eq!(range("12 minutes"), (Some(NOW - 720), None));
+    assert_eq!(range("90 seconds"), (Some(NOW - 90), None));
+    assert_eq!(range("5 weeks"), (Some(NOW - 35 * 86400), None));
+    assert_eq!(range("3 months"), (Some(NOW - 90 * 86400), None));
+    assert_eq!(range("6 months"), (Some(NOW - 180 * 86400), None));
+    assert_eq!(range("1 year"), (Some(NOW - 365 * 86400), None));
+    assert_eq!(range("2 hours"), (Some(NOW - 7200), None));
+}
+
+#[test]
+fn word_count_ranges() {
+    assert_eq!(range("two hours"), (Some(NOW - 7200), None));
+    assert_eq!(range("three months"), (Some(NOW - 90 * 86400), None));
+    assert_eq!(range("seven days"), (Some(NOW - 7 * 86400), None));
+    assert_eq!(range("twenty four hours"), (Some(NOW - 86400), None));
+    assert_eq!(range("twenty-four days"), (Some(NOW - 24 * 86400), None));
+    assert_eq!(range("forty five minutes"), (Some(NOW - 2700), None));
+    assert_eq!(range("ninety seconds"), (Some(NOW - 90), None));
+}
+
+#[test]
+fn large_word_numbers_with_scales_and_and() {
+    assert_eq!(
+        range("two hundred million and ninety nine seconds"),
+        (Some(NOW - 200_000_099), None)
+    );
+    assert_eq!(
+        range("three thousand five hundred hours"),
+        (Some(NOW - 3500 * 3600), None)
+    );
+    assert_eq!(
+        range("one hundred and one days"),
+        (Some(NOW - 101 * 86400), None)
+    );
+    assert_eq!(range("hundred days"), (Some(NOW - 100 * 86400), None));
+    assert_eq!(range("2 million seconds"), (Some(NOW - 2_000_000), None));
+    assert_eq!(range("five hundred days"), (Some(NOW - 500 * 86400), None));
+}
+
+#[test]
+fn sub_second_units_floor_to_one_second() {
+    assert_eq!(range("one thousand milliseconds"), (Some(NOW - 1), None));
+    assert_eq!(range("500 milliseconds"), (Some(NOW - 1), None));
+    assert_eq!(range("250 ms"), (Some(NOW - 1), None));
+    assert_eq!(range("one microsecond"), (Some(NOW - 1), None));
+    assert_eq!(range("2 nanoseconds"), (Some(NOW - 1), None));
+    assert_eq!(range("100 ns"), (Some(NOW - 1), None));
+    assert_eq!(range("one nano second"), (Some(NOW - 1), None));
+    assert_eq!(range("1500 milliseconds"), (Some(NOW - 1), None));
+    assert_eq!(range("90000 milliseconds"), (Some(NOW - 90), None));
+}
+
+#[test]
 fn keywords_match_inside_sentences() {
     assert!(parse_time_range_at("show me last month", NOW).is_some());
     assert!(parse_time_range_at("stats for yesterday", NOW).is_some());
     assert!(parse_time_range_at("one second of stats", NOW).is_some());
+    assert!(parse_time_range_at("show me 30 days of stats", NOW).is_some());
+    assert!(parse_time_range_at("how about twenty minutes", NOW).is_some());
     assert!(parse_time_range_at("no keyword here", NOW).is_none());
 }
 
