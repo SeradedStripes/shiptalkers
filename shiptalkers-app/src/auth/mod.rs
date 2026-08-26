@@ -254,7 +254,7 @@ pub async fn fetch_coding_spans(
 
 /// Seconds of a coding span (`start_ts` unix seconds + `duration` seconds)
 /// that fall inside the range `[range_start, range_end)` (unix seconds; `None`
-/// means unbounded). Mirrors the overlap math in the ClickHouse query in
+/// means unbounded). Mirrors the overlap math in the stats bot query in
 /// `slack/socket.rs` so tests can pin the exact-overlap semantics.
 pub fn span_overlap_seconds(
     start_ts: u64,

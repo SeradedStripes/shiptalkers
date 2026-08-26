@@ -91,94 +91,94 @@ fn since_only_range_clips_the_start() {
 
 // --- build_coding_query (SQL construction and bind order) ---
 
+fn max_placeholder(sql: &str) -> usize {
+    sql.split('$')
+        .skip(1)
+        .filter_map(|s| {
+            s.chars()
+                .take_while(|c| c.is_ascii_digit())
+                .collect::<String>()
+                .parse::<usize>()
+                .ok()
+        })
+        .max()
+        .unwrap_or(0)
+}
+
 #[test]
 fn all_time_query_has_no_range_binds() {
     let range = TimeRange::AllTime;
     let (sql, binds) = build_coding_query(&range);
-    assert_eq!(binds, Vec::<u64>::new());
-    assert!(sql.ends_with("WHERE slack_id = ?"));
+    assert_eq!(binds, Vec::<i64>::new());
     assert_eq!(
         sql,
-        "SELECT sum(duration) FROM hackatime_spans FINAL WHERE slack_id = ?"
+        "SELECT sum(duration) FROM hackatime_spans WHERE slack_id = $1"
     );
 }
 
 #[test]
-fn since_query_binds_start_twice() {
+fn since_query_reuses_start_placeholder() {
     let range = TimeRange::Since(1_786_363_200);
     let (sql, binds) = build_coding_query(&range);
-    assert_eq!(binds, vec![1_786_363_200, 1_786_363_200]);
-    assert!(sql.ends_with("WHERE slack_id = ?"));
-    assert_eq!(sql.matches('?').count(), 3);
+    assert_eq!(binds, vec![1_786_363_200]);
+    assert!(sql.ends_with("WHERE slack_id = $2"));
+    assert_eq!(sql.matches('$').count(), 3);
 }
 
 #[test]
-fn between_query_binds_start_end_end_start() {
+fn between_query_binds_start_end() {
     let start: i64 = 1_751_328_000;
     let end: i64 = 1_753_920_000;
     let range = TimeRange::Between(start, end);
     let (sql, binds) = build_coding_query(&range);
-    assert_eq!(
-        binds,
-        vec![start as u64, end as u64, end as u64, start as u64]
-    );
-    assert!(sql.ends_with("WHERE slack_id = ?"));
-    assert_eq!(sql.matches('?').count(), 5);
+    assert_eq!(binds, vec![start, end]);
+    assert!(sql.ends_with("WHERE slack_id = $3"));
+    assert_eq!(sql.matches('$').count(), 5);
 }
 
 #[test]
 fn between_query_with_negative_timestamps() {
     let range = TimeRange::Between(-100, 200);
     let (sql, binds) = build_coding_query(&range);
-    assert_eq!(binds[0], (-100i64) as u64);
-    assert_eq!(binds[1], 200u64);
-    assert_eq!(binds[2], 200u64);
-    assert_eq!(binds[3], (-100i64) as u64);
-    assert!(sql.ends_with("WHERE slack_id = ?"));
+    assert_eq!(binds[0], -100);
+    assert_eq!(binds[1], 200);
+    assert!(sql.ends_with("WHERE slack_id = $3"));
 }
-
-// --- SQL correctness: the bugs this catches ---
 
 #[test]
 fn sql_uses_start_ts_in_seconds_not_microseconds() {
     // The original bug divided start_ts by 1_000_000 in the SQL.
     // start_ts is stored as unix seconds in the DB.
-    let range = TimeRange::Since(1_786_363_200);
-    let (sql, _) = build_coding_query(&range);
-    assert!(
-        !sql.contains("/ 1000000"),
-        "SQL must not divide start_ts by 1000000: {sql}"
-    );
-    assert!(
-        !sql.contains("/1000000"),
-        "SQL must not divide start_ts by 1000000: {sql}"
-    );
-    assert!(
-        !sql.contains("* 1000000"),
-        "SQL must not multiply by 1000000: {sql}"
-    );
-    assert!(
-        !sql.contains("toUInt64(start_ts"),
-        "SQL must not cast start_ts: {sql}"
-    );
-    // And it must reference start_ts directly (the column name).
-    assert!(
-        sql.contains("start_ts"),
-        "SQL must reference start_ts column: {sql}"
-    );
-}
-
-#[test]
-fn sql_if_fallback_is_uint64_not_int64() {
-    // ClickHouse types the 0 literal in if() as Int64 and the subtraction as
-    // Int64 (bound values are inlined as signed), creating Variant(Int64, UInt64)
-    // which sum() rejects. Wrapping the entire sum() in toUInt64() ensures a
-    // single output type regardless of what ClickHouse infers inside.
     for range in [TimeRange::Since(100), TimeRange::Between(100, 200)] {
         let (sql, _) = build_coding_query(&range);
         assert!(
-            sql.starts_with("SELECT toUInt64(sum("),
-            "SQL must wrap sum() in toUInt64() to avoid Variant type: {sql}"
+            !sql.contains("/ 1000000"),
+            "SQL must not divide start_ts by 1000000: {sql}"
+        );
+        assert!(
+            !sql.contains("/1000000"),
+            "SQL must not divide start_ts by 1000000: {sql}"
+        );
+        assert!(
+            !sql.contains("* 1000000"),
+            "SQL must not multiply by 1000000: {sql}"
+        );
+        assert!(
+            sql.contains("start_ts"),
+            "SQL must reference start_ts column: {sql}"
+        );
+    }
+}
+
+#[test]
+fn range_queries_use_case_not_clickhouse_if() {
+    // ClickHouse's if() types the 0 literal as Int64 while the subtraction is
+    // UInt64, which sum() rejects; the Postgres port uses CASE ... ELSE 0 END.
+    for range in [TimeRange::Since(100), TimeRange::Between(100, 200)] {
+        let (sql, _) = build_coding_query(&range);
+        assert!(
+            sql.starts_with("SELECT sum(CASE WHEN "),
+            "SQL must use CASE WHEN for range-scoped overlap: {sql}"
         );
     }
 }
@@ -186,48 +186,47 @@ fn sql_if_fallback_is_uint64_not_int64() {
 #[test]
 fn where_slack_id_is_always_last_placeholder() {
     // The original bug bound user before the range values.
-    // The SQL must end with WHERE slack_id = ?, making it the final ?
-    // so the caller can bind range values first, user last.
-    for range in [
+    // The SQL must end with WHERE slack_id = $N, making it the final
+    // placeholder so the caller can bind range values first, user last.
+    for (i, range) in [
         TimeRange::AllTime,
         TimeRange::Since(100),
         TimeRange::Between(100, 200),
-    ] {
+    ]
+    .into_iter()
+    .enumerate()
+    {
         let (sql, _) = build_coding_query(&range);
-        assert!(
-            sql.ends_with("WHERE slack_id = ?"),
-            "SQL must end with 'WHERE slack_id = ?': {sql}"
-        );
-        // No ? after the WHERE clause's ? (trivially true since it's last),
-        // and exactly one ? in the WHERE clause.
+        let last = format!("WHERE slack_id = ${}", i + 1);
+        assert!(sql.ends_with(&last), "SQL must end with '{last}': {sql}");
         let where_clause = &sql[sql.find("WHERE").unwrap()..];
         assert_eq!(
-            where_clause.matches('?').count(),
+            where_clause.matches('$').count(),
             1,
-            "WHERE clause must have exactly one ?: {where_clause}"
+            "WHERE clause must have exactly one placeholder: {where_clause}"
         );
     }
 }
 
 #[test]
 fn bind_count_matches_expression_placeholders() {
-    // Range binds from build_coding_query cover every ? except the WHERE
-    // slack_id = ? (which the caller binds separately as the user).
+    // Range binds from build_coding_query cover every placeholder except the
+    // final WHERE slack_id = $N (which the caller binds separately as the user).
     for range in [
         TimeRange::AllTime,
         TimeRange::Since(100),
         TimeRange::Between(100, 200),
     ] {
         let (sql, binds) = build_coding_query(&range);
-        // Total ? minus the 1 in WHERE slack_id = ? must equal binds.len().
-        let total_q = sql.matches('?').count();
-        let range_q = total_q - 1; // exclude the WHERE slack_id = ? placeholder
+        // The highest placeholder number is reserved for slack_id; every
+        // number below it belongs to the range expression.
+        let user_placeholder = max_placeholder(&sql);
         assert_eq!(
-            binds.len(),
-            range_q,
+            binds.len() + 1,
+            user_placeholder,
             "range bind count ({}) != range placeholder count ({}) in: {sql}",
             binds.len(),
-            range_q,
+            user_placeholder - 1,
         );
     }
 }
@@ -249,8 +248,8 @@ fn e2e_last_month_span_inside_range() {
         3600
     );
     let (sql, binds) = build_coding_query(&range);
-    assert_eq!(binds.len() + 1, sql.matches('?').count());
-    assert!(sql.ends_with("WHERE slack_id = ?"));
+    assert_eq!(max_placeholder(&sql), binds.len() + 1);
+    assert!(sql.ends_with(&format!("slack_id = ${}", binds.len() + 1)));
 }
 
 #[test]
@@ -272,7 +271,7 @@ fn e2e_last_week_span_inside_range() {
         7200
     );
     let (sql, binds) = build_coding_query(&range);
-    assert_eq!(binds.len() + 1, sql.matches('?').count());
+    assert_eq!(max_placeholder(&sql), binds.len() + 1);
 }
 
 #[test]
@@ -284,15 +283,15 @@ fn e2e_today_span_inside_range() {
         1800
     );
     let (sql, binds) = build_coding_query(&range);
-    assert_eq!(binds.len() + 1, sql.matches('?').count());
+    assert_eq!(max_placeholder(&sql), binds.len() + 1);
 }
 
 #[test]
 fn e2e_all_time_always_returns_full_duration() {
     let range = parse_time_range_at("all time", NOW).unwrap();
     let (sql, binds) = build_coding_query(&range);
-    assert_eq!(binds, Vec::<u64>::new());
-    assert_eq!(binds.len() + 1, sql.matches('?').count());
+    assert_eq!(binds, Vec::<i64>::new());
+    assert_eq!(max_placeholder(&sql), binds.len() + 1);
     assert_eq!(
         span_overlap_seconds(1_000_000_000, 5400, range.start_ts(), range.end_ts()),
         5400

@@ -5,7 +5,7 @@
 //! gap, so edit the constants below to change how Slack Time is calculated
 //! everywhere.
 
-/// Sessionizer parameters shared by the ClickHouse queries and the Rust reference
+/// Sessionizer parameters shared by the SQL queries and the Rust reference
 /// in `sessionize`. Each SQL site injects these via named format args, so changing
 /// a value here updates production queries and the reference at once. The tests in
 /// `tests/sessionizer.rs` pin the exact semantics.

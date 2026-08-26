@@ -80,20 +80,22 @@ pub async fn get_link(
     let started = Instant::now();
     let session = session_from_request(&headers, &auth_config(&state));
     let hackatime_connected = match &session {
-        Some(s) => hackatime::is_hackatime_connected(&state.clickhouse, &s.slack_id)
+        Some(s) => hackatime::is_hackatime_connected(&state.pool, &s.slack_id)
             .await
             .unwrap_or(false),
         None => false,
     };
     let name = match &session {
         Some(s) => {
-            let display_name: String = state
-                .clickhouse
-                .query("SELECT display_name FROM users FINAL WHERE user_id = ?")
-                .bind(&s.slack_id)
-                .fetch_one()
-                .await
-                .unwrap_or_default();
+            let display_name: String = sqlx::query_scalar::<_, Option<String>>(
+                "SELECT display_name FROM users WHERE user_id = $1",
+            )
+            .bind(&s.slack_id)
+            .fetch_one(&state.pool)
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or_default();
             if display_name.is_empty() {
                 s.name.clone()
             } else {
@@ -274,7 +276,7 @@ pub async fn auth_hackatime_callback(
     }
 
     if let Err(e) =
-        hackatime::upsert_hackatime_connection(&state.clickhouse, &session.slack_id, &token).await
+        hackatime::upsert_hackatime_connection(&state.pool, &session.slack_id, &token).await
     {
         tracing::warn!(
             "upsert hackatime connection failed for {}: {}",
@@ -285,10 +287,10 @@ pub async fn auth_hackatime_callback(
     }
 
     let http = state.http.clone();
-    let clickhouse = state.clickhouse.clone();
+    let pool = state.pool.clone();
     let slack_id = session.slack_id.clone();
     tokio::spawn(async move {
-        if let Err(e) = sync_coding_activity(&clickhouse, &http, &slack_id, Some(&token)).await {
+        if let Err(e) = sync_coding_activity(&pool, &http, &slack_id, Some(&token)).await {
             tracing::warn!("Coding activity sync failed for {}: {}", slack_id, e);
         }
     });
@@ -314,7 +316,7 @@ pub async fn auth_hackatime_disconnect(
 ) -> Result<Redirect, StatusCode> {
     let session =
         session_from_request(&headers, &auth_config(&state)).ok_or(StatusCode::UNAUTHORIZED)?;
-    hackatime::delete_hackatime_connection(&state.clickhouse, &session.slack_id)
+    hackatime::delete_hackatime_connection(&state.pool, &session.slack_id)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Redirect::to("/link"))
@@ -355,7 +357,7 @@ impl std::fmt::Display for SyncFailure {
 /// starts one day before the last sync (covering in-flight sessions) and ends
 /// tomorrow.
 pub async fn sync_coding_activity(
-    clickhouse: &clickhouse::Client,
+    pool: &sqlx::PgPool,
     http: &reqwest::Client,
     slack_id: &str,
     access_token: Option<&str>,
@@ -364,11 +366,14 @@ pub async fn sync_coding_activity(
     let _guard = lock.lock().await;
     let today = auth::today_utc();
 
-    let conn = hackatime::get_hackatime_connection(clickhouse, slack_id)
+    let conn = hackatime::get_hackatime_connection(pool, slack_id)
         .await
         .map_err(|e| SyncFailure::Message(format!("read hackatime connection: {e}")))?;
-    let last_synced = conn.and_then(|c| c.last_synced_date).unwrap_or_default();
-    let span_count = hackatime::get_hackatime_span_count(clickhouse, slack_id)
+    let last_synced = conn
+        .as_ref()
+        .and_then(|c| c.last_synced_date.clone())
+        .unwrap_or_default();
+    let span_count = hackatime::get_hackatime_span_count(pool, slack_id)
         .await
         .map_err(|e| SyncFailure::Message(format!("read hackatime_spans count: {e}")))?;
     // No spans yet means the user is new or predates span storage (total-only
@@ -399,7 +404,7 @@ pub async fn sync_coding_activity(
                             "Hackatime token for {} is invalid, removing link",
                             slack_id
                         );
-                        hackatime::delete_hackatime_connection(clickhouse, slack_id)
+                        hackatime::delete_hackatime_connection(pool, slack_id)
                             .await
                             .map_err(|e| {
                                 SyncFailure::Message(format!(
@@ -445,11 +450,11 @@ pub async fn sync_coding_activity(
             updated,
         })
         .collect();
-    hackatime::insert_hackatime_spans(clickhouse, &rows)
+    hackatime::insert_hackatime_spans(pool, &rows)
         .await
         .map_err(|e| SyncFailure::Message(e.to_string()))?;
 
-    let total_seconds = hackatime::get_hackatime_total_seconds(clickhouse, slack_id)
+    let total_seconds = hackatime::get_hackatime_total_seconds(pool, slack_id)
         .await
         .map_err(|e| SyncFailure::Message(e.to_string()))?;
     let minutes = (total_seconds as f64 / 60.0).round() as u64;
@@ -461,7 +466,7 @@ pub async fn sync_coding_activity(
         status: String::new(),
         total_minutes: minutes,
     };
-    hackatime::update_hackatime_connection(clickhouse, &conn)
+    hackatime::update_hackatime_connection(pool, &conn)
         .await
         .map_err(|e| SyncFailure::Message(e.to_string()))?;
 
@@ -480,22 +485,22 @@ const NO_ACCOUNT_RETRY_DAYS: u64 = 30;
 /// connection sync through it; everyone else is fetched from the public stats
 /// API by Slack UID. Public profiles that 404 (no account) or 403 (private,
 /// no token to fall back on) are recorded so they are not retried every cycle.
-pub async fn resync_all(clickhouse: &clickhouse::Client, http: &reqwest::Client) {
-    let user_ids = match hackatime::get_coding_user_ids(clickhouse).await {
+pub async fn resync_all(pool: &sqlx::PgPool, http: &reqwest::Client) {
+    let user_ids = match hackatime::get_coding_user_ids(pool).await {
         Ok(ids) => ids,
         Err(e) => {
             tracing::error!("Failed to list users for hackatime resync: {}", e);
             return;
         }
     };
-    let connections = match hackatime::get_hackatime_connections(clickhouse).await {
+    let connections = match hackatime::get_hackatime_connections(pool).await {
         Ok(c) => c,
         Err(e) => {
             tracing::error!("Failed to list hackatime connections: {}", e);
             return;
         }
     };
-    let conns: HashMap<String, hackatime::HackatimeConnectionReadRow> = connections
+    let conns: HashMap<String, hackatime::HackatimeConnectionRow> = connections
         .into_iter()
         .map(|c| (c.slack_id.clone(), c))
         .collect();
@@ -530,11 +535,11 @@ pub async fn resync_all(clickhouse: &clickhouse::Client, http: &reqwest::Client)
         .collect();
 
     let skipped = total_users - work.len() as u64;
-    let ch = clickhouse.clone();
+    let pc = pool.clone();
     let hc = http.clone();
     let results: Vec<_> = stream::iter(work)
         .map(|(user_id, token)| {
-            let ch = ch.clone();
+            let ch = pc.clone();
             let hc = hc.clone();
             async move {
                 let result = sync_coding_activity(&ch, &hc, &user_id, token.as_deref()).await;
@@ -550,11 +555,11 @@ pub async fn resync_all(clickhouse: &clickhouse::Client, http: &reqwest::Client)
         match result {
             Ok(()) => synced += 1,
             Err(SyncFailure::PrivateProfile) => {
-                record_hackatime_status(clickhouse, &user_id, "private").await;
+                record_hackatime_status(pool, &user_id, "private").await;
                 tracing::info!("{} has a private hackatime profile, needs OAuth", user_id);
             }
             Err(SyncFailure::NoAccount) => {
-                record_hackatime_status(clickhouse, &user_id, "no_account").await;
+                record_hackatime_status(pool, &user_id, "no_account").await;
                 tracing::debug!("{} has no hackatime account", user_id);
             }
             Err(SyncFailure::Message(e)) => {
@@ -572,9 +577,9 @@ pub async fn resync_all(clickhouse: &clickhouse::Client, http: &reqwest::Client)
 /// Records why a public-only user cannot be synced (or that a user just
 /// disappeared from hackatime) so the resync loop skips them until the state
 /// changes.
-async fn record_hackatime_status(clickhouse: &clickhouse::Client, slack_id: &str, status: &str) {
+async fn record_hackatime_status(pool: &sqlx::PgPool, slack_id: &str, status: &str) {
     if let Err(e) = hackatime::update_hackatime_connection(
-        clickhouse,
+        pool,
         &hackatime::HackatimeConnectionRow {
             slack_id: slack_id.to_string(),
             access_token: String::new(),

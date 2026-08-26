@@ -27,7 +27,7 @@ Use this file as the default guide for AI agents working in the repository.
 
 ## Overview
 
-Scrapes every public channel and thread reply (plus their reactions) from Hack Club Slack into ClickHouse and serves a stats website with live leaderboards. Emoji names stay in the raw message text and in `slack_reactions` for later statistics; there is no emoji catalog yet.
+Scrapes every public channel and thread reply (plus their reactions) from Hack Club Slack into PostgreSQL and serves a stats website with live leaderboards. Emoji names stay in the raw message text and in `slack_reactions` for later statistics; there is no emoji catalog yet.
 
 Coding time for every non-bot, non-deleted user is pulled from hackatime on a 30-minute cycle: the public spans endpoint (`/api/v1/users/{uid}/heartbeats/spans`) is called for an incremental window and the returned spans are stored with exact timestamps in `hackatime_spans`, with `hackatime_connections.total_minutes` derived from the span sum. A first sync backfills every day since `2024-01-01`. Most users sync through the public endpoint (keyed by Slack UID, no OAuth); a user whose hackatime profile is not public gets a `private` flag and only syncs once they link via OAuth. Missing profiles are recorded as `no_account` and retried every 30 days. A user with a saved OAuth token always syncs through it.
 
@@ -37,11 +37,11 @@ Coding time for every non-bot, non-deleted user is pulled from hackatime on a 30
 - `shiptalkers-app/` - the Rust app crate: `src/`, `templates/`, `tests/`, `Cargo.toml`, `Dockerfile`, `docker-entrypoint.sh`, `.env.example`; built from the workspace root (single `Cargo.lock`, context is the repo root) so the app's `Dockerfile` is used as `shiptalkers-app/Dockerfile` from `docker-compose.yml` and the CI build workflow
 - `scripts/slack_app_creation/` - standalone Rust CLI (not a workspace member) for creating the Slack app and installing tokens
 - `.github/` - `workflows/` (CI, build/deploy) and `actions/setup-rust`
-- `docker-compose.yml` - local dev setup (app + ClickHouse)
+- `docker-compose.yml` - local dev setup (app + Postgres)
 
 ## Architecture
 
-- `src/main.rs` - entry point, settings + env parsing, spawns scraper/user sync/socket mode/web server tasks. When no Slack tokens are set, serves existing ClickHouse data read-only.
+- `src/main.rs` - entry point, settings + env parsing, connects to `DATABASE_URL`, runs startup migrations/backfills via `run_scraper`, spawns scraper/user sync/socket mode/web server tasks. When no Slack tokens are set, serves existing data read-only.
 - `src/scraper.rs` - all scrape logic: `run_scraper` (30m cycle), `scrape_all_messages`, `scrape_channel_list` (shared work queue across user tokens), `scrape_one_channel` (incremental + full-scrape modes, thread re-scan), `scrape_thread`, `process_channel_page` / `process_thread_page` (per-page inserts of messages, reactions, word counts, bot users). Touched users/channels are batched for score recomputation at the end of each pass. `sync_users` runs `users.list` every 2h.
 - `src/slack/mod.rs` - `SlackClient` (per-method FIFO token-bucket rate limiter, 429 backoff, page-by-page streaming pagination so whole channels/threads never sit in memory), `SlackClientPool` (round-robins pages across bot tokens).
 - `src/slack/socket.rs` - Slack Socket Mode via tokio-tungstenite; one connection per `SLACK_APP_TOKENS` app, events sharded by FNV hash of `ts`. Stats bot replies to messages in `SLACK_MAIN_CHANNEL` with a PNG card. Reconnects forever with exponential backoff (1s-60s); stale connections (no frames for 60s) and connect timeouts (30s) are handled.
@@ -53,11 +53,10 @@ Coding time for every non-bot, non-deleted user is pulled from hackatime on a 30
 
 ### `src/db/`
 
-- `clickhouse_db.rs` - schema DDL, `init_tables` (startup migrations, `ReplacingMergeTree`), message/channel/reaction/word-count inserts, checkpoint queries (`get_max_message_ts`, `mark_channel_scraped`, `mark_fully_scraped`, thread equivalents), `optimize_slack_messages` (24h). Row structs: `SlackMessageRow`, `SlackChannelRow`, `SlackReactionRow`, `WordCountRow`.
+- `postgres_db.rs` - schema DDL (`init_tables`), message/channel/reaction/word-count inserts (multi-row `$n` placeholders, chunks of 500), checkpoint queries (`get_max_message_ts`, `mark_channel_scraped`, `mark_fully_scraped`, thread equivalents), startup backfills (`slack_messages_by_user` via trigger + backfill, `word_counts` server-side rebuild), timestamp helpers (`slack_ts_to_micros`, `micros_to_slack_ts`), and `AuthDb` (linked-user upsert/lookup). Row structs: `SlackMessageRow`, `SlackChannelRow`, `SlackReactionRow`, `SlackUserRow`, `WordCountRow`.
 - `hackatime.rs` - `hackatime_connections` and `hackatime_spans` CRUD: upsert, get, delete, `insert_hackatime_spans`, `get_hackatime_total_seconds`, `get_coding_user_ids`.
-- `scores.rs` - `sessionizer_changed` (checks `score_meta` fingerprint), `backfill_stale_user_scores` / `backfill_stale_channel_scores` (incremental or full on sessionizer change), `recompute_user_scores` / `recompute_channel_scores` (batches of 50, sessionizer SQL in ClickHouse).
+- `scores.rs` - `sessionizer_changed` (checks `score_meta` fingerprint), `backfill_stale_user_scores` / `backfill_stale_channel_scores` (incremental or full on sessionizer change), `recompute_user_scores` / `recompute_channel_scores` (batches of 50, sessionizer SQL in Postgres).
 - `refresh.rs` - background tasks: `refresh_word_totals` (incremental fold with daily full rebuild, watermark tracked in `word_refresh_meta`), `refresh_daily_stats` (sessionizer pass over every message, replaces `daily_stats`).
-- `sqlite.rs` - SQLite auth DB (`linked_users`).
 
 ### `src/website/`
 
@@ -66,15 +65,14 @@ Coding time for every non-bot, non-deleted user is pulled from hackatime on a 30
 
 ## Slack Time Formula
 
-Slack Time is the sessionizer output (`user_scores.total_time`, ranked by `score`). To change the algorithm edit the constants in `src/sessionize.rs`, which are shared across all ClickHouse sessionizer queries and the Rust reference. A change to any constant flips `score_meta`'s stored fingerprint, so the next restart full-recomputes all user and channel scores. Tests: `tests/sessionizer.rs`.
+Slack Time is the sessionizer output (`user_scores.total_time`, ranked by `score`). To change the algorithm edit the constants in `src/sessionize.rs`, which are shared across all sessionizer queries and the Rust reference. A change to any constant flips `score_meta`'s stored fingerprint, so the next restart full-recomputes all user and channel scores. Tests: `tests/sessionizer.rs`.
 
 ## Conventions
 
-- ClickHouse is the only analytics datastore. SQLite holds auth/linked-user state only.
-- `slack_messages.message_ts` is `UInt64` microseconds; `thread_ts` stays `String` for Slack pagination compatibility.
+- PostgreSQL is the only datastore (sqlx, runtime queries with `$n` placeholders; no query macros).
+- `slack_messages.message_ts` is `BIGINT` microseconds; Rust row structs keep it as `u64` and bind `as i64`. `thread_ts` stays `TEXT` for Slack pagination compatibility.
 - Logging is `tracing` only. Per-channel work logs at debug; inserts at info; progress at info only when new messages were inserted.
 - The website has exactly one JS file (`time.js`) for UTC-to-local timezone conversion. Everything else is server-rendered askama with `<meta http-equiv="refresh">`.
-- ClickHouse row structs use `#[derive(clickhouse::Row, serde::Deserialize)]`, plus `Serialize` when inserting.
 - Tests live in `shiptalkers-app/tests/` (one file per area) and only reach `pub` items. The crate is lib + bin (`lib.rs` declares modules, `main.rs` imports them).
 - Queries that must survive transient DB issues fall back with `unwrap_or` / `unwrap_or_default`, never panic.
 - Errors use `Box<dyn std::error::Error>` (plus `Send + Sync` across await points) or `String` in scraper tasks.
@@ -87,14 +85,12 @@ All settings below are read from environment variables at startup (with the defa
 - `SLACK_USER_TOKENS` - comma-separated user tokens or numbered variants, one SlackClient per token pulling from the shared channel work queue.
 - `SLACK_APP_TOKENS` - optional, comma-separated app tokens or numbered variants; each opens its own Socket Mode connection and events are sharded across them.
 - `SLACK_MAIN_CHANNEL` - channel ID the stats bot watches; users posting a time range there get a threaded reply. Optional, disables the bot when unset.
-- `SQLITE_DB_PATH` - SQLite auth DB path, default `data/auth.db`.
 - `SLACK_REQUEST_DELAY_MS` - request pacing per method per token, default 1200 (tier 3, 50 req/min).
 - `SLACK_MAX_INFLIGHT` - burst per method per token, default 8.
 - `SLACK_CHANNEL_CONCURRENCY` - channels scraped concurrently per token, default 8.
 - `SLACK_THREAD_RESCAN_HOURS` - thread rescan history window, default 720 (30 days).
 - `SLACK_THREAD_RESCAN_INTERVAL_HOURS` - how often fully-scraped channels are re-scanned for threads, default 6.
-- `CLICKHOUSE_URL` - ClickHouse HTTP endpoint, default `http://clickhouse:8123`. Coolify internal URLs (`clickhouse://user:pass@host:9000/db`) are auto-converted to `http://host:8123`, and credentials/database from the URL are used unless `CLICKHOUSE_USER`/`CLICKHOUSE_PASSWORD`/`CLICKHOUSE_DB` are explicitly set.
-- `CLICKHOUSE_USER`, `CLICKHOUSE_PASSWORD`, `CLICKHOUSE_DB` - ClickHouse credentials and database, default `ship_talkers`.
+- `DATABASE_URL` - required Postgres connection string, e.g. `postgres://ship_talkers:ship_talkers@localhost:5432/ship_talkers`.
 - `HOST`, `PORT` - web server bind, default 0.0.0.0:3000.
 
 ## Gotchas
@@ -105,7 +101,7 @@ All settings below are read from environment variables at startup (with the defa
 - Scrape passes split into full-scrape (new channels) and incremental check (already-scraped channels) using `scraped_channels`.
 - Reactions are whatever the fetch returned at that moment, so only re-fetched messages get their reactions refreshed. Slack truncates the `users` list of very popular reactions, so per-user reaction stats may undercount.
 - Coding time is stored per span in `hackatime_spans` with one total per user in `hackatime_connections.total_minutes`. The stats bot card sums each span's exact overlap with the requested range, falling back to the all-time total before a user's first sync. Coding syncs are serialized per user. A 401/403 only deletes the connection if the `me` endpoint confirms the token is dead; hackatime outages never strip links. A 403 on the unauthenticated path means `private` state; a 404 means `no_account` (both written with empty `access_token` so the resync loop skips them).
-- `slack_messages_by_user` is created with `max_suspicious_broken_parts = 1000` because it is fully derived from `slack_messages` and a power loss can break it. `init_tables` probes this table first and drops it (and its materialized view) whenever it cannot load; the startup backfill then rebuilds it.
+- `slack_messages_by_user` is a plain table kept in sync by an `AFTER INSERT` trigger on `slack_messages`; `init_tables` recreates both on every start, and the startup backfill fills it when empty. It is fully derived data, so wiping it is always safe.
 
 ## Finally
 

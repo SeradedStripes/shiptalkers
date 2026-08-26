@@ -4,7 +4,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::get;
-use clickhouse::Client;
+use sqlx::PgPool;
 use std::collections::HashMap;
 use std::future::Future;
 use std::sync::Arc;
@@ -14,7 +14,7 @@ use tokio::sync::Mutex;
 use crate::settings::RuntimeSettings;
 
 const EXCLUDE_BOTS_DELETED: &str =
-    "user_id NOT IN (SELECT user_id FROM users FINAL WHERE is_bot = 1 OR is_deleted = 1)";
+    "user_id NOT IN (SELECT user_id FROM users WHERE is_bot = 1 OR is_deleted = 1)";
 
 pub mod auth;
 
@@ -92,9 +92,9 @@ struct StatsSnapshot {
 
 #[derive(Clone)]
 pub struct AppState {
-    pub clickhouse: Client,
+    pub pool: PgPool,
     pub http: reqwest::Client,
-    pub auth_db: std::sync::Arc<crate::db::sqlite::AuthDb>,
+    pub auth_db: std::sync::Arc<crate::db::postgres_db::AuthDb>,
     pub cache: AppCache,
     pub settings: RuntimeSettings,
 }
@@ -221,13 +221,13 @@ pub struct UserStats {
 }
 
 pub fn router(
-    clickhouse: Client,
+    pool: PgPool,
     settings: RuntimeSettings,
-    auth_db: std::sync::Arc<crate::db::sqlite::AuthDb>,
+    auth_db: std::sync::Arc<crate::db::postgres_db::AuthDb>,
 ) -> Router {
     crate::init_tls();
     let state = AppState {
-        clickhouse,
+        pool,
         http: reqwest::Client::new(),
         auth_db,
         cache: AppCache::new(),
@@ -290,13 +290,14 @@ fn signed_in(state: &AppState, headers: &HeaderMap) -> bool {
 }
 
 async fn get_pfp(State(state): State<AppState>, Path(user_id): Path<String>) -> Response {
-    let url: String = state
-        .clickhouse
-        .query("SELECT pfp FROM users FINAL WHERE user_id = ?")
-        .bind(&user_id)
-        .fetch_one()
-        .await
-        .unwrap_or_default();
+    let url: String =
+        sqlx::query_scalar::<_, Option<String>>("SELECT pfp FROM users WHERE user_id = $1")
+            .bind(&user_id)
+            .fetch_one(&state.pool)
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or_default();
     if url.is_empty() {
         return StatusCode::NOT_FOUND.into_response();
     }
@@ -358,69 +359,51 @@ async fn get_search(
     let results = if query.trim().is_empty() {
         Vec::new()
     } else {
-        #[derive(clickhouse::Row, serde::Deserialize)]
-        struct SearchRow {
-            user_id: String,
-            display_name: String,
-            pfp: String,
-            is_deleted: u8,
-        }
         let pattern = format!("%{}%", query.trim());
-        state
-            .clickhouse
-            .query(
-                "SELECT user_id, display_name, pfp, is_deleted FROM users FINAL
-                 WHERE display_name ILIKE ? OR user_id ILIKE ?
-                 ORDER BY (display_name ILIKE ?) DESC, display_name
-                 LIMIT 25",
-            )
-            .bind(&pattern)
-            .bind(&pattern)
-            .bind(&pattern)
-            .fetch_all::<SearchRow>()
-            .await
-            .unwrap_or_default()
-            .into_iter()
-            .map(|r| SearchResult {
-                display_name: if r.is_deleted == 1 {
-                    "Deleted account".to_string()
-                } else {
-                    r.display_name
-                },
-                pfp: local_pfp(&r.user_id, &r.pfp),
-                user_id: r.user_id,
-            })
-            .collect()
+        sqlx::query_as::<_, (String, String, String, i16)>(
+            "SELECT user_id, display_name, pfp, is_deleted FROM users
+             WHERE display_name ILIKE $1 OR user_id ILIKE $1
+             ORDER BY (display_name ILIKE $1) DESC, display_name
+             LIMIT 25",
+        )
+        .bind(&pattern)
+        .fetch_all(&state.pool)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(user_id, display_name, pfp, is_deleted)| SearchResult {
+            display_name: if is_deleted == 1 {
+                "Deleted account".to_string()
+            } else {
+                display_name
+            },
+            pfp: local_pfp(&user_id, &pfp),
+            user_id,
+        })
+        .collect()
     };
 
     let channels = if query.trim().is_empty() {
         Vec::new()
     } else {
-        #[derive(clickhouse::Row, serde::Deserialize)]
-        struct ChannelRow {
-            channel_id: String,
-            name: String,
-        }
         let pattern = format!("%{}%", query.trim());
-        state
-            .clickhouse
-            .query(
-                "SELECT channel_id, name FROM slack_channels FINAL
-                 WHERE name ILIKE ?
-                 ORDER BY name
-                 LIMIT 25",
-            )
-            .bind(&pattern)
-            .fetch_all::<ChannelRow>()
-            .await
-            .unwrap_or_default()
-            .into_iter()
-            .map(|r| SearchResult {
-                display_name: r.name,
-                pfp: String::new(),
-                user_id: r.channel_id,
-            })
-            .collect()
+        sqlx::query_as::<_, (String, String)>(
+            "SELECT channel_id, name FROM slack_channels
+             WHERE name ILIKE $1
+             ORDER BY name
+             LIMIT 25",
+        )
+        .bind(&pattern)
+        .fetch_all(&state.pool)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(channel_id, name)| SearchResult {
+            display_name: name,
+            pfp: String::new(),
+            user_id: channel_id,
+        })
+        .collect()
     };
 
     let template = SearchTemplate {
@@ -467,58 +450,43 @@ async fn get_leaderboard(
 const RANK_WINDOW: u64 = 3;
 
 fn sql_escape(s: &str) -> String {
-    s.replace('\\', "\\\\").replace('\'', "\\'")
+    s.replace('\'', "''")
 }
 
-async fn resolve_id(ch: &Client, sql: &str) -> Option<String> {
-    #[derive(clickhouse::Row, serde::Deserialize)]
-    struct IdRow {
-        id: String,
-    }
-    ch.query(sql)
-        .fetch_optional::<IdRow>()
+async fn resolve_id(ch: &PgPool, sql: &str) -> Option<String> {
+    sqlx::query_scalar(sql)
+        .fetch_optional(ch)
         .await
         .ok()
         .flatten()
-        .map(|r| r.id)
 }
 
-async fn fetch_rank_of(ch: &Client, inner: &str, id: &str) -> Option<u64> {
-    #[derive(clickhouse::Row, serde::Deserialize)]
-    struct RankRow {
-        rank: u64,
-    }
-    ch.query(&format!("SELECT rank FROM ({inner}) WHERE id = '{}'", id))
-        .fetch_optional::<RankRow>()
+async fn fetch_rank_of(ch: &PgPool, inner: &str, id: &str) -> Option<u64> {
+    let sql = format!("SELECT rank FROM ({inner}) ranked WHERE ranked.id = $1");
+    let row: Option<i64> = sqlx::query_scalar(&sql)
+        .bind(id)
+        .fetch_optional(ch)
         .await
         .ok()
-        .flatten()
-        .map(|r| r.rank)
+        .flatten();
+    row.map(|rank| rank.max(0) as u64)
 }
 
-async fn fetch_rank_window(ch: &Client, inner: &str, lo: u64, hi: u64) -> Vec<RankedRow> {
-    #[derive(clickhouse::Row, serde::Deserialize)]
-    struct Row {
-        id: String,
-        value: i64,
-        extra: Option<i64>,
-        rank: u64,
-    }
-    ch.query(&format!(
-        "SELECT id, value, extra, rank FROM ({inner}) WHERE rank BETWEEN {lo} AND {hi} ORDER BY rank"
-    ))
-    .fetch_all::<Row>()
-    .await
-    .unwrap_or_default()
-    .into_iter()
-    .map(|r| RankedRow {
-        id: r.id,
-        value: r.value,
-        extra: r.extra,
-        rank: r.rank,
-        highlight: false,
-    })
-    .collect()
+async fn fetch_rank_window(ch: &PgPool, inner: &str, lo: u64, hi: u64) -> Vec<RankedRow> {
+    let sql = format!(
+        "SELECT id, value, extra, rank FROM ({inner}) ranked WHERE rank BETWEEN {lo} AND {hi} ORDER BY rank"
+    );
+    let rows: Vec<(String, i64, Option<i64>, i64)> =
+        sqlx::query_as(&sql).fetch_all(ch).await.unwrap_or_default();
+    rows.into_iter()
+        .map(|(id, value, extra, rank)| RankedRow {
+            id,
+            value,
+            extra,
+            rank: rank.max(0) as u64,
+            highlight: false,
+        })
+        .collect()
 }
 
 /// Fetches a ranked window for a leaderboard. No query returns the top 100; a
@@ -526,7 +494,7 @@ async fn fetch_rank_window(ch: &Client, inner: &str, lo: u64, hi: u64) -> Vec<Ra
 /// channel, word) and jumps to its rank. Returns the rows plus an optional
 /// notice (e.g. no match found).
 async fn ranked_window(
-    ch: &Client,
+    ch: &PgPool,
     inner: &str,
     q: &str,
     parsed_rank: Option<u64>,
@@ -572,19 +540,18 @@ async fn ranked_window(
 }
 
 fn resolve_user_sql(inner: &str, q: &str) -> String {
-    // LIKE is case-sensitive in ClickHouse, so lowercase the query to match the
-    // lower(display_name) comparison case-insensitively. Only users already on
-    // the leaderboard are candidates, so a similarly-named user without scores
-    // can't shadow the one that's actually ranked. Ties (duplicate display
-    // names) break by rank, so the highest-ranked match wins.
+    // LIKE is case-sensitive in PostgreSQL for lower() comparisons against a
+    // lowercased query it still matches case-insensitively in effect. Only
+    // users already on the leaderboard are candidates, so a similarly-named
+    // user without scores can't shadow the one that's actually ranked. Ties
+    // (duplicate display names) break by rank, so the highest-ranked match wins.
     let eq = sql_escape(&q.to_lowercase());
     format!(
-        "SELECT u.user_id AS id FROM users AS u FINAL \
+        "SELECT u.user_id AS id FROM users AS u \
          JOIN ({inner}) lb ON u.user_id = lb.id \
-         WHERE lower(u.display_name) LIKE '%{}%' \
-         ORDER BY (lower(u.display_name) = '{}') DESC, lb.rank, lower(u.display_name) \
-         LIMIT 1",
-        eq, eq
+         WHERE lower(u.display_name) LIKE '%{eq}%' \
+         ORDER BY (lower(u.display_name) = '{eq}') DESC, lb.rank, lower(u.display_name) \
+         LIMIT 1"
     )
 }
 
@@ -595,7 +562,7 @@ async fn get_leaderboard_category(
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<Html<String>, StatusCode> {
     let started = Instant::now();
-    let ch = &state.clickhouse;
+    let ch = &state.pool;
     let signed_in = signed_in(&state, &headers);
     let query = params.get("q").cloned().unwrap_or_default();
     let q = query.trim();
@@ -611,9 +578,9 @@ async fn get_leaderboard_category(
     ) = match category.as_str() {
         "talkers" => {
             let inner = format!(
-                "SELECT user_id AS id, score AS value, toNullable(toInt64(messages)) AS extra, \
+                "SELECT user_id AS id, score AS value, messages::bigint AS extra, \
                  row_number() OVER (ORDER BY score DESC) AS rank \
-                 FROM user_scores FINAL \
+                 FROM user_scores \
                  WHERE {EXCLUDE_BOTS_DELETED}"
             );
             let (ranked, notice) = ranked_window(
@@ -643,11 +610,11 @@ async fn get_leaderboard_category(
         }
         "coders" => {
             let inner = format!(
-                "SELECT user_id AS id, value, CAST(NULL AS Nullable(Int64)) AS extra, rank \
+                "SELECT user_id AS id, value, CAST(NULL AS BIGINT) AS extra, rank \
                  FROM ( \
-                     SELECT slack_id AS user_id, toInt64(total_minutes) AS value, \
+                     SELECT slack_id AS user_id, total_minutes::bigint AS value, \
                             row_number() OVER (ORDER BY total_minutes DESC) AS rank \
-                     FROM hackatime_connections FINAL \
+                     FROM hackatime_connections \
                      WHERE {EXCLUDE_BOTS_DELETED} \
                  )"
             );
@@ -671,10 +638,10 @@ async fn get_leaderboard_category(
             )
         }
         "channels" => {
-            let inner = "SELECT channel_id AS id, toInt64(total_time) AS value, \
-                 toNullable(toInt64(messages)) AS extra, \
+            let inner = "SELECT channel_id AS id, total_time::bigint AS value, \
+                 messages::bigint AS extra, \
                  row_number() OVER (ORDER BY total_time DESC) AS rank \
-                 FROM channel_scores FINAL";
+                 FROM channel_scores";
             let eq = sql_escape(&q.to_lowercase());
             let resolve = format!(
                 "SELECT c.channel_id AS id FROM slack_channels AS c FINAL \
@@ -707,17 +674,17 @@ async fn get_leaderboard_category(
             // seconds, summed per user and ranked. Bots/deleted users are
             // excluded before ranking so ranks stay gap-free.
             let inner = format!(
-                "SELECT user_id AS id, value, CAST(NULL AS Nullable(Int64)) AS extra, rank \
+                "SELECT user_id AS id, value, CAST(NULL AS BIGINT) AS extra, rank \
                  FROM ( \
                      SELECT user_id, value, row_number() OVER (ORDER BY value DESC) AS rank \
                      FROM ( \
                          SELECT user_id, sum(v) AS value \
                          FROM ( \
-                             SELECT user_id, toInt64(total_time) AS v \
-                             FROM user_scores FINAL \
+                             SELECT user_id, total_time::bigint AS v \
+                             FROM user_scores \
                              UNION ALL \
-                             SELECT slack_id AS user_id, toInt64(total_minutes * 60) AS v \
-                             FROM hackatime_connections FINAL \
+                             SELECT slack_id AS user_id, (total_minutes * 60)::bigint AS v \
+                             FROM hackatime_connections \
                          ) \
                          GROUP BY user_id \
                      ) \
@@ -744,12 +711,12 @@ async fn get_leaderboard_category(
             )
         }
         "words" => {
-            let inner = "SELECT word AS id, toInt64(cnt) AS value, \
-                 CAST(NULL AS Nullable(Int64)) AS extra, rank \
+            let inner = "SELECT word AS id, cnt::bigint AS value, \
+                 CAST(NULL AS BIGINT) AS extra, rank \
                  FROM ( \
                      SELECT word, cnt, \
                             row_number() OVER (ORDER BY cnt DESC) AS rank \
-                     FROM word_totals FINAL \
+                     FROM word_totals \
                  )";
             let (ranked, notice) = if q.is_empty() {
                 let cached = state
@@ -833,7 +800,7 @@ enum LeaderboardSource {
 }
 
 async fn leaderboard_entries(
-    ch: &Client,
+    ch: &PgPool,
     rows: Vec<RankedRow>,
     source: LeaderboardSource,
     format_value: impl Fn(u64) -> String,
@@ -846,45 +813,27 @@ async fn leaderboard_entries(
     let names: std::collections::HashMap<String, (String, String)> = if name_ids.is_empty() {
         std::collections::HashMap::new()
     } else {
-        let in_list = name_ids.join("', '");
         match source {
-            LeaderboardSource::Users => {
-                #[derive(clickhouse::Row, serde::Deserialize)]
-                struct NameRow {
-                    user_id: String,
-                    display_name: String,
-                    pfp: String,
-                }
-
-                ch.query(&format!(
-                    "SELECT user_id, display_name, pfp FROM users FINAL WHERE user_id IN ('{}')",
-                    in_list
-                ))
-                .fetch_all::<NameRow>()
-                .await
-                .unwrap_or_default()
-                .into_iter()
-                .map(|r| (r.user_id, (r.display_name, r.pfp)))
-                .collect()
-            }
-            LeaderboardSource::Channels => {
-                #[derive(clickhouse::Row, serde::Deserialize)]
-                struct NameRow {
-                    channel_id: String,
-                    name: String,
-                }
-
-                ch.query(&format!(
-                    "SELECT channel_id, name FROM slack_channels FINAL WHERE channel_id IN ('{}')",
-                    in_list
-                ))
-                .fetch_all::<NameRow>()
-                .await
-                .unwrap_or_default()
-                .into_iter()
-                .map(|r| (r.channel_id, (r.name, String::new())))
-                .collect()
-            }
+            LeaderboardSource::Users => sqlx::query_as::<_, (String, String, String)>(
+                "SELECT user_id, display_name, pfp FROM users WHERE user_id = ANY($1)",
+            )
+            .bind(&name_ids)
+            .fetch_all(ch)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(user_id, display_name, pfp)| (user_id, (display_name, pfp)))
+            .collect(),
+            LeaderboardSource::Channels => sqlx::query_as::<_, (String, String)>(
+                "SELECT channel_id, name FROM slack_channels WHERE channel_id = ANY($1)",
+            )
+            .bind(&name_ids)
+            .fetch_all(ch)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(channel_id, name)| (channel_id, (name, String::new())))
+            .collect(),
         }
     };
 
@@ -943,24 +892,31 @@ async fn get_user_stats(
     slack_id: &str,
 ) -> Result<Html<String>, StatusCode> {
     let started = Instant::now();
-    let ch = &state.clickhouse;
+    let ch = &state.pool;
     let signed_in = signed_in(state, headers);
 
-    #[derive(clickhouse::Row, serde::Deserialize)]
-    struct UserInfoRow {
+    #[derive(Debug)]
+    struct UserInfo {
         display_name: String,
         pfp: String,
-        is_bot: u8,
-        is_deleted: u8,
+        is_bot: bool,
+        is_deleted: bool,
     }
-    let info: Option<UserInfoRow> = ch
-        .query("SELECT display_name, pfp, is_bot, is_deleted FROM users FINAL WHERE user_id = ?")
-        .bind(slack_id)
-        .fetch_optional()
-        .await
-        .unwrap_or(None);
-    let is_bot = info.as_ref().map(|i| i.is_bot == 1).unwrap_or(false);
-    let is_deleted = info.as_ref().map(|i| i.is_deleted == 1).unwrap_or(false);
+    let info: Option<UserInfo> = sqlx::query_as::<_, (String, String, i16, i16)>(
+        "SELECT display_name, pfp, is_bot, is_deleted FROM users WHERE user_id = $1",
+    )
+    .bind(slack_id)
+    .fetch_optional(ch)
+    .await
+    .unwrap_or(None)
+    .map(|(display_name, pfp, is_bot, is_deleted)| UserInfo {
+        display_name,
+        pfp,
+        is_bot: is_bot == 1,
+        is_deleted: is_deleted == 1,
+    });
+    let is_bot = info.as_ref().map(|i| i.is_bot).unwrap_or(false);
+    let is_deleted = info.as_ref().map(|i| i.is_deleted).unwrap_or(false);
     let display_name = info
         .as_ref()
         .map(|i| i.display_name.clone())
@@ -968,7 +924,7 @@ async fn get_user_stats(
     let pfp_url = info.as_ref().map(|i| i.pfp.clone()).unwrap_or_default();
     let pfp = local_pfp(slack_id, &pfp_url);
 
-    #[derive(clickhouse::Row, serde::Deserialize)]
+    #[derive(Debug)]
     struct ScoreRow {
         score: i64,
         total_time: u64,
@@ -980,79 +936,75 @@ async fn get_user_stats(
         active_hour: u8,
     }
 
-    let scores: Option<ScoreRow> = ch
-        .query(
-            "SELECT score, total_time, messages, sessions, longest,
-                    days, channels, active_hour
-             FROM user_scores FINAL WHERE user_id = ?",
-        )
-        .bind(slack_id)
-        .fetch_optional()
-        .await
-        .unwrap_or(None);
+    let scores: Option<ScoreRow> = sqlx::query_as::<_, (i64, i64, i64, i64, i64, i64, i64, i16)>(
+        "SELECT score, total_time, messages, sessions, longest,
+                days, channels, active_hour
+         FROM user_scores WHERE user_id = $1",
+    )
+    .bind(slack_id)
+    .fetch_optional(ch)
+    .await
+    .unwrap_or(None)
+    .map(
+        |(score, total_time, messages, sessions, longest, days, channels, active_hour)| ScoreRow {
+            score,
+            total_time: total_time.max(0) as u64,
+            messages: messages.max(0) as u64,
+            sessions: sessions.max(0) as u64,
+            longest: longest.max(0) as u64,
+            days: days.max(0) as u64,
+            channels: channels.max(0) as u64,
+            active_hour: active_hour.clamp(0, 23) as u8,
+        },
+    );
 
-    let coding_minutes: u64 = ch
-        .query("SELECT total_minutes FROM hackatime_connections FINAL WHERE slack_id = ?")
-        .bind(slack_id)
-        .fetch_optional()
-        .await
-        .unwrap_or(None)
-        .unwrap_or(0);
+    let coding_minutes: u64 = sqlx::query_scalar::<_, i64>(
+        "SELECT total_minutes FROM hackatime_connections WHERE slack_id = $1",
+    )
+    .bind(slack_id)
+    .fetch_optional(ch)
+    .await
+    .unwrap_or(None)
+    .unwrap_or(0)
+    .max(0) as u64;
 
-    #[derive(clickhouse::Row, serde::Deserialize)]
-    struct ChannelCount {
-        channel_id: String,
-        messages: u64,
-    }
+    let counts: Vec<(String, i64)> = sqlx::query_as(
+        "SELECT channel_id, count(*) as messages
+         FROM slack_messages_by_user
+         WHERE user_id = $1
+         GROUP BY channel_id
+         ORDER BY messages DESC
+         LIMIT 10",
+    )
+    .bind(slack_id)
+    .fetch_all(ch)
+    .await
+    .unwrap_or_default();
 
-    let counts: Vec<ChannelCount> = ch
-        .query(
-            "SELECT channel_id, count() as messages
-             FROM slack_messages_by_user
-             WHERE user_id = ?
-             GROUP BY channel_id
-             ORDER BY messages DESC
-             LIMIT 10",
-        )
-        .bind(slack_id)
-        .fetch_all()
-        .await
-        .unwrap_or_default();
-
-    let channel_names: std::collections::HashMap<String, String> = if counts.is_empty() {
+    let name_ids: Vec<String> = counts.iter().map(|(id, _)| id.clone()).collect();
+    let channel_names: std::collections::HashMap<String, String> = if name_ids.is_empty() {
         std::collections::HashMap::new()
     } else {
-        #[derive(clickhouse::Row, serde::Deserialize)]
-        struct ChannelName {
-            channel_id: String,
-            name: String,
-        }
-        let placeholders = counts.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
-        let mut query = ch.query(&format!(
-            "SELECT channel_id, name FROM slack_channels FINAL WHERE channel_id IN ({})",
-            placeholders
-        ));
-        for c in &counts {
-            query = query.bind(&c.channel_id);
-        }
-        query
-            .fetch_all::<ChannelName>()
-            .await
-            .unwrap_or_default()
-            .into_iter()
-            .map(|r| (r.channel_id, r.name))
-            .collect()
+        sqlx::query_as::<_, (String, String)>(
+            "SELECT channel_id, name FROM slack_channels WHERE channel_id = ANY($1)",
+        )
+        .bind(&name_ids)
+        .fetch_all(ch)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .collect()
     };
 
     let top_channels: Vec<ChannelStats> = counts
         .into_iter()
-        .map(|c| ChannelStats {
-            user_id: c.channel_id.clone(),
+        .map(|(channel_id, messages)| ChannelStats {
+            user_id: channel_id.clone(),
             channel_name: channel_names
-                .get(&c.channel_id)
+                .get(&channel_id)
                 .cloned()
-                .unwrap_or_else(|| c.channel_id.clone()),
-            messages: fmt_thousands(c.messages),
+                .unwrap_or_else(|| channel_id.clone()),
+            messages: fmt_thousands(messages.max(0) as u64),
         })
         .collect();
 
@@ -1083,28 +1035,22 @@ async fn get_user_stats(
         };
 
     let leaderboard_rank: String = {
-        #[derive(clickhouse::Row, serde::Deserialize)]
-        struct RankRow {
-            rank: u64,
-        }
-
         if is_bot || is_deleted {
             String::new()
         } else {
             match scores.as_ref() {
-                Some(s) => ch
-                    .query(&format!(
-                        "SELECT count() AS rank
-                         FROM (
-                             SELECT user_id FROM user_scores FINAL
-                              WHERE {EXCLUDE_BOTS_DELETED} AND score > ?
-                         )"
-                    ))
-                    .bind(s.score)
-                    .fetch_one::<RankRow>()
-                    .await
-                    .map(|r| format!("#{}", fmt_thousands(r.rank + 1)))
-                    .unwrap_or_default(),
+                Some(s) => sqlx::query_scalar::<_, i64>(&format!(
+                    "SELECT count(*) AS rank
+                     FROM (
+                         SELECT user_id FROM user_scores
+                          WHERE {EXCLUDE_BOTS_DELETED} AND score > $1
+                     )"
+                ))
+                .bind(s.score)
+                .fetch_one(ch)
+                .await
+                .map(|rank| format!("#{}", fmt_thousands(rank.max(0) as u64 + 1)))
+                .unwrap_or_default(),
                 None => String::new(),
             }
         }
@@ -1147,113 +1093,109 @@ async fn get_channel_stats(
     channel_id: &str,
 ) -> Result<Html<String>, StatusCode> {
     let started = Instant::now();
-    let ch = &state.clickhouse;
+    let ch = &state.pool;
     let signed_in = signed_in(state, headers);
 
-    let channel_name: String = ch
-        .query("SELECT name FROM slack_channels FINAL WHERE channel_id = ?")
-        .bind(channel_id)
-        .fetch_one()
-        .await
-        .unwrap_or_default();
+    let channel_name: String = sqlx::query_scalar::<_, Option<String>>(
+        "SELECT name FROM slack_channels WHERE channel_id = $1",
+    )
+    .bind(channel_id)
+    .fetch_one(ch)
+    .await
+    .ok()
+    .flatten()
+    .unwrap_or_default();
 
-    let total_messages: u64 = ch
-        .query("SELECT count() FROM slack_messages WHERE channel_id = ?")
-        .bind(channel_id)
-        .fetch_one()
-        .await
-        .unwrap_or(0);
+    let total_messages: u64 =
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM slack_messages WHERE channel_id = $1")
+            .bind(channel_id)
+            .fetch_one(ch)
+            .await
+            .unwrap_or(0)
+            .max(0) as u64;
 
-    let active_users: u64 = ch
-        .query(&format!(
-            "SELECT uniqExact(user_id) FROM slack_messages
-             WHERE channel_id = ? AND {EXCLUDE_BOTS_DELETED}"
-        ))
-        .bind(channel_id)
-        .fetch_one()
-        .await
-        .unwrap_or(0);
+    let active_users: u64 = sqlx::query_scalar::<_, i64>(&format!(
+        "SELECT count(DISTINCT user_id) FROM slack_messages
+         WHERE channel_id = $1 AND {EXCLUDE_BOTS_DELETED}"
+    ))
+    .bind(channel_id)
+    .fetch_one(ch)
+    .await
+    .unwrap_or(0)
+    .max(0) as u64;
 
-    let last_ts: u64 = ch
-        .query("SELECT max(message_ts) FROM slack_messages WHERE channel_id = ?")
-        .bind(channel_id)
-        .fetch_one()
-        .await
-        .unwrap_or(0);
+    let last_ts: u64 = sqlx::query_scalar::<_, Option<i64>>(
+        "SELECT max(message_ts) FROM slack_messages WHERE channel_id = $1",
+    )
+    .bind(channel_id)
+    .fetch_one(ch)
+    .await
+    .ok()
+    .flatten()
+    .unwrap_or(0)
+    .max(0) as u64;
 
-    let first_ts: u64 = ch
-        .query("SELECT min(message_ts) FROM slack_messages WHERE channel_id = ?")
-        .bind(channel_id)
-        .fetch_one()
-        .await
-        .unwrap_or(0);
+    let first_ts: u64 = sqlx::query_scalar::<_, Option<i64>>(
+        "SELECT min(message_ts) FROM slack_messages WHERE channel_id = $1",
+    )
+    .bind(channel_id)
+    .fetch_one(ch)
+    .await
+    .ok()
+    .flatten()
+    .unwrap_or(0)
+    .max(0) as u64;
 
-    #[derive(clickhouse::Row, serde::Deserialize)]
-    struct PosterRow {
-        user_id: String,
-        messages: u64,
-    }
+    let posters: Vec<(String, i64)> = sqlx::query_as(&format!(
+        "SELECT user_id, count(*) as messages
+         FROM slack_messages
+         WHERE channel_id = $1 AND {EXCLUDE_BOTS_DELETED}
+         GROUP BY user_id
+         ORDER BY messages DESC
+         LIMIT 10"
+    ))
+    .bind(channel_id)
+    .fetch_all(ch)
+    .await
+    .unwrap_or_default();
 
-    let posters: Vec<PosterRow> = ch
-        .query(&format!(
-            "SELECT user_id, count() as messages
-             FROM slack_messages
-             WHERE channel_id = ? AND {EXCLUDE_BOTS_DELETED}
-             GROUP BY user_id
-             ORDER BY messages DESC
-             LIMIT 10"
-        ))
-        .bind(channel_id)
-        .fetch_all()
-        .await
-        .unwrap_or_default();
-
-    let name_ids: Vec<String> = posters.iter().map(|p| p.user_id.clone()).collect();
-
-    #[derive(clickhouse::Row, serde::Deserialize)]
-    struct PosterNameRow {
-        user_id: String,
-        display_name: String,
-        pfp: String,
-        is_deleted: u8,
-    }
+    let name_ids: Vec<String> = posters.iter().map(|(id, _)| id.clone()).collect();
 
     let poster_names: std::collections::HashMap<String, (String, String)> = if name_ids.is_empty() {
         std::collections::HashMap::new()
     } else {
-        let in_list = name_ids.join("', '");
-        ch.query(&format!(
-            "SELECT user_id, display_name, pfp, is_deleted FROM users FINAL WHERE user_id IN ('{}')",
-            in_list
-        ))
-        .fetch_all::<PosterNameRow>()
+        sqlx::query_as::<_, (String, String, String, i16)>(
+            "SELECT user_id, display_name, pfp, is_deleted FROM users WHERE user_id = ANY($1)",
+        )
+        .bind(&name_ids)
+        .fetch_all(ch)
         .await
         .unwrap_or_default()
         .into_iter()
-        .map(|r| {
-            let label = if r.is_deleted == 1 {
+        .map(|(user_id, display_name, pfp, is_deleted)| {
+            let label = if is_deleted == 1 {
                 "Deleted account".to_string()
             } else {
-                r.display_name
+                display_name
             };
-            (r.user_id, (label, r.pfp))
+            (user_id, (label, pfp))
         })
         .collect()
     };
 
     let top_posters: Vec<UserStats> = posters
         .into_iter()
-        .map(|p| {
-            let (display_name, pfp) = poster_names.get(&p.user_id).cloned().unwrap_or_default();
+        .map(|(user_id, messages)| {
+            let (display_name, pfp) = poster_names.get(&user_id).cloned().unwrap_or_default();
             UserStats {
-                user_id: p.user_id.clone(),
+                user_id: user_id.clone(),
                 display_name: if display_name.is_empty() {
-                    p.user_id.clone()
+                    user_id.clone()
                 } else {
                     display_name
                 },
-                pfp: local_pfp(&p.user_id, &pfp),
-                messages: fmt_thousands(p.messages),
+                pfp: local_pfp(&user_id, &pfp),
+                messages: fmt_thousands(messages.max(0) as u64),
             }
         })
         .collect();
@@ -1310,44 +1252,53 @@ async fn load_stats(state: &AppState, headers: &HeaderMap) -> Stats {
 }
 
 async fn compute_stats(state: &AppState) -> StatsSnapshot {
-    let ch = &state.clickhouse;
-    let total_messages: u64 = ch
-        .query("SELECT count() FROM slack_messages")
-        .fetch_one()
+    let ch = &state.pool;
+    let total_messages: u64 = sqlx::query_scalar::<_, i64>("SELECT count(*) FROM slack_messages")
+        .fetch_one(ch)
         .await
-        .unwrap_or(0);
+        .unwrap_or(0)
+        .max(0) as u64;
 
-    let total_channels: u64 = ch
-        .query("SELECT count() FROM slack_channels FINAL")
-        .fetch_one()
+    let total_channels: u64 = sqlx::query_scalar::<_, i64>("SELECT count(*) FROM slack_channels")
+        .fetch_one(ch)
         .await
-        .unwrap_or(0);
+        .unwrap_or(0)
+        .max(0) as u64;
 
-    let total_users: u64 = ch
-        .query("SELECT count() FROM users FINAL WHERE is_bot = 0 AND is_deleted = 0")
-        .fetch_one()
-        .await
-        .unwrap_or(0);
+    let total_users: u64 = sqlx::query_scalar::<_, i64>(
+        "SELECT count(*) FROM users WHERE is_bot = 0 AND is_deleted = 0",
+    )
+    .fetch_one(ch)
+    .await
+    .unwrap_or(0)
+    .max(0) as u64;
 
-    let coding_minutes: u64 = ch
-        .query("SELECT sum(toUInt64(total_minutes)) FROM hackatime_connections FINAL")
-        .fetch_one()
-        .await
-        .unwrap_or(0);
+    let coding_minutes: u64 = sqlx::query_scalar::<_, Option<i64>>(
+        "SELECT sum(total_minutes) FROM hackatime_connections",
+    )
+    .fetch_one(ch)
+    .await
+    .ok()
+    .flatten()
+    .unwrap_or(0)
+    .max(0) as u64;
 
-    let slack_time_secs: u64 = ch
-        .query(&format!(
-            "SELECT sum(toUInt64(total_time)) FROM user_scores FINAL WHERE {EXCLUDE_BOTS_DELETED}"
-        ))
-        .fetch_one()
-        .await
-        .unwrap_or(0);
+    let slack_time_secs: u64 = sqlx::query_scalar::<_, Option<i64>>(&format!(
+        "SELECT sum(total_time) FROM user_scores WHERE {EXCLUDE_BOTS_DELETED}"
+    ))
+    .fetch_one(ch)
+    .await
+    .ok()
+    .flatten()
+    .unwrap_or(0)
+    .max(0) as u64;
 
-    let db_size_bytes: u64 = ch
-        .query("SELECT sum(bytes_on_disk) as bytes FROM system.parts WHERE database = currentDatabase() AND active")
-        .fetch_one()
-        .await
-        .unwrap_or(0);
+    let db_size_bytes: u64 =
+        sqlx::query_scalar::<_, i64>("SELECT pg_database_size(current_database())")
+            .fetch_one(ch)
+            .await
+            .unwrap_or(0)
+            .max(0) as u64;
 
     StatsSnapshot {
         total_messages,

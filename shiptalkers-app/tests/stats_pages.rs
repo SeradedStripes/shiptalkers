@@ -1,21 +1,25 @@
-use ship_talkers::db::sqlite::AuthDb;
+use ship_talkers::db::postgres_db::AuthDb;
 use ship_talkers::settings::RuntimeSettings;
 use ship_talkers::website::router;
 
 use axum::body::Body;
 use axum::http::Request;
-use clickhouse::Client;
+use sqlx::postgres::PgPoolOptions;
 use tower::ServiceExt;
 
 fn app() -> axum::Router {
     router(
-        Client::default()
-            .with_url("http://localhost:8123")
-            .with_user("ship_talkers")
-            .with_password("ship_talkers")
-            .with_database("ship_talkers"),
+        PgPoolOptions::new()
+            .max_connections(1)
+            .connect_lazy("postgres://ship_talkers:ship_talkers@localhost:5432/ship_talkers")
+            .expect("lazy pool"),
         RuntimeSettings::load(),
-        std::sync::Arc::new(AuthDb::open(":memory:").expect("open in-memory auth db")),
+        std::sync::Arc::new(AuthDb::new(
+            PgPoolOptions::new()
+                .max_connections(1)
+                .connect_lazy("postgres://ship_talkers:ship_talkers@localhost:5432/ship_talkers")
+                .expect("lazy pool"),
+        )),
     )
 }
 

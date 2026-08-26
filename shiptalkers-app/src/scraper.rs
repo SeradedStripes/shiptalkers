@@ -12,14 +12,14 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 pub fn insert_page(
-    clickhouse: clickhouse::Client,
+    pool: sqlx::PgPool,
     page: Vec<slack::SlackChannel>,
     known_channels: Arc<Mutex<std::collections::HashSet<String>>>,
 ) -> Pin<Box<dyn Future<Output = ()> + Send>> {
     Box::pin(async move {
-        let rows: Vec<db::clickhouse_db::SlackChannelRow> = page
+        let rows: Vec<db::postgres_db::SlackChannelRow> = page
             .iter()
-            .map(|ch| db::clickhouse_db::SlackChannelRow {
+            .map(|ch| db::postgres_db::SlackChannelRow {
                 channel_id: ch.id.clone(),
                 name: ch.name.clone(),
             })
@@ -38,7 +38,7 @@ pub fn insert_page(
 
         match tokio::time::timeout(
             Duration::from_secs(120),
-            db::clickhouse_db::insert_new_channels_rows(&clickhouse, &new_rows),
+            db::postgres_db::insert_new_channels_rows(&pool, &new_rows),
         )
         .await
         {
@@ -49,11 +49,8 @@ pub fn insert_page(
     })
 }
 
-pub async fn sync_users(
-    slack_pool: &slack::SlackClientPool,
-    clickhouse: &clickhouse::Client,
-) -> bool {
-    let existing = match db::clickhouse_db::get_user_updates(clickhouse).await {
+pub async fn sync_users(slack_pool: &slack::SlackClientPool, pool: &sqlx::PgPool) -> bool {
+    let existing = match db::postgres_db::get_user_updates(pool).await {
         Ok(m) => m,
         Err(e) => {
             tracing::warn!("Failed to get stored user updates: {}", e);
@@ -61,7 +58,7 @@ pub async fn sync_users(
         }
     };
     let missing_pfps: std::collections::HashSet<String> =
-        match db::clickhouse_db::get_user_ids_without_pfp(clickhouse).await {
+        match db::postgres_db::get_user_ids_without_pfp(pool).await {
             Ok(ids) => ids.into_iter().collect(),
             Err(e) => {
                 tracing::warn!("Failed to get users missing pfps: {}", e);
@@ -78,12 +75,12 @@ pub async fn sync_users(
     let changed_total = Arc::new(AtomicU64::new(0));
     let result = slack_pool
         .fetch_users(|batch| {
-            let clickhouse = clickhouse.clone();
+            let pool = pool.clone();
             let existing = existing.clone();
             let missing_pfps = missing_pfps.clone();
             let changed_total = changed_total.clone();
             Box::pin(async move {
-                let changed: Vec<db::clickhouse_db::SlackUserRow> = batch
+                let changed: Vec<db::postgres_db::SlackUserRow> = batch
                     .into_iter()
                     .filter(|u| {
                         u.is_deleted
@@ -92,7 +89,7 @@ pub async fn sync_users(
                                 None => true,
                             }
                     })
-                    .map(|u| db::clickhouse_db::SlackUserRow {
+                    .map(|u| db::postgres_db::SlackUserRow {
                         user_id: u.id,
                         display_name: u.display_name,
                         pfp: u.pfp,
@@ -104,7 +101,7 @@ pub async fn sync_users(
                 if changed.is_empty() {
                     return;
                 }
-                match db::clickhouse_db::upsert_users(&clickhouse, &changed).await {
+                match db::postgres_db::upsert_users(&pool, &changed).await {
                     Ok(()) => {
                         changed_total.fetch_add(changed.len() as u64, Ordering::Relaxed);
                     }
@@ -138,26 +135,26 @@ pub async fn sync_users(
 }
 
 pub async fn run_scraper(
-    clickhouse: clickhouse::Client,
+    pool: sqlx::PgPool,
     settings: settings::RuntimeSettings,
 ) -> Result<(), String> {
-    if let Err(e) = db::clickhouse_db::backfill_slack_messages_by_user(&clickhouse).await {
+    if let Err(e) = db::postgres_db::backfill_slack_messages_by_user(&pool).await {
         tracing::warn!("Failed to backfill slack_messages_by_user: {}", e);
     }
-    if let Err(e) = db::clickhouse_db::backfill_word_counts(&clickhouse).await {
+    if let Err(e) = db::postgres_db::backfill_word_counts(&pool).await {
         tracing::warn!("Failed to backfill word_counts: {}", e);
     }
-    let sessionizer_changed = db::scores::sessionizer_changed(&clickhouse)
+    let sessionizer_changed = db::scores::sessionizer_changed(&pool)
         .await
         .unwrap_or(false);
     let (channels, users) = tokio::join!(
         async {
-            db::scores::backfill_stale_channel_scores(&clickhouse, sessionizer_changed)
+            db::scores::backfill_stale_channel_scores(&pool, sessionizer_changed)
                 .await
                 .map_err(|e| e.to_string())
         },
         async {
-            db::scores::backfill_stale_user_scores(&clickhouse, sessionizer_changed)
+            db::scores::backfill_stale_user_scores(&pool, sessionizer_changed)
                 .await
                 .map_err(|e| e.to_string())
         },
@@ -172,7 +169,6 @@ pub async fn run_scraper(
     }
 
     let cycle = Duration::from_secs(30 * 60);
-    let mut last_optimize = std::time::Instant::now();
 
     loop {
         let cycle_start = std::time::Instant::now();
@@ -182,19 +178,12 @@ pub async fn run_scraper(
         let user_tokens = settings.get_list("SLACK_USER_TOKENS");
         let bot_pool = slack::SlackClientPool::new(bot_tokens, request_delay, max_inflight);
 
-        if let Err(e) = full_fetch(&bot_pool, &clickhouse).await {
+        if let Err(e) = full_fetch(&bot_pool, &pool).await {
             tracing::warn!("Failed to fetch channel list: {}", e);
         }
 
         if !user_tokens.is_empty() {
-            scrape_all_messages(&settings, &clickhouse).await;
-        }
-
-        if last_optimize.elapsed() >= Duration::from_secs(86400) {
-            if let Err(e) = db::clickhouse_db::optimize_slack_messages(&clickhouse).await {
-                tracing::warn!("Failed to optimize slack_messages: {}", e);
-            }
-            last_optimize = std::time::Instant::now();
+            scrape_all_messages(&settings, &pool).await;
         }
 
         let elapsed = cycle_start.elapsed();
@@ -215,11 +204,8 @@ pub async fn run_scraper(
     }
 }
 
-async fn scrape_all_messages(
-    settings: &settings::RuntimeSettings,
-    clickhouse: &clickhouse::Client,
-) {
-    let channels = match db::clickhouse_db::get_known_channel_ids(clickhouse).await {
+async fn scrape_all_messages(settings: &settings::RuntimeSettings, pool: &sqlx::PgPool) {
+    let channels = match db::postgres_db::get_known_channel_ids(pool).await {
         Ok(c) => c,
         Err(e) => {
             tracing::error!("Failed to get channel IDs: {}", e);
@@ -227,11 +213,11 @@ async fn scrape_all_messages(
         }
     };
 
-    if let Err(e) = db::clickhouse_db::backfill_scraped_channels(clickhouse).await {
+    if let Err(e) = db::postgres_db::backfill_scraped_channels(pool).await {
         tracing::warn!("Failed to backfill scraped channels: {}", e);
     }
 
-    let scraped = match db::clickhouse_db::get_scraped_channel_ids(clickhouse).await {
+    let scraped = match db::postgres_db::get_scraped_channel_ids(pool).await {
         Ok(s) => s,
         Err(e) => {
             tracing::error!("Failed to get scraped channel IDs: {}", e);
@@ -265,7 +251,7 @@ async fn scrape_all_messages(
         tracing::info!("Full-scraping {} new channels...", new_channels.len());
         scrape_channel_list(
             settings,
-            clickhouse,
+            pool,
             &new_channels,
             touched_users.clone(),
             touched_channels.clone(),
@@ -280,7 +266,7 @@ async fn scrape_all_messages(
         );
         scrape_channel_list(
             settings,
-            clickhouse,
+            pool,
             &check_channels,
             touched_users.clone(),
             touched_channels.clone(),
@@ -290,7 +276,7 @@ async fn scrape_all_messages(
 
     let users: Vec<String> = touched_users.lock().unwrap().iter().cloned().collect();
     if !users.is_empty()
-        && let Err(e) = db::scores::recompute_user_scores(clickhouse, &users).await
+        && let Err(e) = db::scores::recompute_user_scores(pool, &users).await
     {
         tracing::warn!(
             "Failed to recompute scores for {} users this pass: {}",
@@ -301,7 +287,7 @@ async fn scrape_all_messages(
 
     let channels: Vec<String> = touched_channels.lock().unwrap().iter().cloned().collect();
     if !channels.is_empty()
-        && let Err(e) = db::scores::recompute_channel_scores(clickhouse, &channels).await
+        && let Err(e) = db::scores::recompute_channel_scores(pool, &channels).await
     {
         tracing::warn!(
             "Failed to recompute scores for {} channels this pass: {}",
@@ -315,7 +301,7 @@ async fn scrape_all_messages(
 
 async fn scrape_channel_list(
     settings: &settings::RuntimeSettings,
-    clickhouse: &clickhouse::Client,
+    pool: &sqlx::PgPool,
     channels: &[String],
     touched_users: Arc<Mutex<std::collections::HashSet<String>>>,
     touched_channels: Arc<Mutex<std::collections::HashSet<String>>>,
@@ -388,11 +374,11 @@ async fn scrape_channel_list(
             touched_users: touched_users.clone(),
             touched_channels: touched_channels.clone(),
         };
-        let clickhouse = clickhouse.clone();
+        let pool = pool.clone();
         let next = next.clone();
         let channels = Arc::new(channels.to_vec());
         workers.push(tokio::spawn(async move {
-            scrape_shard(&client, &clickhouse, channels, next, ctx, rx).await;
+            scrape_shard(&client, &pool, channels, next, ctx, rx).await;
         }));
     }
 
@@ -424,7 +410,7 @@ struct ShardCtx {
 
 async fn scrape_shard(
     user_client: &slack::SlackClient,
-    clickhouse: &clickhouse::Client,
+    pool: &sqlx::PgPool,
     channels: Arc<Vec<String>>,
     next: Arc<AtomicUsize>,
     ctx: ShardCtx,
@@ -477,7 +463,7 @@ async fn scrape_shard(
     let mut handles = Vec::with_capacity(channel_concurrency);
     for _ in 0..channel_concurrency {
         let client = user_client.clone();
-        let clickhouse = clickhouse.clone();
+        let pool = pool.clone();
         let channels = channels.clone();
         let next = next.clone();
         let ctx = ctx.clone();
@@ -488,7 +474,7 @@ async fn scrape_shard(
                     break;
                 }
                 let channel_id = channels[idx].clone();
-                scrape_one_channel(&client, &clickhouse, channel_id, idx + 1, &ctx).await;
+                scrape_one_channel(&client, &pool, channel_id, idx + 1, &ctx).await;
             }
         }));
     }
@@ -503,13 +489,13 @@ async fn scrape_shard(
 fn reaction_rows_from(
     messages: &[slack::SlackMessage],
     channel_id: &str,
-) -> Vec<db::clickhouse_db::SlackReactionRow> {
+) -> Vec<db::postgres_db::SlackReactionRow> {
     let mut rows = Vec::new();
     for m in messages {
-        let message_ts = db::clickhouse_db::slack_ts_to_micros(&m.ts);
+        let message_ts = db::postgres_db::slack_ts_to_micros(&m.ts);
         for reaction in &m.reactions {
             for user_id in &reaction.users {
-                rows.push(db::clickhouse_db::SlackReactionRow {
+                rows.push(db::postgres_db::SlackReactionRow {
                     channel_id: channel_id.to_string(),
                     message_ts,
                     emoji: reaction.name.clone(),
@@ -524,10 +510,10 @@ fn reaction_rows_from(
 fn word_count_rows_from(
     messages: &[slack::SlackMessage],
     channel_id: &str,
-) -> Vec<db::clickhouse_db::WordCountRow> {
+) -> Vec<db::postgres_db::WordCountRow> {
     let mut rows = Vec::new();
     for m in messages {
-        let message_ts = db::clickhouse_db::slack_ts_to_micros(&m.ts);
+        let message_ts = db::postgres_db::slack_ts_to_micros(&m.ts);
         let lower = m.text.to_lowercase();
         let mut counts: std::collections::HashMap<&str, u64> = std::collections::HashMap::new();
         for word in lower
@@ -537,7 +523,7 @@ fn word_count_rows_from(
             *counts.entry(word).or_insert(0) += 1;
         }
         for (word, count) in counts {
-            rows.push(db::clickhouse_db::WordCountRow {
+            rows.push(db::postgres_db::WordCountRow {
                 word: word.to_string(),
                 user_id: m.user.clone(),
                 channel_id: channel_id.to_string(),
@@ -550,11 +536,11 @@ fn word_count_rows_from(
     rows
 }
 
-async fn upsert_bot_users(clickhouse: &clickhouse::Client, messages: &[slack::SlackMessage]) {
-    let bots: Vec<db::clickhouse_db::SlackUserRow> = messages
+async fn upsert_bot_users(pool: &sqlx::PgPool, messages: &[slack::SlackMessage]) {
+    let bots: Vec<db::postgres_db::SlackUserRow> = messages
         .iter()
         .filter(|m| m.user.starts_with('B'))
-        .map(|m| db::clickhouse_db::SlackUserRow {
+        .map(|m| db::postgres_db::SlackUserRow {
             user_id: m.user.clone(),
             display_name: m.bot_name.clone().unwrap_or_else(|| m.user.clone()),
             pfp: String::new(),
@@ -566,7 +552,7 @@ async fn upsert_bot_users(clickhouse: &clickhouse::Client, messages: &[slack::Sl
     if bots.is_empty() {
         return;
     }
-    if let Err(e) = db::clickhouse_db::upsert_users(clickhouse, &bots).await {
+    if let Err(e) = db::postgres_db::upsert_users(pool, &bots).await {
         tracing::warn!("Failed to upsert bot users: {}", e);
     }
 }
@@ -585,7 +571,7 @@ struct ThreadPageAccum {
 }
 
 async fn process_channel_page(
-    clickhouse: &clickhouse::Client,
+    pool: &sqlx::PgPool,
     channel_id: &str,
     oldest: Option<&str>,
     page: Vec<slack::SlackMessage>,
@@ -616,12 +602,12 @@ async fn process_channel_page(
         touched_users.lock().unwrap().insert(m.user.clone());
     }
 
-    let rows: Vec<db::clickhouse_db::SlackMessageRow> = page
+    let rows: Vec<db::postgres_db::SlackMessageRow> = page
         .iter()
-        .map(|m| db::clickhouse_db::SlackMessageRow {
+        .map(|m| db::postgres_db::SlackMessageRow {
             user_id: m.user.clone(),
             channel_id: m.channel.clone(),
-            message_ts: db::clickhouse_db::slack_ts_to_micros(&m.ts),
+            message_ts: db::postgres_db::slack_ts_to_micros(&m.ts),
             text: m.text.clone(),
             thread_ts: m.thread_ts.clone(),
         })
@@ -630,7 +616,7 @@ async fn process_channel_page(
     let inserted = if rows.is_empty() {
         0
     } else {
-        db::clickhouse_db::insert_messages(clickhouse, &rows)
+        db::postgres_db::insert_messages(pool, &rows)
             .await
             .unwrap_or(0)
     };
@@ -639,23 +625,23 @@ async fn process_channel_page(
 
     let reaction_rows = reaction_rows_from(&page, channel_id);
     if !reaction_rows.is_empty()
-        && let Err(e) = db::clickhouse_db::insert_reactions(clickhouse, &reaction_rows).await
+        && let Err(e) = db::postgres_db::insert_reactions(pool, &reaction_rows).await
     {
         tracing::warn!("Failed to insert reactions for {}: {}", channel_id, e);
     }
 
     let word_rows = word_count_rows_from(&page, channel_id);
     if !word_rows.is_empty()
-        && let Err(e) = db::clickhouse_db::insert_word_counts(clickhouse, &word_rows).await
+        && let Err(e) = db::postgres_db::insert_word_counts(pool, &word_rows).await
     {
         tracing::warn!("Failed to insert word counts for {}: {}", channel_id, e);
     }
 
-    upsert_bot_users(clickhouse, &page).await;
+    upsert_bot_users(pool, &page).await;
 }
 
 async fn process_thread_page(
-    clickhouse: &clickhouse::Client,
+    pool: &sqlx::PgPool,
     channel_id: &str,
     thread_ts: &str,
     thread_oldest: Option<&str>,
@@ -674,17 +660,17 @@ async fn process_thread_page(
 
     let mut inserted = 0u64;
     if !page.is_empty() {
-        let rows: Vec<db::clickhouse_db::SlackMessageRow> = page
+        let rows: Vec<db::postgres_db::SlackMessageRow> = page
             .iter()
-            .map(|m| db::clickhouse_db::SlackMessageRow {
+            .map(|m| db::postgres_db::SlackMessageRow {
                 user_id: m.user.clone(),
                 channel_id: m.channel.clone(),
-                message_ts: db::clickhouse_db::slack_ts_to_micros(&m.ts),
+                message_ts: db::postgres_db::slack_ts_to_micros(&m.ts),
                 text: m.text.clone(),
                 thread_ts: m.thread_ts.clone(),
             })
             .collect();
-        inserted = db::clickhouse_db::insert_messages(clickhouse, &rows)
+        inserted = db::postgres_db::insert_messages(pool, &rows)
             .await
             .unwrap_or(0);
         total.fetch_add(inserted, Ordering::Relaxed);
@@ -709,7 +695,7 @@ async fn process_thread_page(
 
     let reply_reactions = reaction_rows_from(&page, channel_id);
     if !reply_reactions.is_empty()
-        && let Err(e) = db::clickhouse_db::insert_reactions(clickhouse, &reply_reactions).await
+        && let Err(e) = db::postgres_db::insert_reactions(pool, &reply_reactions).await
     {
         tracing::warn!(
             "Failed to insert reactions for thread {} in {}: {}",
@@ -721,7 +707,7 @@ async fn process_thread_page(
 
     let reply_words = word_count_rows_from(&page, channel_id);
     if !reply_words.is_empty()
-        && let Err(e) = db::clickhouse_db::insert_word_counts(clickhouse, &reply_words).await
+        && let Err(e) = db::postgres_db::insert_word_counts(pool, &reply_words).await
     {
         tracing::warn!(
             "Failed to insert word counts for thread {} in {}: {}",
@@ -731,12 +717,12 @@ async fn process_thread_page(
         );
     }
 
-    upsert_bot_users(clickhouse, &page).await;
+    upsert_bot_users(pool, &page).await;
 }
 
 async fn scrape_one_channel(
     user_client: &slack::SlackClient,
-    clickhouse: &clickhouse::Client,
+    pool: &sqlx::PgPool,
     channel_id: String,
     idx: usize,
     ctx: &ShardCtx,
@@ -748,13 +734,13 @@ async fn scrape_one_channel(
     let processed = ctx.processed.clone();
     let tx = ctx.tx.clone();
     let start = std::time::Instant::now();
-    let fully_scraped = db::clickhouse_db::is_fully_scraped(clickhouse, &channel_id)
+    let fully_scraped = db::postgres_db::is_fully_scraped(pool, &channel_id)
         .await
         .unwrap_or(false);
 
-    let oldest = match db::clickhouse_db::get_max_message_ts(clickhouse, &channel_id).await {
+    let oldest = match db::postgres_db::get_max_message_ts(pool, &channel_id).await {
         Ok(Some(ts)) if ts > 0 => {
-            let ts = db::clickhouse_db::micros_to_slack_ts(ts);
+            let ts = db::postgres_db::micros_to_slack_ts(ts);
             tracing::debug!(
                 "[token {}][{}/{}] Scraping channel {} (mode={}, oldest={})",
                 token_idx,
@@ -798,7 +784,7 @@ async fn scrape_one_channel(
         filtered_out: 0,
         thread_roots: std::collections::HashSet::new(),
     }));
-    let clickedhouse = clickhouse.clone();
+    let pool_for_stream = pool.clone();
     let channel_id_for_stream = channel_id.clone();
     let oldest_for_stream = oldest.clone();
     let total_for_stream = total.clone();
@@ -808,14 +794,14 @@ async fn scrape_one_channel(
     let raw_count = match user_client
         .stream_channel_history(&channel_id, oldest.as_deref(), move |page| {
             let accum = accum_for_stream.clone();
-            let clickhouse = clickedhouse.clone();
+            let pool = pool_for_stream.clone();
             let channel_id = channel_id_for_stream.clone();
             let oldest = oldest_for_stream.clone();
             let total = total_for_stream.clone();
             let touched_users = touched_users_for_stream.clone();
             Box::pin(async move {
                 process_channel_page(
-                    &clickhouse,
+                    &pool,
                     &channel_id,
                     oldest.as_deref(),
                     page,
@@ -838,9 +824,7 @@ async fn scrape_one_channel(
                     total_channels,
                     channel_id
                 );
-                if let Err(err) =
-                    db::clickhouse_db::mark_channel_scraped(clickhouse, &channel_id).await
-                {
+                if let Err(err) = db::postgres_db::mark_channel_scraped(pool, &channel_id).await {
                     tracing::warn!(
                         "[token {}][{}/{}] Failed to record {} as scraped: {}",
                         token_idx,
@@ -884,7 +868,7 @@ async fn scrape_one_channel(
         filtered_out
     );
 
-    if let Err(e) = db::clickhouse_db::mark_channel_scraped(clickhouse, &channel_id).await {
+    if let Err(e) = db::postgres_db::mark_channel_scraped(pool, &channel_id).await {
         tracing::warn!(
             "[token {}][{}/{}] Failed to record {} as scraped: {}",
             token_idx,
@@ -896,7 +880,7 @@ async fn scrape_one_channel(
     }
 
     if !fully_scraped {
-        let stored_roots = db::clickhouse_db::get_thread_roots(clickhouse, &channel_id)
+        let stored_roots = db::postgres_db::get_thread_roots(pool, &channel_id)
             .await
             .unwrap_or_default();
         let mut added = 0usize;
@@ -935,12 +919,12 @@ async fn scrape_one_channel(
             .to_string();
         record_thread_rescan(&channel_id);
         let thread_roots = thread_roots.clone();
-        let clickedhouse = clickhouse.clone();
+        let pool_for_stream = pool.clone();
         let channel_id_for_rescan = channel_id.clone();
         match user_client
             .stream_channel_history(&channel_id, Some(&window_ts), move |page| {
                 let thread_roots = thread_roots.clone();
-                let clickhouse = clickedhouse.clone();
+                let pool = pool_for_stream.clone();
                 let channel_id = channel_id_for_rescan.clone();
                 Box::pin(async move {
                     let mut found = 0usize;
@@ -965,7 +949,7 @@ async fn scrape_one_channel(
                     let extra_reactions = reaction_rows_from(&page, &channel_id);
                     if !extra_reactions.is_empty()
                         && let Err(e) =
-                            db::clickhouse_db::insert_reactions(&clickhouse, &extra_reactions).await
+                            db::postgres_db::insert_reactions(&pool, &extra_reactions).await
                     {
                         tracing::warn!(
                             "Failed to insert reactions from thread re-scan of {}: {}",
@@ -1004,7 +988,7 @@ async fn scrape_one_channel(
         for thread_ts in &thread_parents {
             let permit = sem.clone();
             let client = user_client.clone();
-            let clickhouse = clickhouse.clone();
+            let pool = pool.clone();
             let channel_id = channel_id.clone();
             let thread_ts = thread_ts.clone();
             let total = total.clone();
@@ -1012,7 +996,7 @@ async fn scrape_one_channel(
                 let _permit = permit.acquire().await;
                 scrape_thread(
                     &client,
-                    &clickhouse,
+                    &pool,
                     channel_id,
                     thread_ts,
                     token_idx,
@@ -1049,7 +1033,7 @@ async fn scrape_one_channel(
 
     if !fully_scraped
         && threads_skipped == 0
-        && let Err(e) = db::clickhouse_db::mark_fully_scraped(clickhouse, &channel_id).await
+        && let Err(e) = db::postgres_db::mark_fully_scraped(pool, &channel_id).await
     {
         tracing::warn!(
             "[token {}][{}/{}] Failed to mark {} as fully scraped: {}",
@@ -1120,7 +1104,7 @@ fn record_thread_rescan(channel_id: &str) {
 
 async fn scrape_thread(
     user_client: &slack::SlackClient,
-    clickhouse: &clickhouse::Client,
+    pool: &sqlx::PgPool,
     channel_id: String,
     thread_ts: String,
     token_idx: usize,
@@ -1128,23 +1112,22 @@ async fn scrape_thread(
     total_channels: usize,
     total: Arc<AtomicU64>,
 ) -> (usize, u64, Vec<String>) {
-    let thread_fully =
-        db::clickhouse_db::is_thread_fully_scraped(clickhouse, &channel_id, &thread_ts)
-            .await
-            .unwrap_or(false);
+    let thread_fully = db::postgres_db::is_thread_fully_scraped(pool, &channel_id, &thread_ts)
+        .await
+        .unwrap_or(false);
     let thread_oldest = if thread_fully {
-        db::clickhouse_db::get_max_thread_reply_ts(clickhouse, &channel_id, &thread_ts)
+        db::postgres_db::get_max_thread_reply_ts(pool, &channel_id, &thread_ts)
             .await
             .ok()
             .flatten()
             .filter(|&ts| ts > 0)
-            .map(db::clickhouse_db::micros_to_slack_ts)
+            .map(db::postgres_db::micros_to_slack_ts)
     } else {
         None
     };
 
     let accum = std::sync::Arc::new(std::sync::Mutex::new(ThreadPageAccum::default()));
-    let clickedhouse = clickhouse.clone();
+    let pool_for_stream = pool.clone();
     let channel_id_for_stream = channel_id.clone();
     let thread_ts_for_stream = thread_ts.clone();
     let thread_oldest_for_stream = thread_oldest.clone();
@@ -1158,14 +1141,14 @@ async fn scrape_thread(
             thread_oldest.as_deref(),
             move |page| {
                 let accum = accum_for_stream.clone();
-                let clickhouse = clickedhouse.clone();
+                let pool = pool_for_stream.clone();
                 let channel_id = channel_id_for_stream.clone();
                 let thread_ts = thread_ts_for_stream.clone();
                 let thread_oldest = thread_oldest_for_stream.clone();
                 let total = total_for_stream.clone();
                 Box::pin(async move {
                     process_thread_page(
-                        &clickhouse,
+                        &pool,
                         &channel_id,
                         &thread_ts,
                         thread_oldest.as_deref(),
@@ -1199,12 +1182,8 @@ async fn scrape_thread(
             }
 
             if thread_oldest.is_none()
-                && let Err(e) = db::clickhouse_db::mark_thread_fully_scraped(
-                    clickhouse,
-                    &channel_id,
-                    &thread_ts,
-                )
-                .await
+                && let Err(e) =
+                    db::postgres_db::mark_thread_fully_scraped(pool, &channel_id, &thread_ts).await
             {
                 tracing::warn!(
                     "[token {}][{}/{}] Failed to mark thread {} as scraped: {}",
@@ -1235,9 +1214,9 @@ async fn scrape_thread(
 
 async fn full_fetch(
     slack_pool: &slack::SlackClientPool,
-    clickhouse: &clickhouse::Client,
+    pool: &sqlx::PgPool,
 ) -> Result<(), String> {
-    let known = match db::clickhouse_db::get_known_channel_ids(clickhouse).await {
+    let known = match db::postgres_db::get_known_channel_ids(pool).await {
         Ok(ids) => ids.into_iter().collect(),
         Err(e) => {
             tracing::warn!("Failed to pre-fetch known channel IDs: {}", e);
@@ -1245,10 +1224,13 @@ async fn full_fetch(
         }
     };
     let known_channels = Arc::new(Mutex::new(known));
-    let ch = clickhouse.clone();
+    let pool_for_fetch = pool.clone();
     let kc = known_channels;
     let total = slack_pool
-        .fetch_channels_paginated(move |page| insert_page(ch.clone(), page, kc.clone()), None)
+        .fetch_channels_paginated(
+            move |page| insert_page(pool_for_fetch.clone(), page, kc.clone()),
+            None,
+        )
         .await
         .map_err(|e| e.to_string())?;
 

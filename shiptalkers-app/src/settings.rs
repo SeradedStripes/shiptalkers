@@ -3,10 +3,7 @@ use std::sync::{Arc, RwLock};
 
 pub const SETTING_KEYS: &[&str] = &[
     "BASE_URL",
-    "CLICKHOUSE_DB",
-    "CLICKHOUSE_PASSWORD",
-    "CLICKHOUSE_URL",
-    "CLICKHOUSE_USER",
+    "DATABASE_URL",
     "HACKATIME_CLIENT_ID",
     "HACKATIME_CLIENT_SECRET",
     "HCA_CLIENT_ID",
@@ -24,7 +21,6 @@ pub const SETTING_KEYS: &[&str] = &[
     "SLACK_THREAD_RESCAN_INTERVAL_HOURS",
     "SLACK_USER_SYNC_DELAY_MS",
     "SLACK_USER_TOKENS",
-    "SQLITE_DB_PATH",
 ];
 
 fn default_value(key: &str) -> &str {
@@ -36,13 +32,8 @@ fn default_value(key: &str) -> &str {
         "SLACK_THREAD_RESCAN_HOURS" => "720",
         "SLACK_THREAD_RESCAN_INTERVAL_HOURS" => "6",
         "BASE_URL" => "http://localhost:3000",
-        "CLICKHOUSE_URL" => "http://clickhouse:8123",
-        "CLICKHOUSE_USER" => "ship_talkers",
-        "CLICKHOUSE_PASSWORD" => "ship_talkers",
-        "CLICKHOUSE_DB" => "ship_talkers",
         "HOST" => "0.0.0.0",
         "PORT" => "3000",
-        "SQLITE_DB_PATH" => "data/auth.db",
         _ => "",
     }
 }

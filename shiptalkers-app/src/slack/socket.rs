@@ -4,7 +4,7 @@ use serde::Deserialize;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 use crate::bot_image;
-use crate::db::clickhouse_db::{self, SlackChannelRow};
+use crate::db::postgres_db::{self, SlackChannelRow};
 use crate::settings::RuntimeSettings;
 use crate::slack::time_range::{self, TimeRange, now_unix};
 
@@ -73,7 +73,7 @@ impl SocketConfig {
 
 pub async fn start_socket_mode(
     config: SocketConfig,
-    clickhouse: clickhouse::Client,
+    pool: sqlx::PgPool,
     settings: RuntimeSettings,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     if config.app_tokens.is_empty() {
@@ -90,13 +90,13 @@ pub async fn start_socket_mode(
     let num_sockets = config.app_tokens.len();
     let mut sockets = Vec::with_capacity(num_sockets);
     for (socket_idx, app_token) in config.app_tokens.iter().enumerate() {
-        let clickhouse = clickhouse.clone();
+        let pool = pool.clone();
         let settings = settings.clone();
         sockets.push(run_socket(
             socket_idx,
             num_sockets,
             app_token.clone(),
-            clickhouse,
+            pool,
             settings,
         ));
     }
@@ -119,7 +119,7 @@ async fn run_socket(
     socket_idx: usize,
     num_sockets: usize,
     app_token: String,
-    clickhouse: clickhouse::Client,
+    pool: sqlx::PgPool,
     settings: RuntimeSettings,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let client = Client::new();
@@ -131,7 +131,7 @@ async fn run_socket(
             socket_idx,
             num_sockets,
             &app_token,
-            &clickhouse,
+            &pool,
             &settings,
         )
         .await
@@ -171,7 +171,7 @@ async fn serve_socket(
     socket_idx: usize,
     num_sockets: usize,
     app_token: &str,
-    clickhouse: &clickhouse::Client,
+    pool: &sqlx::PgPool,
     settings: &RuntimeSettings,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let resp: ConnectionsOpenResponse = client
@@ -241,14 +241,14 @@ async fn serve_socket(
                             {
                                 match event_type {
                                     "channel_created" => {
-                                        handle_channel_created(client, event, clickhouse).await;
+                                        handle_channel_created(client, event, pool).await;
                                     }
                                     "message" => {
                                         handle_message(
                                             client,
                                             socket_idx,
                                             num_sockets,
-                                            clickhouse,
+                                            pool,
                                             settings,
                                             event,
                                         )
@@ -288,11 +288,7 @@ fn shard_for_ts(ts: &str, num_sockets: usize) -> usize {
     (hash % num_sockets as u64) as usize
 }
 
-async fn handle_channel_created(
-    _client: &Client,
-    event: &serde_json::Value,
-    clickhouse: &clickhouse::Client,
-) {
+async fn handle_channel_created(_client: &Client, event: &serde_json::Value, pool: &sqlx::PgPool) {
     let Ok(created) = serde_json::from_value::<ChannelCreated>(event.clone()) else {
         return;
     };
@@ -308,12 +304,8 @@ async fn handle_channel_created(
         name: created.channel.name,
     };
 
-    if let Err(e) = clickhouse_db::insert_new_channels(
-        clickhouse,
-        &[row],
-        &mut std::collections::HashSet::new(),
-    )
-    .await
+    if let Err(e) =
+        postgres_db::insert_new_channels(pool, &[row], &mut std::collections::HashSet::new()).await
     {
         tracing::error!("Failed to insert new channel: {}", e);
     }
@@ -323,7 +315,7 @@ async fn handle_message(
     client: &Client,
     socket_idx: usize,
     num_sockets: usize,
-    clickhouse: &clickhouse::Client,
+    pool: &sqlx::PgPool,
     settings: &RuntimeSettings,
     event: &serde_json::Value,
 ) {
@@ -381,13 +373,13 @@ async fn handle_message(
     // If we have no usable coding data on the user (private or no-account
     // profile, never synced, or a genuine zero total), still show their
     // slack time as a card and explain the situation.
-    if !has_coding_data(clickhouse, &user).await {
+    if !has_coding_data(pool, &user).await {
         tracing::info!(
             "Stats bot: no coding data for {}, sending slack-only card",
             user
         );
-        let slack_seconds = query_slack_seconds(clickhouse, &user, &range).await;
-        let user_name = user_display_name(clickhouse, &user).await;
+        let slack_seconds = query_slack_seconds(pool, &user, &range).await;
+        let user_name = user_display_name(pool, &user).await;
         let slack_time = fmt_span(slack_seconds);
 
         let image = bot_image::SlackOnlyImage {
@@ -418,8 +410,8 @@ async fn handle_message(
         return;
     }
 
-    let (slack_seconds, coding_seconds) = query_stats(clickhouse, &user, &range).await;
-    let user_name = user_display_name(clickhouse, &user).await;
+    let (slack_seconds, coding_seconds) = query_stats(pool, &user, &range).await;
+    let user_name = user_display_name(pool, &user).await;
 
     let (percent, more, other) = if slack_seconds >= coding_seconds {
         let percent = if coding_seconds > 0 {
@@ -469,17 +461,13 @@ async fn handle_message(
     }
 }
 
-async fn query_stats(clickhouse: &clickhouse::Client, user: &str, range: &TimeRange) -> (u64, u64) {
-    let slack = query_slack_seconds(clickhouse, user, range).await;
-    let coding = query_coding_seconds(clickhouse, user, range).await;
+async fn query_stats(pool: &sqlx::PgPool, user: &str, range: &TimeRange) -> (u64, u64) {
+    let slack = query_slack_seconds(pool, user, range).await;
+    let coding = query_coding_seconds(pool, user, range).await;
     (slack, coding)
 }
 
-async fn query_slack_seconds(
-    clickhouse: &clickhouse::Client,
-    user: &str,
-    range: &TimeRange,
-) -> u64 {
+async fn query_slack_seconds(pool: &sqlx::PgPool, user: &str, range: &TimeRange) -> u64 {
     let boundary = crate::sessionize::SESSION_GAP_BOUNDARY_SECS;
     let rate = crate::sessionize::MESSAGE_TYPING_CHARS_PER_SEC;
     let overhead = crate::sessionize::MESSAGE_READ_OVERHEAD_SECS;
@@ -487,24 +475,27 @@ async fn query_slack_seconds(
     let mut session_sql = String::from(
         "WITH
          msg AS (
-             SELECT toInt64(message_ts / 1000000) AS ts,
+             SELECT message_ts / 1000000 AS ts,
                     sum(char_length(text)) AS chars,
-                    count() AS msgs
+                    count(*) AS msgs
              FROM slack_messages_by_user
-             WHERE user_id = ?",
+             WHERE user_id = $1",
     );
     if range.start_ts().is_some() {
-        session_sql.push_str(" AND ts >= ?");
+        session_sql.push_str(" AND ts >= $2");
     }
     if range.end_ts().is_some() {
-        session_sql.push_str(" AND ts < ?");
+        session_sql.push_str(&format!(
+            " AND ts < ${}",
+            if range.start_ts().is_some() { 3 } else { 2 }
+        ));
     }
     session_sql.push_str(&format!(
         " GROUP BY ts
          ),
          flagged AS (
              SELECT ts, chars, msgs,
-                    if(ts - lag(ts) OVER (ORDER BY ts) > {boundary}, 1, 0) AS boundary
+                    CASE WHEN ts - lag(ts) OVER (ORDER BY ts) > {boundary} THEN 1 ELSE 0 END AS boundary
              FROM msg
          ),
          sess AS (
@@ -514,16 +505,16 @@ async fn query_slack_seconds(
          ),
          sessions AS (
              SELECT min(ts) AS start_ts, max(ts) AS end_ts,
-                    argMin(chars, ts) AS first_chars,
-                    argMin(msgs, ts) AS first_msgs
+                    (array_agg(chars ORDER BY ts))[1] AS first_chars,
+                    (array_agg(msgs ORDER BY ts))[1] AS first_msgs
              FROM sess
              GROUP BY sid
          )
-         SELECT sum(toUInt64(least(end_ts - start_ts + (first_chars + {rate} - 1) / {rate} + first_msgs * {overhead}, {max_secs}))) AS total_time
+         SELECT sum(least(end_ts - start_ts + (first_chars + {rate} - 1) / {rate} + first_msgs * {overhead}, {max_secs})) AS total_time
          FROM sessions"
     ));
 
-    let mut session_query = clickhouse.query(&session_sql);
+    let mut session_query = sqlx::query_scalar::<_, Option<i64>>(&session_sql);
     session_query = session_query.bind(user);
     if let Some(start_ts) = range.start_ts() {
         session_query = session_query.bind(start_ts);
@@ -532,16 +523,13 @@ async fn query_slack_seconds(
         session_query = session_query.bind(end_ts);
     }
 
-    #[derive(clickhouse::Row, serde::Deserialize)]
-    struct SessionRow {
-        total_time: u64,
-    }
-
     session_query
-        .fetch_one::<SessionRow>()
+        .fetch_one(pool)
         .await
-        .map(|s| s.total_time)
+        .ok()
+        .flatten()
         .unwrap_or(0)
+        .max(0) as u64
 }
 
 /// Coding seconds for a user within the requested range, summed as the exact
@@ -549,34 +537,31 @@ async fn query_slack_seconds(
 /// boundaries only count the part inside). When the user has no span rows yet
 /// (never synced), falls back to the all-time `total_minutes` so the card
 /// still shows a number.
-async fn query_coding_seconds(
-    clickhouse: &clickhouse::Client,
-    user: &str,
-    range: &TimeRange,
-) -> u64 {
-    let has_rows: u64 = clickhouse
-        .query("SELECT count() FROM hackatime_spans FINAL WHERE slack_id = ?")
-        .bind(user)
-        .fetch_one()
-        .await
-        .unwrap_or(0);
+async fn query_coding_seconds(pool: &sqlx::PgPool, user: &str, range: &TimeRange) -> u64 {
+    let has_rows: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM hackatime_spans WHERE slack_id = $1")
+            .bind(user)
+            .fetch_one(pool)
+            .await
+            .unwrap_or(0);
     if has_rows == 0 {
         tracing::info!(
             user,
             "query_coding_seconds: no hackatime_spans rows, falling back to total_minutes"
         );
-        return query_total_minutes(clickhouse, user).await * 60;
+        return query_total_minutes(pool, user).await * 60;
     }
     let (sql, binds) = build_coding_query(range);
     let start_date = range.start_date().unwrap_or_default();
     let end_date = range.end_date().unwrap_or_default();
-    let mut query = clickhouse.query(&sql);
+    let mut query = sqlx::query_scalar::<_, Option<i64>>(&sql);
     for b in &binds {
-        query = query.bind(b);
+        query = query.bind(*b);
     }
     query = query.bind(user);
-    match query.fetch_one::<u64>().await {
+    match query.fetch_one(pool).await {
         Ok(secs) => {
+            let secs = secs.unwrap_or(0).max(0) as u64;
             tracing::info!(
                 user,
                 start_date,
@@ -602,75 +587,71 @@ async fn query_coding_seconds(
 }
 
 /// Builds the SQL expression and bind values for the coding-overlap query.
-/// The returned `sql` always ends with `WHERE slack_id = ?` as its final
-/// placeholder, which the caller must bind after the range values in `binds`.
-pub fn build_coding_query(range: &TimeRange) -> (String, Vec<u64>) {
+/// The returned `sql` always ends with a final placeholder bound to the
+/// `slack_id`, which the caller must bind after the range values in `binds`.
+pub fn build_coding_query(range: &TimeRange) -> (String, Vec<i64>) {
     let span_start = "start_ts";
-    let span_end = "start_ts + duration";
+    let span_end = "(start_ts + duration)";
     let (expr, binds) = match (range.start_ts(), range.end_ts()) {
         (Some(start), Some(end)) => (
             format!(
-                "toUInt64(sum(if({span_end} > ? AND {span_start} < ?, \
-                 least({span_end}, ?) - greatest({span_start}, ?), 0)))"
+                "sum(CASE WHEN {span_end} > $1 AND {span_start} < $2 \
+                 THEN least({span_end}, $2) - greatest({span_start}, $1) ELSE 0 END)"
             ),
-            vec![start as u64, end as u64, end as u64, start as u64],
+            vec![start, end],
         ),
         (Some(start), None) => (
-            format!("toUInt64(sum(if({span_end} > ?, {span_end} - greatest({span_start}, ?), 0)))"),
-            vec![start as u64, start as u64],
+            format!(
+                "sum(CASE WHEN {span_end} > $1 THEN {span_end} - greatest({span_start}, $1) ELSE 0 END)"
+            ),
+            vec![start],
         ),
         (None, _) => (String::from("sum(duration)"), Vec::new()),
     };
-    let sql = format!("SELECT {expr} FROM hackatime_spans FINAL WHERE slack_id = ?");
+    let next = binds.len() + 1;
+    let sql = format!("SELECT {expr} FROM hackatime_spans WHERE slack_id = ${next}");
     (sql, binds)
 }
 
-async fn query_total_minutes(clickhouse: &clickhouse::Client, user: &str) -> u64 {
-    clickhouse
-        .query("SELECT total_minutes FROM hackatime_connections FINAL WHERE slack_id = ?")
-        .bind(user)
-        .fetch_one()
-        .await
-        .unwrap_or(0)
+async fn query_total_minutes(pool: &sqlx::PgPool, user: &str) -> u64 {
+    sqlx::query_scalar::<_, i64>(
+        "SELECT total_minutes FROM hackatime_connections WHERE slack_id = $1",
+    )
+    .bind(user)
+    .fetch_one(pool)
+    .await
+    .unwrap_or(0)
+    .max(0) as u64
 }
 
 /// Whether the stats bot has usable all-time coding data on a user: a synced
 /// `hackatime_connections` row (empty `status`; `private`/`no_account` rows
 /// carry none) with a nonzero total. The 30m resync loop fills this in, so a
 /// fresh user may get the prompt until their first sync lands.
-async fn has_coding_data(clickhouse: &clickhouse::Client, user: &str) -> bool {
-    #[derive(clickhouse::Row, serde::Deserialize)]
-    struct CodingRow {
-        status: String,
-        total_minutes: u64,
-    }
-    let row: Option<CodingRow> = clickhouse
-        .query("SELECT status, total_minutes FROM hackatime_connections FINAL WHERE slack_id = ?")
-        .bind(user)
-        .fetch_optional()
-        .await
-        .unwrap_or(None);
+async fn has_coding_data(pool: &sqlx::PgPool, user: &str) -> bool {
+    let row: Option<(String, i64)> = sqlx::query_as(
+        "SELECT status, total_minutes FROM hackatime_connections WHERE slack_id = $1",
+    )
+    .bind(user)
+    .fetch_optional(pool)
+    .await
+    .unwrap_or(None);
     match row {
-        Some(r) => r.status.is_empty() && r.total_minutes > 0,
+        Some((status, total_minutes)) => status.is_empty() && total_minutes > 0,
         None => false,
     }
 }
 
-async fn user_display_name(clickhouse: &clickhouse::Client, user: &str) -> String {
-    #[derive(clickhouse::Row, serde::Deserialize)]
-    struct NameRow {
-        display_name: String,
-        is_deleted: u8,
-    }
-    let row: Option<NameRow> = clickhouse
-        .query("SELECT display_name, is_deleted FROM users FINAL WHERE user_id = ?")
-        .bind(user)
-        .fetch_optional()
-        .await
-        .unwrap_or(None);
+async fn user_display_name(pool: &sqlx::PgPool, user: &str) -> String {
+    let row: Option<(String, i16)> =
+        sqlx::query_as("SELECT display_name, is_deleted FROM users WHERE user_id = $1")
+            .bind(user)
+            .fetch_optional(pool)
+            .await
+            .unwrap_or(None);
     match row {
-        Some(r) if r.is_deleted == 1 => "Deleted account".to_string(),
-        Some(r) if !r.display_name.is_empty() => r.display_name,
+        Some((_, 1)) => "Deleted account".to_string(),
+        Some((display_name, _)) if !display_name.is_empty() => display_name,
         _ => user.to_string(),
     }
 }

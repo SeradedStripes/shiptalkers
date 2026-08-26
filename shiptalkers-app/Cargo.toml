@@ -13,7 +13,7 @@ hmac = "0.13"
 sha2 = "0.11"
 base64 = "0.23"
 rand = "0.10"
-clickhouse = { version = "0.15", features = ["time"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "time"] }
 time = "0.3"
 dotenvy = "0.15"
 tracing = "0.1"
@@ -22,7 +22,6 @@ axum = "0.8"
 askama = "0.16"
 tokio-tungstenite = { version = "0.30", features = ["rustls-tls-native-roots"] }
 futures-util = "0.3"
-rusqlite = { version = "0.40", features = ["bundled"] }
 resvg = { version = "0.48", default-features = false, features = ["text"] }
 usvg = { version = "0.48", default-features = false, features = ["text"] }
 mimalloc = "0.1"
