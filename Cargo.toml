@@ -3,7 +3,8 @@
 [workspace]
 resolver = "3"
 members = [
-    "shiptalkers-app"
+    "shiptalkers-app",
+    "shiptalkers-scraper",
 ]
 
 [workspace.lints.clippy]
