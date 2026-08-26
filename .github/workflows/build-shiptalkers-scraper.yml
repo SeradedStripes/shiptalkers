@@ -1,0 +1,83 @@
+name: Build shiptalkers-scraper
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".dockerignore"
+      - "shiptalkers-scraper/**"
+      - ".github/workflows/build-shiptalkers-scraper.yml"
+  workflow_dispatch:
+
+env:
+  IMAGE: ghcr.io/seradedstripes/shiptalkers-scraper
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata (tags, labels)
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=tag
+            type=sha
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./shiptalkers-scraper/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    if: false
+    steps:
+      - name: Call Coolify API to deploy
+        env:
+          COOLIFY_TOKEN: ${{ secrets.COOLIFY_TOKEN }}
+        run: |
+          if [ -z "${COOLIFY_TOKEN}" ]; then
+            echo "::error::COOLIFY_TOKEN secret is not set. Add it in GitHub repo Settings > Secrets and variables > Actions."
+            exit 1
+          fi
+          curl \
+            --fail \
+            --silent \
+            --show-error \
+            -X POST \
+            "Nothing Here Yet" \
+            -H "Authorization: Bearer ${COOLIFY_TOKEN}"
