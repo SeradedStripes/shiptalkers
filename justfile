@@ -1,5 +1,7 @@
 lint:
   cargo clippy --all-targets --all-features -- -D warnings
+lint-fix:
+  cargo clippy --all-targets --all-features --fix --allow-dirty --allow-staged
 
 fmt:
   cargo fmt --all
