@@ -7,5 +7,3 @@ data/
 # Added by cargo
 
 /target
-/ch-backup
-clickhouse-backup-*.zip
