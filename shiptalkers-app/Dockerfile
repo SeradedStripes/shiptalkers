@@ -6,7 +6,7 @@ RUN cargo install cargo-watch
 
 WORKDIR /app
 
-CMD ["cargo", "watch", "-w", "shiptalkers-app/src", "-x", "run"]
+CMD ["cargo", "watch", "-w", "shiptalkers-app/src", "-w", "shiptalkers-lib/src", "-x", "run"]
 
 # ---------------------------------------------------------------------------
 # Production build. The default target is the `runtime` stage, so a plain

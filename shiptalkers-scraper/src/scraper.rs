@@ -1,6 +1,6 @@
-use ship_talkers::db;
-use ship_talkers::settings;
-use ship_talkers::slack;
+use crate::db;
+use crate::settings;
+use crate::slack;
 
 use std::collections::HashMap;
 use std::future::Future;

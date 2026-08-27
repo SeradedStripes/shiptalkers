@@ -188,9 +188,9 @@ pub async fn refresh_daily_stats(pool: &PgPool) -> Result<(), Box<dyn std::error
     sqlx::query("DELETE FROM daily_stats")
         .execute(&mut *tx)
         .await?;
-    for chunk in slack.chunks(super::postgres_db::INSERT_CHUNK) {
+    for chunk in slack.chunks(ship_talkers_lib::db::INSERT_CHUNK) {
         let mut sql = String::from("INSERT INTO daily_stats (date, slack_secs) VALUES ");
-        sql.push_str(&super::postgres_db::placeholders(chunk.len(), 2));
+        sql.push_str(&ship_talkers_lib::db::placeholders(chunk.len(), 2));
         let mut q = sqlx::query(&sql);
         for (date, slack_secs) in chunk {
             q = q.bind(date).bind(*slack_secs);

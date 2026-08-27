@@ -2024,6 +2024,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.0",
+ "ship-talkers-lib",
  "sqlx",
  "time",
  "tokio",
@@ -2036,11 +2037,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "ship-talkers-lib"
+version = "0.1.0"
+dependencies = [
+ "sqlx",
+ "tracing",
+]
+
+[[package]]
 name = "ship-talkers-scraper"
 version = "0.1.0"
 dependencies = [
  "dotenvy",
+ "futures-util",
+ "reqwest",
+ "rustls",
+ "serde",
+ "serde_json",
+ "ship-talkers-lib",
  "sqlx",
+ "time",
  "tokio",
  "tracing",
  "tracing-subscriber",

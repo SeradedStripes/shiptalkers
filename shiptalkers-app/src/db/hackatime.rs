@@ -1,6 +1,6 @@
 use sqlx::PgPool;
 
-use super::postgres_db::INSERT_CHUNK;
+use ship_talkers_lib::db::INSERT_CHUNK;
 
 #[derive(Debug, Clone)]
 pub struct HackatimeConnectionRow {

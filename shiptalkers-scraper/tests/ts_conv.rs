@@ -1,4 +1,4 @@
-use ship_talkers::db::postgres_db::{micros_to_slack_ts, parse_date, slack_ts_to_micros};
+use ship_talkers_scraper::db::postgres_db::{micros_to_slack_ts, parse_date, slack_ts_to_micros};
 
 #[test]
 fn slack_ts_to_micros_handles_secs_and_frac() {

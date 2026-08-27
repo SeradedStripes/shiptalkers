@@ -1,4 +1,4 @@
-use ship_talkers::sessionize::sessionize;
+use ship_talkers_lib::sessionize::sessionize;
 
 #[test]
 fn empty_input_gives_zeros() {

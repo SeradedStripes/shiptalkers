@@ -4,6 +4,7 @@
 resolver = "3"
 members = [
     "shiptalkers-app",
+    "shiptalkers-lib",
     "shiptalkers-scraper",
 ]
 

@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+ship-talkers-lib = { path = "../shiptalkers-lib" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "signal", "sync", "io-util"] }
 reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "json", "form", "query", "gzip"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
