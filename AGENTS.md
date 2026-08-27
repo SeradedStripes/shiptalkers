@@ -33,8 +33,9 @@ Coding time for every non-bot, non-deleted user is pulled from hackatime on a 30
 
 ## Repository Layout
 
-- `Cargo.toml` (root) - Cargo workspace with a single member, `shiptalkers-app`; run `cargo`/`just` from the repo root
+- `Cargo.toml` (root) - Cargo workspace with two members, `shiptalkers-app` and `shiptalkers-scraper`; run `cargo`/`just` from the repo root
 - `shiptalkers-app/` - the Rust app crate: `src/`, `templates/`, `tests/`, `Cargo.toml`, `Dockerfile`, `docker-entrypoint.sh`, `.env.example`; built from the workspace root (single `Cargo.lock`, context is the repo root) so the app's `Dockerfile` is used as `shiptalkers-app/Dockerfile` from `docker-compose.yml` and the CI build workflow
+- `shiptalkers-scraper/` - the Rust scraper crate (`Cargo.toml`, `src/`, `Dockerfile`, `.env.example`), its own Docker image so scraping keeps running while the app container restarts; only depends on Postgres (not on the app)
 - `scripts/slack_app_creation/` - standalone Rust CLI (not a workspace member) for creating the Slack app and installing tokens
 - `.github/` - `workflows/` (CI, build/deploy) and `actions/setup-rust`
 - `docker-compose.yml` - local dev setup (app + Postgres)

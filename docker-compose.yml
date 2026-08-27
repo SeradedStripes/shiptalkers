@@ -16,6 +16,21 @@ services:
       postgres:
         condition: service_healthy
 
+  scraper:
+    build:
+      context: .
+      dockerfile: shiptalkers-scraper/Dockerfile
+      target: dev
+    volumes:
+      - .:/app
+      - cargo-cache:/usr/local/cargo/registry
+    env_file: ./shiptalkers-scraper/.env
+    environment:
+      - DATABASE_URL=postgres://ship_talkers:ship_talkers@postgres:5432/ship_talkers
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   postgres:
     image: postgres:18-alpine
     environment:
