@@ -13,10 +13,9 @@ CMD ["cargo", "watch", "-w", "shiptalkers-scraper/src", "-w", "shiptalkers-lib/s
 # `docker build .` / a CI workflow produce the production image.
 # Build from the workspace root so the root Cargo.lock is the single lock.
 
-FROM rust:1.95-alpine3.22 AS chef
+FROM lukemathwalker/cargo-chef:latest-rust-1.95.0-alpine3.22 AS chef
 
-RUN apk add --no-cache build-base \
-    && cargo install cargo-chef --locked
+RUN apk add --no-cache build-base
 
 WORKDIR /app
 

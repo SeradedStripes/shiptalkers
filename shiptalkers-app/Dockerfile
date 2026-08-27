@@ -18,10 +18,9 @@ CMD ["cargo", "watch", "-w", "shiptalkers-app/src", "-w", "shiptalkers-lib/src",
 # `cook` compiles all dependencies in a layer that stays cached while
 # source edits flow through.
 
-FROM rust:1.95-alpine3.22 AS chef
+FROM lukemathwalker/cargo-chef:latest-rust-1.95.0-alpine3.22 AS chef
 
-RUN apk add --no-cache build-base \
-    && cargo install cargo-chef --locked
+RUN apk add --no-cache build-base
 
 WORKDIR /app
 
