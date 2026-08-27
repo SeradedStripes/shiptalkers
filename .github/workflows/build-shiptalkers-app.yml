@@ -19,7 +19,7 @@ permissions:
   packages: write
 
 concurrency:
-  group: docker-${{ github.ref }}
+  group: docker-app-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
