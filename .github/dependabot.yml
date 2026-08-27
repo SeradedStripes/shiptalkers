@@ -21,6 +21,26 @@ updates:
           - "*"
 
   - package-ecosystem: "cargo"
+    directory: "/shiptalkers-scraper"
+    schedule:
+      interval: "daily"
+    open-pull-requests-limit: 10
+    groups:
+      shiptalkers-scraper-dependencies:
+        patterns:
+          - "*"
+  
+  - package-ecosystem: "cargo"
+    directory: "/shiptalkers-lib"
+    schedule:
+      interval: "daily"
+    open-pull-requests-limit: 10
+    groups:
+      shiptalkers-lib-dependencies:
+        patterns:
+          - "*"
+
+  - package-ecosystem: "cargo"
     directory: "/"
     schedule:
       interval: "daily"
