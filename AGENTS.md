@@ -102,7 +102,7 @@ App (`shiptalkers-app/.env`):
 
 Scraper (`shiptalkers-scraper/.env`):
 
-- `SLACK_BOT_TOKENS` - required, comma-separated bot tokens (one per Slack app), or numbered variants; `conversations.list` / `users.list` pages round-robin across them.
+- `SLACK_BOT_TOKENS` - optional, comma-separated bot tokens (one per Slack app), or numbered variants; `conversations.list` / `users.list` pages round-robin across them. Unset, the scraper still runs the hackatime resync loop.
 - `SLACK_USER_TOKENS` - comma-separated user tokens or numbered variants, one SlackClient per token pulling from the shared channel work queue.
 - `SLACK_REQUEST_DELAY_MS` - request pacing per method per token, default 1200 (tier 3, 50 req/min).
 - `SLACK_MAX_INFLIGHT` - burst per method per token, default 8.

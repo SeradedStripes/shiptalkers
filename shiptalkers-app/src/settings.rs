@@ -13,24 +13,11 @@ pub const SETTING_KEYS: &[&str] = &[
     "SESSION_SECRET",
     "SLACK_APP_TOKENS",
     "SLACK_BOT_TOKENS",
-    "SLACK_CHANNEL_CONCURRENCY",
     "SLACK_MAIN_CHANNEL",
-    "SLACK_MAX_INFLIGHT",
-    "SLACK_REQUEST_DELAY_MS",
-    "SLACK_THREAD_RESCAN_HOURS",
-    "SLACK_THREAD_RESCAN_INTERVAL_HOURS",
-    "SLACK_USER_SYNC_DELAY_MS",
-    "SLACK_USER_TOKENS",
 ];
 
 fn default_value(key: &str) -> &str {
     match key {
-        "SLACK_REQUEST_DELAY_MS" => "1200",
-        "SLACK_MAX_INFLIGHT" => "8",
-        "SLACK_CHANNEL_CONCURRENCY" => "8",
-        "SLACK_USER_SYNC_DELAY_MS" => "3000",
-        "SLACK_THREAD_RESCAN_HOURS" => "720",
-        "SLACK_THREAD_RESCAN_INTERVAL_HOURS" => "6",
         "BASE_URL" => "http://localhost:3000",
         "HOST" => "0.0.0.0",
         "PORT" => "3000",
@@ -41,7 +28,7 @@ fn default_value(key: &str) -> &str {
 /// Keys that hold comma-separated lists. These also accept numbered variants
 /// (`SLACK_BOT_TOKENS_1`, `SLACK_BOT_TOKENS_2`, ...) so long tokens can be
 /// added as short separate lines instead of one giant line.
-const LIST_KEYS: &[&str] = &["SLACK_APP_TOKENS", "SLACK_BOT_TOKENS", "SLACK_USER_TOKENS"];
+const LIST_KEYS: &[&str] = &["SLACK_APP_TOKENS", "SLACK_BOT_TOKENS"];
 const MAX_LIST_VARIANTS: u32 = 64;
 
 /// Settings read from environment variables at startup, with defaults for keys
@@ -97,10 +84,6 @@ impl RuntimeSettings {
             .get(key)
             .cloned()
             .unwrap_or_default()
-    }
-
-    pub fn get_u64(&self, key: &str) -> u64 {
-        self.get(key).parse().unwrap_or(0)
     }
 
     pub fn get_list(&self, key: &str) -> Vec<String> {

@@ -13,9 +13,6 @@ fn env(values: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
 #[test]
 fn unset_keys_get_defaults() {
     let s = RuntimeSettings::from_env(env(&[]));
-    assert_eq!(s.get("SLACK_REQUEST_DELAY_MS"), "1200");
-    assert_eq!(s.get("SLACK_MAX_INFLIGHT"), "8");
-    assert_eq!(s.get("SLACK_CHANNEL_CONCURRENCY"), "8");
     assert_eq!(s.get("PORT"), "3000");
     assert_eq!(s.get("HOST"), "0.0.0.0");
     assert_eq!(s.get("DATABASE_URL"), "");
@@ -31,13 +28,6 @@ fn set_keys_override_defaults() {
 }
 
 #[test]
-fn get_u64_parses_or_zero() {
-    let s = RuntimeSettings::from_env(env(&[("SLACK_MAX_INFLIGHT", "16")]));
-    assert_eq!(s.get_u64("SLACK_MAX_INFLIGHT"), 16);
-    assert_eq!(s.get_u64("SLACK_BOT_TOKENS"), 0);
-}
-
-#[test]
 fn get_list_splits_trims_and_drops_empties() {
     let s = RuntimeSettings::from_env(env(&[("SLACK_APP_TOKENS", " a , b ,, c ")]));
     assert_eq!(s.get_list("SLACK_APP_TOKENS"), vec!["a", "b", "c"]);
@@ -50,13 +40,13 @@ fn get_list_merges_numbered_variants() {
         ("SLACK_BOT_TOKENS", "xoxb-0"),
         ("SLACK_BOT_TOKENS_1", "xoxb-1"),
         ("SLACK_BOT_TOKENS_2", " xoxb-2 ,"),
-        ("SLACK_USER_TOKENS_3", "xoxp-3"),
+        ("SLACK_APP_TOKENS_3", "xoxa-3"),
     ]));
     assert_eq!(
         s.get_list("SLACK_BOT_TOKENS"),
         vec!["xoxb-0", "xoxb-1", "xoxb-2"]
     );
-    assert_eq!(s.get_list("SLACK_USER_TOKENS"), vec!["xoxp-3"]);
+    assert_eq!(s.get_list("SLACK_APP_TOKENS"), vec!["xoxa-3"]);
 }
 
 #[test]
