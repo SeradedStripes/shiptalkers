@@ -68,17 +68,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let addr = format!("{}:{}", settings.get("HOST"), settings.get("PORT"));
 
-    {
-        let pool_for_resync = pool.clone();
-        let http_for_resync = reqwest::Client::new();
-        tokio::spawn(async move {
-            loop {
-                website::auth::resync_all(&pool_for_resync, &http_for_resync).await;
-                tokio::time::sleep(std::time::Duration::from_secs(1800)).await;
-            }
-        });
-    }
-
     tracing::info!("Starting web server on {}", addr);
     let listener = TcpListener::bind(&addr).await?;
     axum::serve(listener, website::router(pool, settings, auth_db))

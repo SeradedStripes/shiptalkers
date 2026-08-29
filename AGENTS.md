@@ -29,14 +29,14 @@ Use this file as the default guide for AI agents working in the repository.
 
 Scrapes every public channel and thread reply (plus their reactions) from Hack Club Slack into PostgreSQL and serves a stats website with live leaderboards. Emoji names stay in the raw message text and in `slack_reactions` for later statistics; there is no emoji catalog yet.
 
-Scraping runs in its own binary/container (`shiptalkers-scraper`, depends only on Postgres) so it keeps running while the app container restarts; the app serves the website, refresh loops, the Socket Mode stats bot, and hackatime sync.
+Scraping runs in its own binary/container (`shiptalkers-scraper`, depends only on Postgres) so it keeps running while the app container restarts; the app serves the website, refresh loops, and the Socket Mode stats bot.
 
-Coding time for every non-bot, non-deleted user is pulled from hackatime on a 30-minute cycle: the public spans endpoint (`/api/v1/users/{uid}/heartbeats/spans`) is called for an incremental window and the returned spans are stored with exact timestamps in `hackatime_spans`, with `hackatime_connections.total_minutes` derived from the span sum. A first sync backfills every day since `2024-01-01`. Most users sync through the public endpoint (keyed by Slack UID, no OAuth); a user whose hackatime profile is not public gets a `private` flag and only syncs once they link via OAuth. Missing profiles are recorded as `no_account` and retried every 30 days. A user with a saved OAuth token always syncs through it.
+Coding time for every non-bot, non-deleted user is pulled from hackatime on a 30-minute cycle (run by the `shiptalkers-scraper` container so it survives app restarts): the public spans endpoint (`/api/v1/users/{uid}/heartbeats/spans`) is called for an incremental window and the returned spans are stored with exact timestamps in `hackatime_spans`, with `hackatime_connections.total_minutes` derived from the span sum. A first sync backfills every day since `2024-01-01`. Most users sync through the public endpoint (keyed by Slack UID, no OAuth); a user whose hackatime profile is not public gets a `private` flag and only syncs once they link via OAuth. Missing profiles are recorded as `no_account` and retried every 30 days. A user with a saved OAuth token always syncs through it.
 
 ## Repository Layout
 
 - `Cargo.toml` (root) - Cargo workspace with three members, `shiptalkers-app`, `shiptalkers-lib`, and `shiptalkers-scraper`; run `cargo`/`just` from the repo root
-- `shiptalkers-lib/` - the Rust shared library crate (`Cargo.toml`, `src/lib.rs`, `src/sessionize.rs`, `src/db.rs`, `tests/sessionizer.rs`) holding code used by both app and scraper: the sessionizer and the shared db primitives (`connect`, `init_tables`, `placeholders`, `INSERT_CHUNK`, `SlackChannelRow`, `insert_new_channels_rows`)
+- `shiptalkers-lib/` - the Rust shared library crate (`Cargo.toml`, `src/lib.rs`, `src/sessionize.rs`, `src/hackatime.rs`, `src/db.rs`, `tests/sessionizer.rs`) holding code used by both app and scraper: the sessionizer, the shared db primitives (`connect`, `init_tables`, `placeholders`, `INSERT_CHUNK`, `SlackChannelRow`, `insert_new_channels_rows`), and the hackatime access layer (`fetch_coding_spans`, `fetch_hackatime_me`, `span_overlap_seconds`, date helpers, `hackatime_connections`/`hackatime_spans` CRUD)
 - `shiptalkers-app/` - the Rust app crate: `src/`, `templates/`, `tests/`, `Cargo.toml`, `Dockerfile`, `docker-entrypoint.sh`, `.env.example`; built from the workspace root (single `Cargo.lock`, context is the repo root) so the app's `Dockerfile` is used as `shiptalkers-app/Dockerfile` from `docker-compose.yml` and the CI build workflow
 - `shiptalkers-scraper/` - the Rust scraper crate (`Cargo.toml`, `src/`, `Dockerfile`, `.env.example`), its own Docker image so scraping keeps running while the app container restarts; only depends on Postgres (not on the app)
 - `scripts/slack_app_creation/` - standalone Rust CLI (not a workspace member) for creating the Slack app and installing tokens
@@ -45,8 +45,9 @@ Coding time for every non-bot, non-deleted user is pulled from hackatime on a 30
 
 ## Architecture
 
-- `src/main.rs` (app) - entry point, settings + env parsing, connects to `DATABASE_URL`, runs `init_tables`, spawns the refresh loops, the Socket Mode task, the hackatime `resync_all` loop, and the web server. When no Slack tokens are set, serves existing data read-only.
-- `shiptalkers-scraper/src/main.rs` (scraper) - separate binary that connects to the same `DATABASE_URL`, runs `init_tables`, spawns `run_scraper` and the `users.list` user-sync loop, then idles until a shutdown signal.
+- `src/main.rs` (app) - entry point, settings + env parsing, connects to `DATABASE_URL`, runs `init_tables`, spawns the refresh loops, the Socket Mode task, and the web server. When no Slack tokens are set, serves existing data read-only.
+- `shiptalkers-scraper/src/main.rs` (scraper) - separate binary that connects to the same `DATABASE_URL`, runs `init_tables`, spawns `run_scraper`, the `users.list` user-sync loop, and the hackatime `resync_all` loop (every 30m, regardless of Slack tokens), then idles until a shutdown signal.
+- `shiptalkers-scraper/src/hackatime.rs` - the coding-time sync engine: `sync_coding_activity` (one user, incremental window or full backfill, token-death check via the `me` endpoint), `resync_all` (30m pass over every non-bot user, records `private`/`no_account` states), `SyncFailure`, `record_hackatime_status`, per-user `coding_sync_lock`.
 - `shiptalkers-scraper/src/scraper.rs` - all scrape logic: `run_scraper` (30m cycle), `scrape_all_messages`, `scrape_channel_list` (shared work queue across user tokens), `scrape_one_channel` (incremental + full-scrape modes, thread re-scan), `scrape_thread`, `process_channel_page` / `process_thread_page` (per-page inserts of messages, reactions, word counts, bot users). Touched users/channels are batched for score recomputation at the end of each pass. `sync_users` runs `users.list` every 2h.
 - `shiptalkers-scraper/src/slack/mod.rs` - `SlackClient` (per-method FIFO token-bucket rate limiter, 429 backoff, page-by-page streaming pagination so whole channels/threads never sit in memory), `SlackClientPool` (round-robins pages across bot tokens).
 - `src/slack/mod.rs` (app) - only re-exports `socket` and `time_range`; the Slack client lives in the scraper crate.
@@ -55,12 +56,11 @@ Coding time for every non-bot, non-deleted user is pulled from hackatime on a 30
 - `src/bot_image.rs` - renders the stats card SVG to PNG via resvg/usvg.
 - `src/lib.rs` (app) - re-exports `ship_talkers_lib::sessionize` so the crate-wide sessionizer references and the socket/refresh queries stay in lockstep with the scraper. Slack Time sessionizer constants (`SESSION_GAP_BOUNDARY_SECS`, `MESSAGE_TYPING_CHARS_PER_SEC`, `MESSAGE_READ_OVERHEAD_SECS`, `SESSION_MAX_SECS`) and the Rust reference `sessionize` live in the shared `shiptalkers-lib` crate; edit `shiptalkers-lib/src/sessionize.rs` to change the algorithm.
 - `src/settings.rs` (app) - env var parsing with defaults, exposed as `RuntimeSettings`, including the auth/website keys. `shiptalkers-scraper/src/settings.rs` is a trimmed copy for the scraper's own knobs.
-- `src/auth/mod.rs` - hackatime spans fetching (`fetch_coding_spans`), span-overlap math for range-scoped queries (`span_overlap_seconds`).
+- `src/auth/mod.rs` - OAuth login/token exchange for HCA and hackatime, signed session cookies (`Session`, `issue_session`, `parse_session`), authorize-URL helpers. The hackatime fetch helpers and date math live in `shiptalkers-lib/src/hackatime.rs` and are re-exported here (`fetch_hackatime_me`, `span_overlap_seconds`, `civil_from_days`, `date_plus_days`).
 
 ### `src/db/` (app)
 
 - `postgres_db.rs` - `AuthDb` (linked-user upsert/lookup) plus the shared db primitives re-exported from `shiptalkers-lib` (`connect`, `init_tables`, `placeholders`, `INSERT_CHUNK`, `SlackChannelRow`, `insert_new_channels_rows`). The scraper crate keeps its own copy with the scrape inserts/checkpoints and timestamp helpers (`slack_ts_to_micros`, `micros_to_slack_ts`, `parse_date`). Both crates run `init_tables` idempotently on every start.
-- `hackatime.rs` - `hackatime_connections` and `hackatime_spans` CRUD: upsert, get, delete, `insert_hackatime_spans`, `get_hackatime_total_seconds`, `get_coding_user_ids`.
 - `refresh.rs` - background tasks: `refresh_word_totals` (incremental fold with daily full rebuild, watermark tracked in `word_refresh_meta`), `refresh_daily_stats` (sessionizer pass over every message, replaces `daily_stats`).
 
 ### `shiptalkers-scraper/src/db/`
@@ -71,7 +71,7 @@ Coding time for every non-bot, non-deleted user is pulled from hackatime on a 30
 ### `src/website/`
 
 - `mod.rs` - axum router, server-rendered `/stats`, `/stats/:id` (user or channel, `U`/`C` prefix), `/leaderboard`, `/search` via askama. `/pfp/:id` redirects to stored Slack pfp URL.
-- `auth.rs` - hackatime OAuth login/callback/disconnect, `sync_coding_activity` (fetches spans, stores in `hackatime_spans`, rewrites `total_minutes`), `resync_all` (30m loop over every non-bot user).
+- `auth.rs` - hackatime OAuth login/callback/disconnect. The callback validates the token via the shared `fetch_hackatime_me` and stores it; the scraper's `resync_all` loop picks it up on its next 30m pass.
 
 ## Slack Time Formula
 

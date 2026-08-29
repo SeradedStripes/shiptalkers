@@ -1,4 +1,4 @@
-use ship_talkers_scraper::{db, scraper, settings, slack};
+use ship_talkers_scraper::{db, hackatime, scraper, settings, slack};
 
 use dotenvy::dotenv;
 use std::time::Duration;
@@ -23,6 +23,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!("Connecting to Postgres...");
     let pool = db::postgres_db::connect(&database_url).await?;
     db::postgres_db::init_tables(&pool).await?;
+
+    let pool_for_hackatime = pool.clone();
+    let http_for_hackatime = reqwest::Client::new();
+    tokio::spawn(async move {
+        loop {
+            hackatime::resync_all(&pool_for_hackatime, &http_for_hackatime).await;
+            tokio::time::sleep(Duration::from_secs(1800)).await;
+        }
+    });
 
     let has_bot_tokens = !settings.get_list("SLACK_BOT_TOKENS").is_empty();
     let has_user_tokens = !settings.get_list("SLACK_USER_TOKENS").is_empty();
