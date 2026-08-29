@@ -250,6 +250,8 @@ pub fn parse_time_range_at(text: &str, now: i64) -> Option<TimeRange> {
         ("hour", TimeRange::Since(now - 3600)),
         ("day", TimeRange::Since(now - 86400)),
         ("oneday", TimeRange::Since(now - 86400)),
+        // a = alltime
+        ("a", TimeRange::AllTime),
     ];
 
     ranges
