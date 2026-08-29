@@ -85,7 +85,7 @@ pub async fn fetch_coding_spans(
     Ok(spans.spans)
 }
 
-/// Seconds of a coding span (`start_ts` unix seconds + `duration` seconds) that fall inside the range `[range_start, range_end)` (unix seconds; `None` means unbounded). 
+/// Seconds of a coding span (`start_ts` unix seconds + `duration` seconds) that fall inside the range `[range_start, range_end)` (unix seconds; `None` means unbounded).
 pub fn span_overlap_seconds(
     start_ts: u64,
     duration: u64,
