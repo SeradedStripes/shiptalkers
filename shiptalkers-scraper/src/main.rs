@@ -3,6 +3,9 @@ use ship_talkers_scraper::{db, hackatime, scraper, settings, slack};
 use dotenvy::dotenv;
 use std::time::Duration;
 
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     dotenv().ok();

@@ -2053,6 +2053,7 @@ version = "0.1.0"
 dependencies = [
  "dotenvy",
  "futures-util",
+ "mimalloc",
  "reqwest",
  "rustls",
  "serde",
