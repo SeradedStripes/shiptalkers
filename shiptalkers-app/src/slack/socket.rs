@@ -482,11 +482,11 @@ async fn query_slack_seconds(pool: &sqlx::PgPool, user: &str, range: &TimeRange)
              WHERE user_id = $1",
     );
     if range.start_ts().is_some() {
-        session_sql.push_str(" AND ts >= $2");
+        session_sql.push_str(" AND message_ts / 1000000 >= $2");
     }
     if range.end_ts().is_some() {
         session_sql.push_str(&format!(
-            " AND ts < ${}",
+            " AND message_ts / 1000000 < ${}",
             if range.start_ts().is_some() { 3 } else { 2 }
         ));
     }
