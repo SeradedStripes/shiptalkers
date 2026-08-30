@@ -537,9 +537,10 @@ fn word_count_rows_from(
 }
 
 async fn upsert_bot_users(pool: &sqlx::PgPool, messages: &[slack::SlackMessage]) {
+    let mut seen = std::collections::HashSet::new();
     let bots: Vec<db::postgres_db::SlackUserRow> = messages
         .iter()
-        .filter(|m| m.user.starts_with('B'))
+        .filter(|m| m.user.starts_with('B') && seen.insert(m.user.clone()))
         .map(|m| db::postgres_db::SlackUserRow {
             user_id: m.user.clone(),
             display_name: m.bot_name.clone().unwrap_or_else(|| m.user.clone()),
