@@ -78,5 +78,5 @@ jobs:
             --silent \
             --show-error \
             -X POST \
-            "Nothing Here Yet" \
+            "https://coolify.kirze.de/api/v1/deploy?uuid=nhtvnfcv6l8ewtqu5qune9pi&force=false" \
             -H "Authorization: Bearer ${COOLIFY_TOKEN}"
