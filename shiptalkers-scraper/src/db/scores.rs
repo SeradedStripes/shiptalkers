@@ -187,7 +187,7 @@ async fn recompute_user_scores_chunk(
              GROUP BY user_id, sid
          )
          SELECT user_id,
-                sum(least(end_ts - start_ts + (first_chars + {rate} - 1) / {rate} + first_msgs * {overhead}, {max_secs})) AS total_time,
+                sum(least(end_ts - start_ts + (first_chars + {rate} - 1) / {rate} + first_msgs * {overhead}, {max_secs}))::bigint AS total_time,
                 max(least(end_ts - start_ts + (first_chars + {rate} - 1) / {rate} + first_msgs * {overhead}, {max_secs})) AS longest,
                 count(*) AS sessions,
                 greatest(max(start_ts) / 86400 - min(start_ts) / 86400 + 1, 1) AS days
@@ -395,7 +395,7 @@ async fn recompute_channel_scores_chunk(
              GROUP BY channel_id, sid
          )
          SELECT channel_id,
-                sum(least(end_ts - start_ts + (first_chars + {rate} - 1) / {rate} + first_msgs * {overhead}, {max_secs})) AS total_time
+                sum(least(end_ts - start_ts + (first_chars + {rate} - 1) / {rate} + first_msgs * {overhead}, {max_secs}))::bigint AS total_time
          FROM sessions
          GROUP BY channel_id"
     ))
