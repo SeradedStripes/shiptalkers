@@ -112,7 +112,7 @@ fn all_time_query_has_no_range_binds() {
     assert_eq!(binds, Vec::<i64>::new());
     assert_eq!(
         sql,
-        "SELECT sum(duration) FROM hackatime_spans WHERE slack_id = $1"
+        "SELECT sum(duration)::bigint FROM hackatime_spans WHERE slack_id = $1"
     );
 }
 

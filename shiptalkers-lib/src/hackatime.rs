@@ -314,7 +314,7 @@ pub async fn get_hackatime_total_seconds(
     slack_id: &str,
 ) -> Result<u64, Box<dyn std::error::Error>> {
     let seconds: Option<i64> =
-        sqlx::query_scalar("SELECT sum(duration) FROM hackatime_spans WHERE slack_id = $1")
+        sqlx::query_scalar("SELECT sum(duration)::bigint FROM hackatime_spans WHERE slack_id = $1")
             .bind(slack_id)
             .fetch_one(pool)
             .await?;

@@ -510,7 +510,7 @@ async fn query_slack_seconds(pool: &sqlx::PgPool, user: &str, range: &TimeRange)
              FROM sess
              GROUP BY sid
          )
-         SELECT sum(least(end_ts - start_ts + (first_chars + {rate} - 1) / {rate} + first_msgs * {overhead}, {max_secs})) AS total_time
+         SELECT sum(least(end_ts - start_ts + (first_chars + {rate} - 1) / {rate} + first_msgs * {overhead}, {max_secs}))::bigint AS total_time
          FROM sessions"
     ));
 
@@ -609,7 +609,7 @@ pub fn build_coding_query(range: &TimeRange) -> (String, Vec<i64>) {
         (None, _) => (String::from("sum(duration)"), Vec::new()),
     };
     let next = binds.len() + 1;
-    let sql = format!("SELECT {expr} FROM hackatime_spans WHERE slack_id = ${next}");
+    let sql = format!("SELECT {expr}::bigint FROM hackatime_spans WHERE slack_id = ${next}");
     (sql, binds)
 }
 

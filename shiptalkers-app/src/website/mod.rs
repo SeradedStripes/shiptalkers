@@ -678,7 +678,7 @@ async fn get_leaderboard_category(
                  FROM ( \
                      SELECT user_id, value, row_number() OVER (ORDER BY value DESC) AS rank \
                      FROM ( \
-                         SELECT user_id, sum(v) AS value \
+                         SELECT user_id, sum(v)::bigint AS value \
                          FROM ( \
                              SELECT user_id, total_time::bigint AS v \
                              FROM user_scores \
@@ -1274,7 +1274,7 @@ async fn compute_stats(state: &AppState) -> StatsSnapshot {
     .max(0) as u64;
 
     let coding_minutes: u64 = sqlx::query_scalar::<_, Option<i64>>(
-        "SELECT sum(total_minutes) FROM hackatime_connections",
+        "SELECT sum(total_minutes)::bigint FROM hackatime_connections",
     )
     .fetch_one(ch)
     .await
@@ -1284,7 +1284,7 @@ async fn compute_stats(state: &AppState) -> StatsSnapshot {
     .max(0) as u64;
 
     let slack_time_secs: u64 = sqlx::query_scalar::<_, Option<i64>>(&format!(
-        "SELECT sum(total_time) FROM user_scores WHERE {EXCLUDE_BOTS_DELETED}"
+        "SELECT sum(total_time)::bigint FROM user_scores WHERE {EXCLUDE_BOTS_DELETED}"
     ))
     .fetch_one(ch)
     .await
