@@ -176,7 +176,7 @@ pub async fn refresh_daily_stats(pool: &PgPool) -> Result<(), Box<dyn std::error
              FROM sess
              GROUP BY user_id, sid
          )
-         SELECT to_timestamp(start_ts) AT TIME ZONE 'UTC' AS date,
+         SELECT (to_timestamp(start_ts) AT TIME ZONE 'UTC')::date AS date,
                 sum(least(end_ts - start_ts + (first_chars + {rate} - 1) / {rate} + first_msgs * {overhead}, {max_secs}))::bigint AS total_time
          FROM sessions
          GROUP BY date"
