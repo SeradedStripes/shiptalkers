@@ -15,6 +15,8 @@ use crate::settings::RuntimeSettings;
 
 const EXCLUDE_BOTS_DELETED: &str =
     "user_id NOT IN (SELECT user_id FROM users WHERE is_bot = 1 OR is_deleted = 1)";
+const EXCLUDE_BOTS_DELETED_SLACK_ID: &str =
+    "slack_id NOT IN (SELECT user_id FROM users WHERE is_bot = 1 OR is_deleted = 1)";
 
 pub mod auth;
 
@@ -615,7 +617,7 @@ async fn get_leaderboard_category(
                      SELECT slack_id AS user_id, total_minutes::bigint AS value, \
                             row_number() OVER (ORDER BY total_minutes DESC) AS rank \
                      FROM hackatime_connections \
-                     WHERE {EXCLUDE_BOTS_DELETED} \
+                     WHERE {EXCLUDE_BOTS_DELETED_SLACK_ID} \
                  )"
             );
             let (ranked, notice) = ranked_window(
