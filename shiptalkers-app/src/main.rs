@@ -40,18 +40,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     {
-        let pool_for_daily = pool.clone();
-        tokio::spawn(async move {
-            loop {
-                if let Err(e) = db::refresh::refresh_daily_stats(&pool_for_daily).await {
-                    tracing::warn!("Failed to refresh daily stats: {}", e);
-                }
-                tokio::time::sleep(std::time::Duration::from_secs(30 * 60)).await;
-            }
-        });
-    }
-
-    {
         let pool_for_stats = pool.clone();
         tokio::spawn(async move {
             loop {
