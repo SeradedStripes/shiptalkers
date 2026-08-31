@@ -253,7 +253,8 @@ pub async fn insert_word_counts(
         );
         sql.push_str(&placeholders(chunk.len(), 6));
         sql.push_str(
-            " ON CONFLICT (word, channel_id, message_ts) DO UPDATE SET count = EXCLUDED.count, user_id = EXCLUDED.user_id, inserted_at = EXCLUDED.inserted_at",
+            " ON CONFLICT (word, channel_id, message_ts) DO UPDATE SET count = EXCLUDED.count, user_id = EXCLUDED.user_id, inserted_at = EXCLUDED.inserted_at \
+             WHERE word_counts.count IS DISTINCT FROM EXCLUDED.count",
         );
         let mut q = sqlx::query(&sql);
         for row in chunk {
