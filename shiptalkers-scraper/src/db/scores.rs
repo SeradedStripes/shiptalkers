@@ -188,7 +188,7 @@ async fn recompute_user_scores_chunk(
          )
          SELECT user_id,
                 sum(least(end_ts - start_ts + (first_chars + {rate} - 1) / {rate} + first_msgs * {overhead}, {max_secs}))::bigint AS total_time,
-                max(least(end_ts - start_ts + (first_chars + {rate} - 1) / {rate} + first_msgs * {overhead}, {max_secs})) AS longest,
+                max(least(end_ts - start_ts + (first_chars + {rate} - 1) / {rate} + first_msgs * {overhead}, {max_secs}))::bigint AS longest,
                 count(*) AS sessions,
                 greatest(max(start_ts) / 86400 - min(start_ts) / 86400 + 1, 1) AS days
          FROM sessions
