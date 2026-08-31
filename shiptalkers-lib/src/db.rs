@@ -283,6 +283,21 @@ pub async fn init_tables(pool: &PgPool) -> Result<(), Box<dyn std::error::Error>
     .await?;
 
     sqlx::query(
+        "CREATE TABLE IF NOT EXISTS stats_meta (
+            id SMALLINT PRIMARY KEY,
+            total_messages BIGINT NOT NULL DEFAULT 0,
+            total_channels BIGINT NOT NULL DEFAULT 0,
+            total_users BIGINT NOT NULL DEFAULT 0,
+            coding_minutes BIGINT NOT NULL DEFAULT 0,
+            slack_time_secs BIGINT NOT NULL DEFAULT 0,
+            db_size_bytes BIGINT NOT NULL DEFAULT 0,
+            updated BIGINT NOT NULL DEFAULT 0
+        )",
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
         "CREATE TABLE IF NOT EXISTS linked_users (
             slack_id TEXT PRIMARY KEY,
             display_name TEXT NOT NULL,

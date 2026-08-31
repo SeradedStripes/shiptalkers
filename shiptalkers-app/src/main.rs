@@ -51,6 +51,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
+    {
+        let pool_for_stats = pool.clone();
+        tokio::spawn(async move {
+            loop {
+                if let Err(e) = db::refresh::refresh_page_stats(&pool_for_stats).await {
+                    tracing::warn!("Failed to refresh page stats: {}", e);
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(30 * 60)).await;
+            }
+        });
+    }
+
     if has_app_tokens {
         let socket_config = slack::SocketConfig::new(settings.get_list("SLACK_APP_TOKENS"));
         let pool_for_socket = pool.clone();

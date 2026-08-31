@@ -1255,84 +1255,85 @@ async fn load_stats(state: &AppState, headers: &HeaderMap) -> Stats {
 
 async fn compute_stats(state: &AppState) -> StatsSnapshot {
     let ch = &state.pool;
-    let exclude = EXCLUDE_BOTS_DELETED;
 
-    let total_messages = async {
-        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM slack_messages")
+    let cached: Option<(i64, i64, i64, i64, i64, i64)> = sqlx::query_as(
+        "SELECT total_messages, total_channels, total_users, coding_minutes, slack_time_secs, db_size_bytes
+         FROM stats_meta WHERE id = 1",
+    )
+    .fetch_optional(ch)
+    .await
+    .ok()
+    .flatten();
+
+    match cached {
+        Some((
+            total_messages,
+            total_channels,
+            total_users,
+            coding_minutes,
+            slack_time_secs,
+            db_size_bytes,
+        )) => StatsSnapshot {
+            total_messages: total_messages.max(0) as u64,
+            total_channels: total_channels.max(0) as u64,
+            total_users: total_users.max(0) as u64,
+            coding_minutes: coding_minutes.max(0) as u64,
+            slack_time_secs: slack_time_secs.max(0) as u64,
+            db_size_bytes: db_size_bytes.max(0) as u64,
+        },
+        None => {
+            // First run before the background refresh has written a row.
+            let total_messages: i64 = sqlx::query_scalar("SELECT count(*) FROM slack_messages")
+                .fetch_one(ch)
+                .await
+                .unwrap_or(0)
+                .max(0);
+            let total_channels: i64 = sqlx::query_scalar("SELECT count(*) FROM slack_channels")
+                .fetch_one(ch)
+                .await
+                .unwrap_or(0)
+                .max(0);
+            let total_users: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM users WHERE is_bot = 0 AND is_deleted = 0",
+            )
             .fetch_one(ch)
             .await
             .unwrap_or(0)
-            .max(0) as u64
-    };
-    let total_channels = async {
-        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM slack_channels")
+            .max(0);
+            let coding_minutes: i64 = sqlx::query_scalar::<_, Option<i64>>(
+                "SELECT sum(total_minutes)::bigint FROM hackatime_connections",
+            )
             .fetch_one(ch)
             .await
+            .ok()
+            .flatten()
             .unwrap_or(0)
-            .max(0) as u64
-    };
-    let total_users = async {
-        sqlx::query_scalar::<_, i64>(
-            "SELECT count(*) FROM users WHERE is_bot = 0 AND is_deleted = 0",
-        )
-        .fetch_one(ch)
-        .await
-        .unwrap_or(0)
-        .max(0) as u64
-    };
-    let coding_minutes = async {
-        sqlx::query_scalar::<_, Option<i64>>(
-            "SELECT sum(total_minutes)::bigint FROM hackatime_connections",
-        )
-        .fetch_one(ch)
-        .await
-        .ok()
-        .flatten()
-        .unwrap_or(0)
-        .max(0) as u64
-    };
-    let slack_time_secs = async {
-        sqlx::query_scalar::<_, Option<i64>>(&format!(
-            "SELECT sum(total_time)::bigint FROM user_scores WHERE {exclude}"
-        ))
-        .fetch_one(ch)
-        .await
-        .ok()
-        .flatten()
-        .unwrap_or(0)
-        .max(0) as u64
-    };
-    let db_size_bytes = async {
-        sqlx::query_scalar::<_, i64>("SELECT pg_database_size(current_database())")
+            .max(0);
+            let slack_time_secs: i64 = sqlx::query_scalar::<_, Option<i64>>(&format!(
+                "SELECT sum(total_time)::bigint FROM user_scores WHERE {EXCLUDE_BOTS_DELETED}"
+            ))
             .fetch_one(ch)
             .await
+            .ok()
+            .flatten()
             .unwrap_or(0)
-            .max(0) as u64
-    };
+            .max(0);
+            let db_size_bytes: i64 =
+                sqlx::query_scalar::<_, i64>("SELECT pg_database_size(current_database())")
+                    .fetch_one(ch)
+                    .await
+                    .unwrap_or(0)
+                    .max(0);
 
-    let (
-        total_messages,
-        total_channels,
-        total_users,
-        coding_minutes,
-        slack_time_secs,
-        db_size_bytes,
-    ) = futures_util::join!(
-        total_messages,
-        total_channels,
-        total_users,
-        coding_minutes,
-        slack_time_secs,
-        db_size_bytes
-    );
-
-    StatsSnapshot {
-        total_messages,
-        total_channels,
-        total_users,
-        coding_minutes,
-        slack_time_secs,
-        db_size_bytes,
+            StatsSnapshot {
+                total_messages: total_messages as u64,
+                total_channels: total_channels as u64,
+                total_users: total_users as u64,
+                coding_minutes: coding_minutes as u64,
+                slack_time_secs: slack_time_secs as u64,
+                db_size_bytes: db_size_bytes as u64,
+            }
+        }
     }
 }
 

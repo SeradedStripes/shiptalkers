@@ -200,3 +200,64 @@ pub async fn refresh_daily_stats(pool: &PgPool) -> Result<(), Box<dyn std::error
     tx.commit().await?;
     Ok(())
 }
+
+/// Precomputes the homepage stats into `stats_meta` on a background loop,
+/// `count(*)` scans on every request
+pub async fn refresh_page_stats(pool: &PgPool) -> Result<(), Box<dyn std::error::Error>> {
+    let total_messages: i64 = sqlx::query_scalar("SELECT count(*) FROM slack_messages")
+        .fetch_one(pool)
+        .await
+        .unwrap_or(0);
+    let total_channels: i64 = sqlx::query_scalar("SELECT count(*) FROM slack_channels")
+        .fetch_one(pool)
+        .await
+        .unwrap_or(0);
+    let total_users: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM users WHERE is_bot = 0 AND is_deleted = 0")
+            .fetch_one(pool)
+            .await
+            .unwrap_or(0);
+    let coding_minutes: i64 =
+        sqlx::query_scalar("SELECT sum(total_minutes)::bigint FROM hackatime_connections")
+            .fetch_one(pool)
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or(0);
+    let slack_time_secs: i64 = sqlx::query_scalar(&format!(
+        "SELECT sum(total_time)::bigint FROM user_scores WHERE {EXCLUDE_BOTS_DELETED}"
+    ))
+    .fetch_one(pool)
+    .await
+    .ok()
+    .flatten()
+    .unwrap_or(0);
+    let db_size_bytes: i64 = sqlx::query_scalar("SELECT pg_database_size(current_database())")
+        .fetch_one(pool)
+        .await
+        .unwrap_or(0);
+
+    let updated = now_secs();
+    sqlx::query(
+        "INSERT INTO stats_meta (id, total_messages, total_channels, total_users, coding_minutes, slack_time_secs, db_size_bytes, updated)
+         VALUES (1, $1, $2, $3, $4, $5, $6, $7)
+         ON CONFLICT (id) DO UPDATE SET
+           total_messages = EXCLUDED.total_messages,
+           total_channels = EXCLUDED.total_channels,
+           total_users = EXCLUDED.total_users,
+           coding_minutes = EXCLUDED.coding_minutes,
+           slack_time_secs = EXCLUDED.slack_time_secs,
+           db_size_bytes = EXCLUDED.db_size_bytes,
+           updated = EXCLUDED.updated",
+    )
+    .bind(total_messages.max(0))
+    .bind(total_channels.max(0))
+    .bind(total_users.max(0))
+    .bind(coding_minutes.max(0))
+    .bind(slack_time_secs.max(0))
+    .bind(db_size_bytes.max(0))
+    .bind(updated as i64)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
