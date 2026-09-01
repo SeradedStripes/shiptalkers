@@ -298,6 +298,36 @@ pub async fn init_tables(pool: &PgPool) -> Result<(), Box<dyn std::error::Error>
     .await?;
 
     sqlx::query(
+        "CREATE TABLE IF NOT EXISTS message_count (
+            id SMALLINT PRIMARY KEY,
+            total BIGINT NOT NULL DEFAULT 0
+        )",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "CREATE OR REPLACE FUNCTION increment_message_count() RETURNS trigger
+         LANGUAGE plpgsql AS $$
+         BEGIN
+             INSERT INTO message_count (id, total) VALUES (1, 1)
+             ON CONFLICT (id) DO UPDATE SET total = message_count.total + 1;
+             RETURN NULL;
+         END;
+         $$",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query("DROP TRIGGER IF EXISTS message_count_insert ON slack_messages")
+        .execute(pool)
+        .await?;
+    sqlx::query(
+        "CREATE TRIGGER message_count_insert AFTER INSERT ON slack_messages
+         FOR EACH ROW EXECUTE FUNCTION increment_message_count()",
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
         "CREATE TABLE IF NOT EXISTS linked_users (
             slack_id TEXT PRIMARY KEY,
             display_name TEXT NOT NULL,

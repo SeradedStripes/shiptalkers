@@ -204,7 +204,8 @@ pub async fn refresh_daily_stats(pool: &PgPool) -> Result<(), Box<dyn std::error
 /// Precomputes the homepage stats into `stats_meta` on a background loop,
 /// `count(*)` scans on every request
 pub async fn refresh_page_stats(pool: &PgPool) -> Result<(), Box<dyn std::error::Error>> {
-    let total_messages: i64 = sqlx::query_scalar("SELECT count(*) FROM slack_messages")
+    // The message counter is seeded by the scraper (the only writer)
+    let total_messages: i64 = sqlx::query_scalar("SELECT total FROM message_count WHERE id = 1")
         .fetch_one(pool)
         .await
         .unwrap_or(0);

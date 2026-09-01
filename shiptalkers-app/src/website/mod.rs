@@ -1283,11 +1283,14 @@ async fn compute_stats(state: &AppState) -> StatsSnapshot {
         },
         None => {
             // First run before the background refresh has written a row.
-            let total_messages: i64 = sqlx::query_scalar("SELECT count(*) FROM slack_messages")
-                .fetch_one(ch)
-                .await
-                .unwrap_or(0)
-                .max(0);
+            let total_messages: i64 =
+                sqlx::query_scalar("SELECT total FROM message_count WHERE id = 1")
+                    .fetch_optional(ch)
+                    .await
+                    .ok()
+                    .flatten()
+                    .unwrap_or(0)
+                    .max(0);
             let total_channels: i64 = sqlx::query_scalar("SELECT count(*) FROM slack_channels")
                 .fetch_one(ch)
                 .await

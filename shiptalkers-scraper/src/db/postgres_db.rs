@@ -5,6 +5,26 @@ pub use ship_talkers_lib::db::{
     INSERT_CHUNK, SlackChannelRow, connect, init_tables, insert_new_channels_rows, placeholders,
 };
 
+/// Seeds the maintained `message_count` from the real row count, once.
+/// Called before any scraping starts
+pub async fn seed_message_count(pool: &PgPool) -> Result<(), Box<dyn std::error::Error>> {
+    let existing: Option<i64> = sqlx::query_scalar("SELECT total FROM message_count WHERE id = 1")
+        .fetch_optional(pool)
+        .await?;
+    if existing.is_some() {
+        return Ok(());
+    }
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM slack_messages")
+        .fetch_one(pool)
+        .await?;
+    sqlx::query("INSERT INTO message_count (id, total) VALUES (1, $1)")
+        .bind(count.max(0))
+        .execute(pool)
+        .await?;
+    tracing::info!("Seeded message_count with {} messages", count.max(0));
+    Ok(())
+}
+
 #[derive(Debug, Clone)]
 pub struct SlackMessageRow {
     pub user_id: String,
