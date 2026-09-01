@@ -49,48 +49,14 @@ pub async fn init_tables(pool: &PgPool) -> Result<(), Box<dyn std::error::Error>
     )
     .execute(pool)
     .await?;
-
+    // Serves the per-user Slack Time queries directly off slack_messages
     sqlx::query(
-        "CREATE TABLE IF NOT EXISTS slack_messages_by_user (
-            user_id TEXT NOT NULL DEFAULT '',
-            channel_id TEXT NOT NULL DEFAULT '',
-            message_ts BIGINT NOT NULL,
-            text TEXT NOT NULL DEFAULT '',
-            thread_ts TEXT,
-            PRIMARY KEY (user_id, channel_id, message_ts)
-        )",
+        "CREATE INDEX IF NOT EXISTS slack_messages_user_ts_idx ON slack_messages (user_id, message_ts)",
     )
     .execute(pool)
     .await?;
-    sqlx::query("CREATE INDEX IF NOT EXISTS slack_messages_by_user_channel_idx ON slack_messages_by_user (channel_id)")
-        .execute(pool)
-        .await?;
     sqlx::query(
         "CREATE INDEX IF NOT EXISTS slack_messages_thread_idx ON slack_messages (channel_id, thread_ts) WHERE thread_ts IS NOT NULL",
-    )
-    .execute(pool)
-    .await?;
-
-    sqlx::query(
-        "CREATE OR REPLACE FUNCTION sync_slack_messages_by_user() RETURNS trigger
-         LANGUAGE plpgsql AS $$
-         BEGIN
-             INSERT INTO slack_messages_by_user (user_id, channel_id, message_ts, text, thread_ts)
-             VALUES (NEW.user_id, NEW.channel_id, NEW.message_ts, NEW.text, NEW.thread_ts)
-             ON CONFLICT (user_id, channel_id, message_ts)
-             DO UPDATE SET text = EXCLUDED.text, thread_ts = EXCLUDED.thread_ts;
-             RETURN NULL;
-         END;
-         $$",
-    )
-    .execute(pool)
-    .await?;
-    sqlx::query("DROP TRIGGER IF EXISTS slack_messages_by_user_sync ON slack_messages")
-        .execute(pool)
-        .await?;
-    sqlx::query(
-        "CREATE TRIGGER slack_messages_by_user_sync AFTER INSERT ON slack_messages
-         FOR EACH ROW EXECUTE FUNCTION sync_slack_messages_by_user()",
     )
     .execute(pool)
     .await?;
@@ -336,6 +302,22 @@ pub async fn init_tables(pool: &PgPool) -> Result<(), Box<dyn std::error::Error>
     )
     .execute(pool)
     .await?;
+
+    // Store compressible text columns with zstd TOAST compression
+    // `VACUUM FULL` rewrite (the scraper's `compact_toast_once` startup task).
+    for (table, column) in [
+        ("slack_messages", "text"),
+        ("users", "pfp"),
+        ("slack_reactions", "emoji"),
+        ("word_counts", "word"),
+    ] {
+        sqlx::query(&format!(
+            "ALTER TABLE {} ALTER COLUMN {} SET COMPRESSION zstd",
+            table, column
+        ))
+        .execute(pool)
+        .await?;
+    }
 
     Ok(())
 }

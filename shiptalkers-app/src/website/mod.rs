@@ -972,7 +972,7 @@ async fn get_user_stats(
 
     let counts: Vec<(String, i64)> = sqlx::query_as(
         "SELECT channel_id, count(*) as messages
-         FROM slack_messages_by_user
+         FROM slack_messages
          WHERE user_id = $1
          GROUP BY channel_id
          ORDER BY messages DESC

@@ -141,9 +141,6 @@ pub async fn run_scraper(
     if let Err(e) = db::postgres_db::seed_message_count(&pool).await {
         tracing::warn!("Failed to seed message count: {}", e);
     }
-    if let Err(e) = db::postgres_db::backfill_slack_messages_by_user(&pool).await {
-        tracing::warn!("Failed to backfill slack_messages_by_user: {}", e);
-    }
     if let Err(e) = db::postgres_db::backfill_word_counts(&pool).await {
         tracing::warn!("Failed to backfill word_counts: {}", e);
     }

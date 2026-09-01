@@ -155,7 +155,7 @@ pub async fn refresh_daily_stats(pool: &PgPool) -> Result<(), Box<dyn std::error
              SELECT user_id, message_ts / 1000000 AS ts,
                     sum(char_length(text)) AS chars,
                     count(*) AS msgs
-             FROM slack_messages_by_user
+             FROM slack_messages
              WHERE {EXCLUDE_BOTS_DELETED}
              GROUP BY user_id, ts
          ),

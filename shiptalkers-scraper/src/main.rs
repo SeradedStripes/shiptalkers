@@ -27,6 +27,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let pool = db::postgres_db::connect(&database_url).await?;
     db::postgres_db::init_tables(&pool).await?;
 
+    let pool_for_compact = pool.clone();
+    tokio::spawn(async move {
+        if let Err(e) = db::postgres_db::compact_toast_once(&pool_for_compact).await {
+            tracing::warn!("Failed to compact tables: {}", e);
+        }
+    });
+
     let pool_for_hackatime = pool.clone();
     let http_for_hackatime = reqwest::Client::new();
     tokio::spawn(async move {

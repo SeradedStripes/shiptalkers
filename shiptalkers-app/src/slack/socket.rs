@@ -522,7 +522,7 @@ async fn query_slack_seconds(pool: &sqlx::PgPool, user: &str, range: &TimeRange)
              SELECT message_ts / 1000000 AS ts,
                     sum(char_length(text)) AS chars,
                     count(*) AS msgs
-             FROM slack_messages_by_user
+             FROM slack_messages
              WHERE user_id = $1",
     );
     if range.start_ts().is_some() {

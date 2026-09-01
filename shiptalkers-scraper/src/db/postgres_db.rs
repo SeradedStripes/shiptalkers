@@ -21,6 +21,58 @@ pub async fn seed_message_count(pool: &PgPool) -> Result<(), Box<dyn std::error:
     Ok(())
 }
 
+/// Rewrites the heavy tables once with `VACUUM FULL`
+/// Completion is recorded in `backfill_meta`;
+pub async fn compact_toast_once(pool: &PgPool) -> Result<(), Box<dyn std::error::Error>> {
+    let done: Option<i16> =
+        sqlx::query_scalar("SELECT done FROM backfill_meta WHERE name = 'toast_compress'")
+            .fetch_optional(pool)
+            .await?;
+    if done == Some(1) {
+        return Ok(());
+    }
+    let total: i64 = sqlx::query_scalar(
+        "SELECT pg_total_relation_size('slack_messages')
+              + pg_total_relation_size('word_counts')
+              + pg_total_relation_size('slack_reactions')
+              + pg_total_relation_size('users')
+              + pg_total_relation_size('hackatime_spans')",
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap_or(0);
+    if total < 64 * 1024 * 1024 {
+        tracing::debug!(
+            "Tables too small to compact yet, skipping ({} bytes)",
+            total
+        );
+        return Ok(());
+    }
+    tracing::info!(
+        "Compacting {} bytes of tables with zstd (one-time)...",
+        total
+    );
+    for table in [
+        "slack_messages",
+        "word_counts",
+        "slack_reactions",
+        "users",
+        "hackatime_spans",
+    ] {
+        sqlx::raw_sql(&format!("VACUUM FULL {}", table))
+            .execute(pool)
+            .await?;
+    }
+    sqlx::query(
+        "INSERT INTO backfill_meta (name, done) VALUES ('toast_compress', 1)
+         ON CONFLICT (name) DO UPDATE SET done = EXCLUDED.done",
+    )
+    .execute(pool)
+    .await?;
+    tracing::info!("Table compaction complete");
+    Ok(())
+}
+
 #[derive(Debug, Clone)]
 pub struct SlackMessageRow {
     pub user_id: String,
@@ -88,31 +140,6 @@ pub fn now_secs() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
-}
-
-/// Copies existing rows from slack_messages into slack_messages_by_user once.
-/// The trigger keeps new inserts in sync, so this only needs to run when the
-/// secondary table is empty (first deploy or after a migration import).
-pub async fn backfill_slack_messages_by_user(
-    pool: &PgPool,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM slack_messages_by_user")
-        .fetch_one(pool)
-        .await
-        .unwrap_or(0);
-    if count > 0 {
-        return Ok(());
-    }
-    tracing::info!("Backfilling slack_messages_by_user from slack_messages...");
-    sqlx::query(
-        "INSERT INTO slack_messages_by_user (user_id, channel_id, message_ts, text, thread_ts)
-         SELECT user_id, channel_id, message_ts, text, thread_ts FROM slack_messages
-         ON CONFLICT (user_id, channel_id, message_ts) DO NOTHING",
-    )
-    .execute(pool)
-    .await?;
-    tracing::info!("slack_messages_by_user backfill complete");
-    Ok(())
 }
 
 /// Builds word_counts for every existing slack_messages row once, so the Top

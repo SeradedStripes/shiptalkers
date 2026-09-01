@@ -33,7 +33,7 @@ pub async fn backfill_stale_user_scores(
     let ids: Vec<String> = sqlx::query_scalar(
         "SELECT msg.user_id FROM (
              SELECT user_id, max(message_ts) AS last_ts
-             FROM slack_messages_by_user
+             FROM slack_messages
              GROUP BY user_id
          ) msg
          LEFT JOIN (SELECT user_id, updated, longest FROM user_scores) sc
@@ -67,7 +67,7 @@ pub async fn backfill_stale_channel_scores(
     let ids: Vec<String> = sqlx::query_scalar(
         "SELECT msg.channel_id FROM (
              SELECT channel_id, max(message_ts) AS last_ts
-             FROM slack_messages_by_user
+             FROM slack_messages
              GROUP BY channel_id
          ) msg
          LEFT JOIN (SELECT channel_id, updated FROM channel_scores) sc
@@ -99,18 +99,16 @@ async fn mark_sessionizer_current(pool: &PgPool) -> Result<(), Box<dyn std::erro
 }
 
 async fn distinct_user_ids(pool: &PgPool) -> Result<Vec<String>, Box<dyn std::error::Error>> {
-    let rows: Vec<String> =
-        sqlx::query_scalar("SELECT DISTINCT user_id FROM slack_messages_by_user")
-            .fetch_all(pool)
-            .await?;
+    let rows: Vec<String> = sqlx::query_scalar("SELECT DISTINCT user_id FROM slack_messages")
+        .fetch_all(pool)
+        .await?;
     Ok(rows)
 }
 
 async fn distinct_channel_ids(pool: &PgPool) -> Result<Vec<String>, Box<dyn std::error::Error>> {
-    let rows: Vec<String> =
-        sqlx::query_scalar("SELECT DISTINCT channel_id FROM slack_messages_by_user")
-            .fetch_all(pool)
-            .await?;
+    let rows: Vec<String> = sqlx::query_scalar("SELECT DISTINCT channel_id FROM slack_messages")
+        .fetch_all(pool)
+        .await?;
     Ok(rows)
 }
 
@@ -165,7 +163,7 @@ async fn recompute_user_scores_chunk(
              SELECT user_id, message_ts / 1000000 AS ts,
                     sum(char_length(text)) AS chars,
                     count(*) AS msgs
-             FROM slack_messages_by_user
+             FROM slack_messages
              WHERE user_id = ANY($1)
              GROUP BY user_id, ts
          ),
@@ -203,7 +201,7 @@ async fn recompute_user_scores_chunk(
                 count(DISTINCT channel_id) AS channels,
                 min(message_ts) AS first_ts,
                 max(message_ts) AS last_ts
-         FROM slack_messages_by_user
+         FROM slack_messages
          WHERE user_id = ANY($1)
          GROUP BY user_id",
     )
@@ -237,7 +235,7 @@ async fn recompute_user_scores_chunk(
          FROM (
              SELECT user_id, (message_ts / 1000000 % 86400) / 3600 AS hour,
                     count(*) AS cnt
-             FROM slack_messages_by_user
+             FROM slack_messages
              WHERE user_id = ANY($1)
              GROUP BY user_id, hour
          ) h
@@ -373,7 +371,7 @@ async fn recompute_channel_scores_chunk(
              SELECT channel_id, message_ts / 1000000 AS ts,
                     sum(char_length(text)) AS chars,
                     count(*) AS msgs
-             FROM slack_messages_by_user
+             FROM slack_messages
              WHERE channel_id = ANY($1) AND {exclude_bots_deleted}
              GROUP BY channel_id, ts
          ),
@@ -405,7 +403,7 @@ async fn recompute_channel_scores_chunk(
 
     let counts: Vec<(String, i64)> = sqlx::query_as(&format!(
         "SELECT channel_id, count(*) AS messages
-         FROM slack_messages_by_user
+         FROM slack_messages
          WHERE channel_id = ANY($1) AND {exclude_bots_deleted}
          GROUP BY channel_id"
     ))
