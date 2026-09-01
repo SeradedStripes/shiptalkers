@@ -34,6 +34,22 @@ impl TimeRange {
             format!("{year:04}-{month:02}-{day:02}")
         })
     }
+
+    /// Human-readable label for logging, e.g. "all time".
+    pub fn label(&self) -> String {
+        match self {
+            TimeRange::AllTime => "all time".to_string(),
+            TimeRange::Since(ts) => format!("since {}", date_label(*ts)),
+            TimeRange::Between(start, end) => {
+                format!("{} to {}", date_label(*start), date_label(*end))
+            }
+        }
+    }
+}
+
+fn date_label(ts: i64) -> String {
+    let (year, month, day) = crate::auth::civil_from_days(ts / 86400);
+    format!("{year:04}-{month:02}-{day:02}")
 }
 
 pub(crate) fn now_unix() -> i64 {

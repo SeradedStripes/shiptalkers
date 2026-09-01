@@ -408,6 +408,9 @@ async fn handle_message(
     // slack time as a card and explain the situation.
     if !has_coding_data(pool, &user).await {
         tracing::info!(
+            user,
+            range = range.label().as_str(),
+            message = text.as_str(),
             "Stats bot: no coding data for {}, sending slack-only card",
             user
         );
@@ -443,7 +446,7 @@ async fn handle_message(
         return;
     }
 
-    let (slack_seconds, coding_seconds) = query_stats(pool, &user, &range).await;
+    let (slack_seconds, coding_seconds) = query_stats(pool, &user, &range, &text).await;
     let user_name = user_display_name(pool, &user).await;
 
     let (percent, more, other) = if slack_seconds >= coding_seconds {
@@ -465,6 +468,9 @@ async fn handle_message(
     let slack_time = fmt_span(slack_seconds);
     let coding_time = fmt_span(coding_seconds);
     tracing::info!(
+        user,
+        range = range.label().as_str(),
+        message = text.as_str(),
         "Stats bot: {} spent {} on Slack vs {} on Coding ({}% more {})",
         user,
         slack_time,
@@ -494,9 +500,14 @@ async fn handle_message(
     }
 }
 
-async fn query_stats(pool: &sqlx::PgPool, user: &str, range: &TimeRange) -> (u64, u64) {
+async fn query_stats(
+    pool: &sqlx::PgPool,
+    user: &str,
+    range: &TimeRange,
+    message: &str,
+) -> (u64, u64) {
     let slack = query_slack_seconds(pool, user, range).await;
-    let coding = query_coding_seconds(pool, user, range).await;
+    let coding = query_coding_seconds(pool, user, range, message).await;
     (slack, coding)
 }
 
@@ -570,7 +581,12 @@ async fn query_slack_seconds(pool: &sqlx::PgPool, user: &str, range: &TimeRange)
 /// boundaries only count the part inside). When the user has no span rows yet
 /// (never synced), falls back to the all-time `total_minutes` so the card
 /// still shows a number.
-async fn query_coding_seconds(pool: &sqlx::PgPool, user: &str, range: &TimeRange) -> u64 {
+async fn query_coding_seconds(
+    pool: &sqlx::PgPool,
+    user: &str,
+    range: &TimeRange,
+    message: &str,
+) -> u64 {
     let has_rows: i64 =
         sqlx::query_scalar("SELECT count(*) FROM hackatime_spans WHERE slack_id = $1")
             .bind(user)
@@ -580,6 +596,8 @@ async fn query_coding_seconds(pool: &sqlx::PgPool, user: &str, range: &TimeRange
     if has_rows == 0 {
         tracing::info!(
             user,
+            range = range.label().as_str(),
+            message,
             "query_coding_seconds: no hackatime_spans rows, falling back to total_minutes"
         );
         return query_total_minutes(pool, user).await * 60;
@@ -597,6 +615,8 @@ async fn query_coding_seconds(pool: &sqlx::PgPool, user: &str, range: &TimeRange
             let secs = secs.unwrap_or(0).max(0) as u64;
             tracing::info!(
                 user,
+                range = range.label().as_str(),
+                message,
                 start_date,
                 end_date,
                 secs,
@@ -607,6 +627,8 @@ async fn query_coding_seconds(pool: &sqlx::PgPool, user: &str, range: &TimeRange
         Err(e) => {
             tracing::info!(
                 user,
+                range = range.label().as_str(),
+                message,
                 start_date,
                 end_date,
                 error = %e,
