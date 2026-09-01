@@ -1,3 +1,6 @@
+use std::collections::VecDeque;
+use std::sync::Mutex;
+
 use futures_util::{SinkExt, StreamExt};
 use reqwest::Client;
 use serde::Deserialize;
@@ -125,6 +128,9 @@ async fn run_socket(
     let client = Client::new();
     let mut failures = 0u32;
 
+    // Track recently-processed (channel, ts) so an event Slack redelivers is only handled once.
+    let seen: Mutex<VecDeque<(String, String, i64)>> = Mutex::new(VecDeque::new());
+
     loop {
         match serve_socket(
             &client,
@@ -133,6 +139,7 @@ async fn run_socket(
             &app_token,
             &pool,
             &settings,
+            &seen,
         )
         .await
         {
@@ -173,6 +180,7 @@ async fn serve_socket(
     app_token: &str,
     pool: &sqlx::PgPool,
     settings: &RuntimeSettings,
+    seen: &Mutex<VecDeque<(String, String, i64)>>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let resp: ConnectionsOpenResponse = client
         .post("https://slack.com/api/apps.connections.open")
@@ -251,6 +259,7 @@ async fn serve_socket(
                                             pool,
                                             settings,
                                             event,
+                                            seen,
                                         )
                                         .await;
                                     }
@@ -274,6 +283,24 @@ async fn serve_socket(
     }
 
     Ok(())
+}
+
+const SEEN_TTL_SECS: i64 = 600;
+const SEEN_MAX: usize = 512;
+
+/// Marks a (channel, ts) as handled. Returns true if this is the first time we have seen it, false for any redelivery. Prunes stale entries on insert.
+fn mark_seen(seen: &Mutex<VecDeque<(String, String, i64)>>, channel: &str, ts: &str) -> bool {
+    let now = now_unix();
+    let mut guard = seen.lock().unwrap_or_else(|p| p.into_inner());
+    guard.retain(|(_, _, at)| now.saturating_sub(*at) < SEEN_TTL_SECS);
+    if guard.iter().any(|(c, t, _)| c == channel && t == ts) {
+        return false;
+    }
+    guard.push_back((channel.to_string(), ts.to_string(), now));
+    if guard.len() > SEEN_MAX {
+        guard.pop_front();
+    }
+    true
 }
 
 fn shard_for_ts(ts: &str, num_sockets: usize) -> usize {
@@ -318,6 +345,7 @@ async fn handle_message(
     pool: &sqlx::PgPool,
     settings: &RuntimeSettings,
     event: &serde_json::Value,
+    seen: &Mutex<VecDeque<(String, String, i64)>>,
 ) {
     let main_channel = settings.get("SLACK_MAIN_CHANNEL");
     if main_channel.is_empty() {
@@ -327,6 +355,11 @@ async fn handle_message(
     let Ok(msg) = serde_json::from_value::<MessageEvent>(event.clone()) else {
         return;
     };
+
+    // Skip events we already answered: Socket Mode can redeliver the same message (e.g. on reconnect), and every delivery would post a reply.
+    if !mark_seen(seen, &msg.channel, &msg.ts) {
+        return;
+    }
 
     if msg.channel != main_channel {
         return;
