@@ -8,6 +8,7 @@ on:
       - "Cargo.lock"
       - ".dockerignore"
       - "shiptalkers-app/**"
+      - "shiptalkers-lib/**"
       - ".github/workflows/build-shiptalkers-app.yml"
   workflow_dispatch:
 
