@@ -168,7 +168,7 @@ pub async fn sync_coding_activity(
         .await
         .map_err(|e| SyncFailure::Message(e.to_string()))?;
 
-    tracing::info!(
+    tracing::debug!(
         "Synced {} coding spans, {} total minutes for {}",
         rows.len(),
         minutes,
@@ -231,6 +231,11 @@ pub async fn resync_all(pool: &PgPool, http: &reqwest::Client) {
         .collect();
 
     let skipped = total_users - work.len() as u64;
+    tracing::info!(
+        "hackatime resync pass starting: {} users to sync, {} skipped (no account / private)",
+        work.len(),
+        skipped
+    );
     let pc = pool.clone();
     let hc = http.clone();
     let results: Vec<_> = stream::iter(work)
