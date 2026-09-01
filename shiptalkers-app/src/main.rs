@@ -23,7 +23,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     tracing::info!("Connecting to Postgres...");
     let pool = db::postgres_db::connect(&database_url).await?;
-    db::postgres_db::init_tables(&pool).await?;
     let auth_db = std::sync::Arc::new(db::postgres_db::AuthDb::new(pool.clone()));
 
     let has_app_tokens = !settings.get_list("SLACK_APP_TOKENS").is_empty();

@@ -45,7 +45,7 @@ Coding time for every non-bot, non-deleted user is pulled from hackatime on a 30
 
 ## Architecture
 
-- `src/main.rs` (app) - entry point, settings + env parsing, connects to `DATABASE_URL`, runs `init_tables`, spawns the refresh loops, the Socket Mode task, and the web server. When no Slack tokens are set, serves existing data read-only.
+- `src/main.rs` (app) - entry point, settings + env parsing, connects to `DATABASE_URL`, spawns the refresh loops, the Socket Mode task, and the web server. When no Slack tokens are set, serves existing data read-only.
 - `shiptalkers-scraper/src/main.rs` (scraper) - separate binary that connects to the same `DATABASE_URL`, runs `init_tables`, spawns the one-time `compact_toast_once`, `run_scraper`, the `users.list` user-sync loop, and the hackatime `resync_all` loop (every 30m, regardless of Slack tokens), then idles until a shutdown signal.
 - `shiptalkers-scraper/src/hackatime.rs` - the coding-time sync engine: `sync_coding_activity` (one user, incremental window or full backfill, token-death check via the `me` endpoint), `resync_all` (30m pass over every non-bot user, records `private`/`no_account` states), `SyncFailure`, `record_hackatime_status`, per-user `coding_sync_lock`.
 - `shiptalkers-scraper/src/scraper.rs` - all scrape logic: `run_scraper` (30m cycle), `scrape_all_messages`, `scrape_channel_list` (shared work queue across user tokens), `scrape_one_channel` (incremental + full-scrape modes, thread re-scan), `scrape_thread`, `process_channel_page` / `process_thread_page` (per-page inserts of messages, reactions, word counts, bot users). Touched users/channels are batched for score recomputation at the end of each pass. `sync_users` runs `users.list` every 2h.
@@ -60,7 +60,7 @@ Coding time for every non-bot, non-deleted user is pulled from hackatime on a 30
 
 ### `src/db/` (app)
 
-- `postgres_db.rs` - `AuthDb` (linked-user upsert/lookup) plus the shared db primitives re-exported from `shiptalkers-lib` (`connect`, `init_tables`, `placeholders`, `INSERT_CHUNK`, `SlackChannelRow`, `insert_new_channels_rows`). The scraper crate keeps its own copy with the scrape inserts/checkpoints and timestamp helpers (`slack_ts_to_micros`, `micros_to_slack_ts`, `parse_date`). Both crates run `init_tables` idempotently on every start.
+- `postgres_db.rs` - `AuthDb` (linked-user upsert/lookup) plus the shared db primitives re-exported from `shiptalkers-lib` (`connect`, `init_tables`, `placeholders`, `INSERT_CHUNK`, `SlackChannelRow`, `insert_new_channels_rows`). The scraper crate keeps its own copy with the scrape inserts/checkpoints and timestamp helpers (`slack_ts_to_micros`, `micros_to_slack_ts`, `parse_date`). Only the scraper runs `init_tables`; the app connects and reads existing tables so it can run with a read-only DB role.
 - `refresh.rs` - background tasks: `refresh_word_totals` (incremental fold with daily full rebuild, watermark tracked in `word_refresh_meta`), `refresh_daily_stats` (sessionizer pass over every message, replaces `daily_stats`).
 
 ### `shiptalkers-scraper/src/db/`
