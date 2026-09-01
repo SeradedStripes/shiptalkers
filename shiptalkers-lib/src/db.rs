@@ -303,20 +303,33 @@ pub async fn init_tables(pool: &PgPool) -> Result<(), Box<dyn std::error::Error>
     .execute(pool)
     .await?;
 
-    // Store compressible text columns with zstd TOAST compression
-    // `VACUUM FULL` rewrite (the scraper's `compact_toast_once` startup task).
+    // Store compressible text columns with zstd TOAST compression (Postgres 18+).
+    // zstd fall back to the server default instead of failing startup.
     for (table, column) in [
         ("slack_messages", "text"),
         ("users", "pfp"),
         ("slack_reactions", "emoji"),
         ("word_counts", "word"),
     ] {
-        sqlx::query(&format!(
+        let sql = format!(
             "ALTER TABLE {} ALTER COLUMN {} SET COMPRESSION zstd",
             table, column
-        ))
-        .execute(pool)
-        .await?;
+        );
+        let result = sqlx::query(&sql).execute(pool).await;
+        if let Err(err) = result {
+            if matches!(
+                err,
+                sqlx::Error::Database(ref db_err) if db_err.code().as_deref() == Some("22023")
+            ) {
+                tracing::warn!(
+                    "zstd compression unsupported on this Postgres, using default for {}.{}",
+                    table,
+                    column
+                );
+            } else {
+                return Err(err.into());
+            }
+        }
     }
 
     Ok(())
