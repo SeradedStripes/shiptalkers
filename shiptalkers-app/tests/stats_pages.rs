@@ -7,25 +7,49 @@ use axum::http::Request;
 use sqlx::postgres::PgPoolOptions;
 use tower::ServiceExt;
 
-fn app() -> axum::Router {
-    router(
+fn dsn() -> &'static str {
+    "postgres://ship_talkers:ship_talkers@localhost:5432/ship_talkers"
+}
+
+/// These routes run real queries against Postgres, so a lazy pool that never
+/// establishes a connection makes every DB-backed request block for the
+/// connect timeout (tens of seconds each). Probe reachability up front with a
+/// short timeout and skip the test when no Postgres is around, so `cargo test`
+/// stays fast on machines without a database.
+async fn db_available() -> bool {
+    let Ok(pool) = PgPoolOptions::new()
+        .max_connections(1)
+        .acquire_timeout(std::time::Duration::from_secs(3))
+        .connect(dsn())
+        .await
+    else {
+        return false;
+    };
+    let ok = pool.acquire().await.is_ok();
+    pool.close().await;
+    ok
+}
+
+#[tokio::test]
+async fn stats_routes_match() {
+    if !db_available().await {
+        eprintln!("Postgres not reachable, skipping stats route test");
+        return;
+    }
+
+    let app = router(
         PgPoolOptions::new()
             .max_connections(1)
-            .connect_lazy("postgres://ship_talkers:ship_talkers@localhost:5432/ship_talkers")
+            .connect_lazy(dsn())
             .expect("lazy pool"),
         RuntimeSettings::load(),
         std::sync::Arc::new(AuthDb::new(
             PgPoolOptions::new()
                 .max_connections(1)
-                .connect_lazy("postgres://ship_talkers:ship_talkers@localhost:5432/ship_talkers")
+                .connect_lazy(dsn())
                 .expect("lazy pool"),
         )),
-    )
-}
-
-#[tokio::test]
-async fn stats_routes_match() {
-    let app = app();
+    );
     for uri in [
         "/stats/U01MPHKFZ7S",
         "/stats/C0123456789",
