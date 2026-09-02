@@ -17,3 +17,4 @@ pub mod settings;
 pub mod slack;
 
 pub use ship_talkers_lib::sessionize;
+pub use ship_talkers_lib::sqlx;

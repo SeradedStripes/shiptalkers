@@ -295,7 +295,7 @@ pub async fn insert_hackatime_spans(
         sql.push_str(
             " ON CONFLICT (slack_id, start_ts) DO UPDATE SET duration = EXCLUDED.duration, updated = EXCLUDED.updated",
         );
-        let mut q = sqlx::query(&sql);
+        let mut q = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()));
         for row in chunk {
             q = q
                 .bind(&row.slack_id)

@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 
+use crate::sqlx::PgPool;
 use futures_util::stream::{self, StreamExt};
-use sqlx::PgPool;
 
 use ship_talkers_lib::hackatime;
 

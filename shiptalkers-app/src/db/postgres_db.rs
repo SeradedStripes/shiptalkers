@@ -1,4 +1,5 @@
-use sqlx::PgPool;
+use crate::sqlx;
+use crate::sqlx::PgPool;
 
 pub use ship_talkers_lib::db::{
     SlackChannelRow, connect, init_tables, insert_new_channels_rows, placeholders,

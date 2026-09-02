@@ -1,4 +1,5 @@
-use sqlx::PgPool;
+use crate::sqlx;
+use crate::sqlx::PgPool;
 use std::collections::HashMap;
 
 pub use ship_talkers_lib::db::{
@@ -167,7 +168,7 @@ pub async fn insert_messages(
         sql.push_str(
             " ON CONFLICT (channel_id, message_ts) DO UPDATE SET user_id = EXCLUDED.user_id, text = EXCLUDED.text, thread_ts = EXCLUDED.thread_ts",
         );
-        let mut q = sqlx::query(&sql);
+        let mut q = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()));
         for msg in chunk {
             q = q
                 .bind(&msg.user_id)
@@ -215,7 +216,7 @@ pub async fn insert_reactions(
         );
         sql.push_str(&placeholders(chunk.len(), 4));
         sql.push_str(" ON CONFLICT (channel_id, message_ts, emoji, user_id) DO NOTHING");
-        let mut q = sqlx::query(&sql);
+        let mut q = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()));
         for row in chunk {
             q = q
                 .bind(&row.channel_id)
@@ -247,7 +248,7 @@ pub async fn insert_word_counts(
             " ON CONFLICT (word, channel_id, message_ts) DO UPDATE SET count = EXCLUDED.count, user_id = EXCLUDED.user_id, inserted_at = EXCLUDED.inserted_at \
              WHERE word_counts.count IS DISTINCT FROM EXCLUDED.count",
         );
-        let mut q = sqlx::query(&sql);
+        let mut q = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()));
         for row in chunk {
             q = q
                 .bind(&row.word)
@@ -293,7 +294,7 @@ pub async fn upsert_users(
         sql.push_str(
             " ON CONFLICT (user_id) DO UPDATE SET display_name = EXCLUDED.display_name, pfp = EXCLUDED.pfp, updated = EXCLUDED.updated, is_bot = EXCLUDED.is_bot, is_deleted = EXCLUDED.is_deleted",
         );
-        let mut q = sqlx::query(&sql);
+        let mut q = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()));
         for u in chunk {
             q = q
                 .bind(&u.user_id)
@@ -361,7 +362,7 @@ pub async fn mark_channels_scraped(
         let mut sql = String::from("INSERT INTO scraped_channels (channel_id) VALUES ");
         sql.push_str(&placeholders(chunk.len(), 1));
         sql.push_str(" ON CONFLICT (channel_id) DO NOTHING");
-        let mut q = sqlx::query(&sql);
+        let mut q = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()));
         for id in chunk {
             q = q.bind(id);
         }

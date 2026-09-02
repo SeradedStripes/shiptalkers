@@ -1,4 +1,5 @@
-use sqlx::PgPool;
+use crate::sqlx;
+use crate::sqlx::PgPool;
 use std::collections::HashMap;
 
 pub async fn sessionizer_changed(pool: &PgPool) -> Result<bool, Box<dyn std::error::Error>> {
@@ -157,7 +158,8 @@ async fn recompute_user_scores_chunk(
     let overhead = crate::sessionize::MESSAGE_READ_OVERHEAD_SECS;
     let max_secs = crate::sessionize::SESSION_MAX_SECS;
 
-    let metrics: Vec<(String, i64, i64, i64, i64)> = sqlx::query_as(&format!(
+    let metrics: Vec<(String, i64, i64, i64, i64)> =
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "WITH
          msg AS (
              SELECT user_id, message_ts / 1000000 AS ts,
@@ -191,7 +193,7 @@ async fn recompute_user_scores_chunk(
                 greatest(max(start_ts) / 86400 - min(start_ts) / 86400 + 1, 1) AS days
          FROM sessions
          GROUP BY user_id"
-    ))
+    )))
     .bind(ids)
     .fetch_all(pool)
     .await?;
@@ -365,7 +367,7 @@ async fn recompute_channel_scores_chunk(
     let overhead = crate::sessionize::MESSAGE_READ_OVERHEAD_SECS;
     let max_secs = crate::sessionize::SESSION_MAX_SECS;
 
-    let sessions: Vec<(String, i64)> = sqlx::query_as(&format!(
+    let sessions: Vec<(String, i64)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "WITH
          msg AS (
              SELECT channel_id, message_ts / 1000000 AS ts,
@@ -396,17 +398,17 @@ async fn recompute_channel_scores_chunk(
                 sum(least(end_ts - start_ts + (first_chars + {rate} - 1) / {rate} + first_msgs * {overhead}, {max_secs}))::bigint AS total_time
          FROM sessions
          GROUP BY channel_id"
-    ))
+    )))
     .bind(ids)
     .fetch_all(pool)
     .await?;
 
-    let counts: Vec<(String, i64)> = sqlx::query_as(&format!(
+    let counts: Vec<(String, i64)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "SELECT channel_id, count(*) AS messages
          FROM slack_messages
          WHERE channel_id = ANY($1) AND {exclude_bots_deleted}
          GROUP BY channel_id"
-    ))
+    )))
     .bind(ids)
     .fetch_all(pool)
     .await?;

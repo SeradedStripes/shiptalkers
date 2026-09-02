@@ -1,10 +1,11 @@
+use crate::sqlx;
+use crate::sqlx::PgPool;
 use askama::Template;
 use axum::Router;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::get;
-use sqlx::PgPool;
 use std::collections::HashMap;
 use std::future::Future;
 use std::sync::Arc;
@@ -456,7 +457,7 @@ fn sql_escape(s: &str) -> String {
 }
 
 async fn resolve_id(ch: &PgPool, sql: &str) -> Option<String> {
-    sqlx::query_scalar(sql)
+    sqlx::query_scalar(sqlx::AssertSqlSafe(sql.to_string()))
         .fetch_optional(ch)
         .await
         .ok()
@@ -465,7 +466,7 @@ async fn resolve_id(ch: &PgPool, sql: &str) -> Option<String> {
 
 async fn fetch_rank_of(ch: &PgPool, inner: &str, id: &str) -> Option<u64> {
     let sql = format!("SELECT rank FROM ({inner}) ranked WHERE ranked.id = $1");
-    let row: Option<i64> = sqlx::query_scalar(&sql)
+    let row: Option<i64> = sqlx::query_scalar(sqlx::AssertSqlSafe(sql.as_str()))
         .bind(id)
         .fetch_optional(ch)
         .await
@@ -479,7 +480,10 @@ async fn fetch_rank_window(ch: &PgPool, inner: &str, lo: u64, hi: u64) -> Vec<Ra
         "SELECT id, value, extra, rank FROM ({inner}) ranked WHERE rank BETWEEN {lo} AND {hi} ORDER BY rank"
     );
     let rows: Vec<(String, i64, Option<i64>, i64)> =
-        sqlx::query_as(&sql).fetch_all(ch).await.unwrap_or_default();
+        sqlx::query_as(sqlx::AssertSqlSafe(sql.as_str()))
+            .fetch_all(ch)
+            .await
+            .unwrap_or_default();
     rows.into_iter()
         .map(|(id, value, extra, rank)| RankedRow {
             id,
@@ -1041,13 +1045,13 @@ async fn get_user_stats(
             String::new()
         } else {
             match scores.as_ref() {
-                Some(s) => sqlx::query_scalar::<_, i64>(&format!(
+                Some(s) => sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(format!(
                     "SELECT count(*) AS rank
                      FROM (
                          SELECT user_id FROM user_scores
                           WHERE {EXCLUDE_BOTS_DELETED} AND score > $1
                      )"
-                ))
+                )))
                 .bind(s.score)
                 .fetch_one(ch)
                 .await
@@ -1116,10 +1120,10 @@ async fn get_channel_stats(
             .unwrap_or(0)
             .max(0) as u64;
 
-    let active_users: u64 = sqlx::query_scalar::<_, i64>(&format!(
+    let active_users: u64 = sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(format!(
         "SELECT count(DISTINCT user_id) FROM slack_messages
          WHERE channel_id = $1 AND {EXCLUDE_BOTS_DELETED}"
-    ))
+    )))
     .bind(channel_id)
     .fetch_one(ch)
     .await
@@ -1148,14 +1152,14 @@ async fn get_channel_stats(
     .unwrap_or(0)
     .max(0) as u64;
 
-    let posters: Vec<(String, i64)> = sqlx::query_as(&format!(
+    let posters: Vec<(String, i64)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "SELECT user_id, count(*) as messages
          FROM slack_messages
          WHERE channel_id = $1 AND {EXCLUDE_BOTS_DELETED}
          GROUP BY user_id
          ORDER BY messages DESC
          LIMIT 10"
-    ))
+    )))
     .bind(channel_id)
     .fetch_all(ch)
     .await
@@ -1312,15 +1316,16 @@ async fn compute_stats(state: &AppState) -> StatsSnapshot {
             .flatten()
             .unwrap_or(0)
             .max(0);
-            let slack_time_secs: i64 = sqlx::query_scalar::<_, Option<i64>>(&format!(
-                "SELECT sum(total_time)::bigint FROM user_scores WHERE {EXCLUDE_BOTS_DELETED}"
-            ))
-            .fetch_one(ch)
-            .await
-            .ok()
-            .flatten()
-            .unwrap_or(0)
-            .max(0);
+            let slack_time_secs: i64 =
+                sqlx::query_scalar::<_, Option<i64>>(sqlx::AssertSqlSafe(format!(
+                    "SELECT sum(total_time)::bigint FROM user_scores WHERE {EXCLUDE_BOTS_DELETED}"
+                )))
+                .fetch_one(ch)
+                .await
+                .ok()
+                .flatten()
+                .unwrap_or(0)
+                .max(0);
             let db_size_bytes: i64 =
                 sqlx::query_scalar::<_, i64>("SELECT pg_database_size(current_database())")
                     .fetch_one(ch)

@@ -1,5 +1,6 @@
 use crate::auth;
 use crate::db::hackatime;
+use crate::sqlx;
 use askama::Template;
 use axum::extract::{Query, State};
 use axum::http::header::{COOKIE, SET_COOKIE};

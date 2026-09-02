@@ -4,7 +4,7 @@ use ship_talkers::website::router;
 
 use axum::body::Body;
 use axum::http::Request;
-use sqlx::postgres::PgPoolOptions;
+use ship_talkers_lib::sqlx::postgres::PgPoolOptions;
 use tower::ServiceExt;
 
 fn dsn() -> &'static str {

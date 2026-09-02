@@ -335,7 +335,7 @@ pub async fn insert_new_channels_rows(
         let mut sql = String::from("INSERT INTO slack_channels (channel_id, name) VALUES ");
         sql.push_str(&placeholders(chunk.len(), 2));
         sql.push_str(" ON CONFLICT (channel_id) DO UPDATE SET name = EXCLUDED.name");
-        let mut q = sqlx::query(&sql);
+        let mut q = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()));
         for ch in chunk {
             q = q.bind(&ch.channel_id).bind(&ch.name);
         }

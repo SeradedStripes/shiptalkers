@@ -1,6 +1,7 @@
 use crate::db;
 use crate::settings;
 use crate::slack;
+use crate::sqlx;
 
 use std::collections::HashMap;
 use std::future::Future;

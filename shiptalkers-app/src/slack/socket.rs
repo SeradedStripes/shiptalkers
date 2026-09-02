@@ -10,6 +10,7 @@ use crate::bot_image;
 use crate::db::postgres_db::{self, SlackChannelRow};
 use crate::settings::RuntimeSettings;
 use crate::slack::time_range::{self, TimeRange, now_unix};
+use crate::sqlx;
 
 #[derive(Debug, Deserialize)]
 struct SocketMessage {
@@ -558,7 +559,8 @@ async fn query_slack_seconds(pool: &sqlx::PgPool, user: &str, range: &TimeRange)
          FROM sessions"
     ));
 
-    let mut session_query = sqlx::query_scalar::<_, Option<i64>>(&session_sql);
+    let mut session_query =
+        sqlx::query_scalar::<_, Option<i64>>(sqlx::AssertSqlSafe(session_sql.as_str()));
     session_query = session_query.bind(user);
     if let Some(start_ts) = range.start_ts() {
         session_query = session_query.bind(start_ts);
@@ -605,7 +607,7 @@ async fn query_coding_seconds(
     let (sql, binds) = build_coding_query(range);
     let start_date = range.start_date().unwrap_or_default();
     let end_date = range.end_date().unwrap_or_default();
-    let mut query = sqlx::query_scalar::<_, Option<i64>>(&sql);
+    let mut query = sqlx::query_scalar::<_, Option<i64>>(sqlx::AssertSqlSafe(sql.as_str()));
     for b in &binds {
         query = query.bind(*b);
     }

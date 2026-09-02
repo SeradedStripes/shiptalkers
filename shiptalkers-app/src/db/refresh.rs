@@ -1,4 +1,5 @@
-use sqlx::PgPool;
+use crate::sqlx;
+use crate::sqlx::PgPool;
 
 fn now_secs() -> u64 {
     std::time::SystemTime::now()
@@ -121,7 +122,7 @@ async fn refresh_word_totals_upsert(
             false,
         ),
     };
-    let mut q = sqlx::query(&sql).bind(updated as i64);
+    let mut q = sqlx::query(sqlx::AssertSqlSafe(sql.as_str())).bind(updated as i64);
     if let Some(words) = words.filter(|_| has_word_bind) {
         q = q.bind(words);
     }
@@ -149,7 +150,7 @@ pub async fn refresh_daily_stats(pool: &PgPool) -> Result<(), Box<dyn std::error
     let rate = crate::sessionize::MESSAGE_TYPING_CHARS_PER_SEC;
     let overhead = crate::sessionize::MESSAGE_READ_OVERHEAD_SECS;
     let max_secs = crate::sessionize::SESSION_MAX_SECS;
-    let slack: Vec<(time::Date, i64)> = sqlx::query_as(&format!(
+    let slack: Vec<(time::Date, i64)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "WITH
          msg AS (
              SELECT user_id, message_ts / 1000000 AS ts,
@@ -180,7 +181,7 @@ pub async fn refresh_daily_stats(pool: &PgPool) -> Result<(), Box<dyn std::error
                 sum(least(end_ts - start_ts + (first_chars + {rate} - 1) / {rate} + first_msgs * {overhead}, {max_secs}))::bigint AS total_time
          FROM sessions
          GROUP BY date"
-    ))
+    )))
     .fetch_all(pool)
     .await?;
 
@@ -191,7 +192,7 @@ pub async fn refresh_daily_stats(pool: &PgPool) -> Result<(), Box<dyn std::error
     for chunk in slack.chunks(ship_talkers_lib::db::INSERT_CHUNK) {
         let mut sql = String::from("INSERT INTO daily_stats (date, slack_secs) VALUES ");
         sql.push_str(&ship_talkers_lib::db::placeholders(chunk.len(), 2));
-        let mut q = sqlx::query(&sql);
+        let mut q = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()));
         for (date, slack_secs) in chunk {
             q = q.bind(date).bind(*slack_secs);
         }
@@ -225,9 +226,9 @@ pub async fn refresh_page_stats(pool: &PgPool) -> Result<(), Box<dyn std::error:
             .ok()
             .flatten()
             .unwrap_or(0);
-    let slack_time_secs: i64 = sqlx::query_scalar(&format!(
+    let slack_time_secs: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
         "SELECT sum(total_time)::bigint FROM user_scores WHERE {EXCLUDE_BOTS_DELETED}"
-    ))
+    )))
     .fetch_one(pool)
     .await
     .ok()

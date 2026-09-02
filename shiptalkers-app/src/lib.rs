@@ -21,3 +21,4 @@ pub mod slack;
 pub mod website;
 
 pub use ship_talkers_lib::sessionize;
+pub use ship_talkers_lib::sqlx;
