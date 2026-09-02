@@ -230,7 +230,7 @@ async fn recompute_user_scores_chunk(
         })
         .collect();
 
-    let hours: Vec<(String, i32)> = sqlx::query_as(
+    let hours: Vec<(String, i64)> = sqlx::query_as(
         "SELECT user_id, (array_agg(hour ORDER BY cnt DESC))[1] AS active_hour
          FROM (
              SELECT user_id, (message_ts / 1000000 % 86400) / 3600 AS hour,
