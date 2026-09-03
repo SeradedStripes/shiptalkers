@@ -569,13 +569,27 @@ async fn query_slack_seconds(pool: &sqlx::PgPool, user: &str, range: &TimeRange)
         session_query = session_query.bind(end_ts);
     }
 
-    session_query
-        .fetch_one(pool)
-        .await
-        .ok()
-        .flatten()
-        .unwrap_or(0)
-        .max(0) as u64
+    let result = session_query.fetch_one(pool).await;
+    match result {
+        Ok(Some(secs)) => secs.max(0) as u64,
+        Ok(None) => {
+            tracing::warn!(
+                user,
+                range = range.label().as_str(),
+                "query_slack_seconds returned NULL"
+            );
+            0
+        }
+        Err(e) => {
+            tracing::error!(
+                user,
+                range = range.label().as_str(),
+                "query_slack_seconds failed: {}",
+                e
+            );
+            0
+        }
+    }
 }
 
 /// Coding seconds for a user within the requested range, summed as the exact
