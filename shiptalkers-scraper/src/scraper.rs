@@ -256,23 +256,42 @@ async fn scrape_all_messages(settings: &settings::RuntimeSettings, pool: &sqlx::
             &new_channels,
             touched_users.clone(),
             touched_channels.clone(),
+            0,
+            None,
         )
         .await;
     }
 
     if !check_channels.is_empty() {
+        let resume = db::postgres_db::get_sweep_resume(pool)
+            .await
+            .unwrap_or(None);
+        let start = resume
+            .as_ref()
+            .and_then(|c| check_channels.iter().position(|x| x == c).map(|p| p + 1))
+            .unwrap_or(0);
         tracing::info!(
-            "Checking {} already-scraped channels for new messages...",
-            check_channels.len()
+            "Checking {} already-scraped channels for new messages (resuming at {}: {})",
+            check_channels.len(),
+            start,
+            if start > 0 {
+                check_channels[start - 1].as_str()
+            } else {
+                "start"
+            }
         );
+        let sweep = ScrapeSweep::new(pool.clone(), &check_channels, start);
         scrape_channel_list(
             settings,
             pool,
             &check_channels,
             touched_users.clone(),
             touched_channels.clone(),
+            start,
+            Some(sweep.clone()),
         )
         .await;
+        sweep.finish().await;
     }
 
     let users: Vec<String> = touched_users.lock().unwrap().iter().cloned().collect();
@@ -306,6 +325,8 @@ async fn scrape_channel_list(
     channels: &[String],
     touched_users: Arc<Mutex<std::collections::HashSet<String>>>,
     touched_channels: Arc<Mutex<std::collections::HashSet<String>>>,
+    resume_from: usize,
+    sweep: Option<ScrapeSweep>,
 ) {
     let request_delay = Duration::from_millis(settings.get_u64("SLACK_REQUEST_DELAY_MS"));
     let max_inflight = settings.get_u64("SLACK_MAX_INFLIGHT") as usize;
@@ -357,7 +378,7 @@ async fn scrape_channel_list(
     }
 
     let mut workers = Vec::new();
-    let next = Arc::new(AtomicUsize::new(0));
+    let next = Arc::new(AtomicUsize::new(resume_from));
     for (token_idx, token) in user_tokens.iter().enumerate() {
         let client = slack::SlackClient::new(token.clone(), request_delay, max_inflight);
 
@@ -371,6 +392,7 @@ async fn scrape_channel_list(
             thread_rescan_interval_hours,
             total: total.clone(),
             processed: processed.clone(),
+            sweep: sweep.clone(),
             tx,
             touched_users: touched_users.clone(),
             touched_channels: touched_channels.clone(),
@@ -404,9 +426,77 @@ struct ShardCtx {
     thread_rescan_interval_hours: u64,
     total: Arc<AtomicU64>,
     processed: Arc<AtomicU64>,
+    sweep: Option<ScrapeSweep>,
     tx: tokio::sync::mpsc::Sender<usize>,
     touched_users: Arc<Mutex<std::collections::HashSet<String>>>,
     touched_channels: Arc<Mutex<std::collections::HashSet<String>>>,
+}
+
+/// Tracks the position of the incremental channel sweep across passes so the
+/// next pass continues where the last one left off instead of restarting at the
+/// start of the channel list. The resume point is persisted to `scrape_sweep`;
+/// when a full pass reaches the end the cursor is cleared so the next pass
+/// starts fresh.
+#[derive(Clone)]
+struct ScrapeSweep {
+    pool: sqlx::PgPool,
+    channels: Arc<Vec<String>>,
+    start: usize,
+    expected: Arc<AtomicUsize>,
+    done: Arc<Mutex<std::collections::HashSet<usize>>>,
+}
+
+impl ScrapeSweep {
+    fn new(pool: sqlx::PgPool, channels: &[String], start: usize) -> Self {
+        Self {
+            pool,
+            channels: Arc::new(channels.to_vec()),
+            start,
+            expected: Arc::new(AtomicUsize::new(start)),
+            done: Arc::new(Mutex::new(std::collections::HashSet::new())),
+        }
+    }
+
+    /// Records a completed channel index and advances the contiguous resume point,
+    /// Only advances past channels that have actually finished so a slow channel is never skipped.
+    async fn note_done(&self, idx: usize) {
+        {
+            let mut done = self.done.lock().unwrap();
+            done.insert(idx);
+            let mut next = self.expected.load(Ordering::Relaxed);
+            while done.remove(&next) {
+                next += 1;
+            }
+            self.expected.store(next, Ordering::Relaxed);
+        }
+        let next = self.expected.load(Ordering::Relaxed);
+        if next >= self.channels.len() || (next > self.start && next.is_multiple_of(250)) {
+            self.persist().await;
+        }
+    }
+
+    async fn persist(&self) {
+        let next = self.expected.load(Ordering::Relaxed);
+        let res = if next >= self.channels.len() {
+            db::postgres_db::clear_sweep_resume(&self.pool).await
+        } else if next > 0 {
+            db::postgres_db::set_sweep_resume(&self.pool, &self.channels[next - 1]).await
+        } else {
+            return;
+        };
+        if let Err(e) = res {
+            tracing::warn!("Failed to persist sweep resume: {}", e);
+        }
+    }
+
+    /// Ensures a completed pass clears the cursor
+    async fn finish(&self) {
+        if self.expected.load(Ordering::Relaxed) >= self.channels.len()
+            && let Err(e) = db::postgres_db::clear_sweep_resume(&self.pool).await
+        {
+            tracing::warn!("Failed to clear sweep resume: {}", e);
+        }
+    }
 }
 
 async fn scrape_shard(
@@ -476,6 +566,9 @@ async fn scrape_shard(
                 }
                 let channel_id = channels[idx].clone();
                 scrape_one_channel(&client, &pool, channel_id, idx + 1, &ctx).await;
+                if let Some(sweep) = &ctx.sweep {
+                    sweep.note_done(idx).await;
+                }
             }
         }));
     }

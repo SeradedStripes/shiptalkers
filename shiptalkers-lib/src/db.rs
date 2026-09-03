@@ -230,6 +230,16 @@ pub async fn init_tables(pool: &PgPool) -> Result<(), Box<dyn std::error::Error>
     .await?;
 
     sqlx::query(
+        "CREATE TABLE IF NOT EXISTS scrape_sweep (
+            id SMALLINT PRIMARY KEY,
+            resume_channel TEXT NOT NULL DEFAULT '',
+            updated TIMESTAMPTZ NOT NULL DEFAULT now()
+        )",
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
         "CREATE TABLE IF NOT EXISTS word_refresh_meta (
             id SMALLINT PRIMARY KEY,
             watermark BIGINT NOT NULL DEFAULT 0,

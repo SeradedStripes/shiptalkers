@@ -498,3 +498,38 @@ pub async fn get_thread_roots(
     .await?;
     Ok(rows)
 }
+
+/// The channel id where the incremental sweep should resume. Empty means a fresh sweep from the start of the channel list.
+pub async fn get_sweep_resume(pool: &PgPool) -> Result<Option<String>, Box<dyn std::error::Error>> {
+    let row: Option<String> =
+        sqlx::query_scalar("SELECT resume_channel FROM scrape_sweep WHERE id = 1")
+            .fetch_optional(pool)
+            .await?;
+    Ok(row.filter(|r| !r.is_empty()))
+}
+
+/// Records the current sweep position as the last fully-processed channel.
+pub async fn set_sweep_resume(
+    pool: &PgPool,
+    channel_id: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    sqlx::query(
+        "INSERT INTO scrape_sweep (id, resume_channel, updated) VALUES (1, $1, now())
+         ON CONFLICT (id) DO UPDATE SET resume_channel = EXCLUDED.resume_channel, updated = now()",
+    )
+    .bind(channel_id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Clears the resume cursor so the next sweep starts fresh from the start.
+pub async fn clear_sweep_resume(pool: &PgPool) -> Result<(), Box<dyn std::error::Error>> {
+    sqlx::query(
+        "INSERT INTO scrape_sweep (id, resume_channel, updated) VALUES (1, '', now())
+         ON CONFLICT (id) DO UPDATE SET resume_channel = '', updated = now()",
+    )
+    .execute(pool)
+    .await?;
+    Ok(())
+}
