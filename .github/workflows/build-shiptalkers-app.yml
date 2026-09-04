@@ -25,7 +25,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Deploy to Coolify
-        uses: SeradedStripes/coolify-deploy@v1
+        uses: SeradedStripes/coolify-deploy@v1.1
         with:
           coolify_url: 'https://coolify.kirze.de'
           coolify_app_uuid: 's352e8bj5qvtd4aiyzu6i08r'
