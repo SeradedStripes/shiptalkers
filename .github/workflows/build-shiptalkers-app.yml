@@ -12,72 +12,28 @@ on:
       - ".github/workflows/build-shiptalkers-app.yml"
   workflow_dispatch:
 
-env:
-  IMAGE: ghcr.io/seradedstripes/shiptalkers-app
-
 permissions:
   contents: read
   packages: write
 
 concurrency:
-  group: docker-app-${{ github.ref }}
+  group: deploy-shiptalkers-app-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Extract metadata (tags, labels)
-        id: meta
-        uses: docker/metadata-action@v6
-        with:
-          images: ${{ env.IMAGE }}
-          tags: |
-            type=ref,event=branch
-            type=ref,event=tag
-            type=sha
-            type=raw,value=latest,enable={{is_default_branch}}
-
-      - name: Build and push
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: ./shiptalkers-app/Dockerfile
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
   deploy:
-    needs: build
     runs-on: ubuntu-latest
     steps:
-      - name: Call Coolify API to deploy
-        env:
-          COOLIFY_TOKEN: ${{ secrets.COOLIFY_TOKEN }}
-        run: |
-          if [ -z "${COOLIFY_TOKEN}" ]; then
-            echo "::error::COOLIFY_TOKEN secret is not set. Add it in GitHub repo Settings > Secrets and variables > Actions."
-            exit 1
-          fi
-          curl \
-            --fail \
-            --silent \
-            --show-error \
-            -X POST \
-            "https://coolify.kirze.de/api/v1/deploy?uuid=s352e8bj5qvtd4aiyzu6i08r&force=false" \
-            -H "Authorization: Bearer ${COOLIFY_TOKEN}"
+      - name: Deploy to Coolify
+        uses: SeradedStripes/coolify-deploy@v1
+        with:
+          coolify_url: 'https://coolify.kirze.de'
+          coolify_app_uuid: 's352e8bj5qvtd4aiyzu6i08r'
+          coolify_token: ${{ secrets.COOLIFY_TOKEN }}
+          build_image: 'true'
+          build_image_name: 'shiptalkers-app'
+          build_image_tag: 'latest'
+          build_image_registry: 'ghcr.io/seradedstripes'
+          registry_token: ${{ secrets.GITHUB_TOKEN }}
+          build_context: '.'
+          dockferfile: './shiptalkers-app/Dockerfile'
