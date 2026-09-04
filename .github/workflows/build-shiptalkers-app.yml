@@ -36,4 +36,4 @@ jobs:
           build_image_registry: 'ghcr.io/seradedstripes'
           registry_token: ${{ secrets.GITHUB_TOKEN }}
           build_context: '.'
-          dockferfile: './shiptalkers-app/Dockerfile'
+          dockerfile: './shiptalkers-app/Dockerfile'
