@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Daily Stats API - Ship Talkers</title>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body class="api-docs">
+    {% include "header.html" %}
+    <div class="container docs-wrap">
+        {% include "docs/sidebar.html" %}
+        <div class="docs-content">
+            <h2>Daily Stats</h2>
+            <p>The daily Slack-time series that backs the website's per-day charts.</p>
+
+            <section id="daily-stats" class="endpoint">
+                <div class="endpoint-head">
+                    <span class="method">GET</span>
+                    <code>/api/v1/daily-stats</code>
+                    <span class="tag">Public</span>
+                </div>
+                <p>
+                    Total Slack time per day, refreshed in the background. Returns the full
+                    series by default; use <code>start</code> and <code>end</code> to narrow
+                    the range (inclusive, <code>YYYY-MM-DD</code>).
+                </p>
+                <p><strong>Query parameters</strong></p>
+                <ul class="api-list">
+                    <li><span class="param">start</span> - start date, inclusive, <code>YYYY-MM-DD</code>.</li>
+                    <li><span class="param">end</span> - end date, inclusive, <code>YYYY-MM-DD</code>.</li>
+                </ul>
+                <p><strong>Example response</strong></p>
+                <pre class="code-block">{
+  "points": [
+    { "date": "2026-09-01", "slack_secs": 1492800 },
+    { "date": "2026-09-02", "slack_secs": 1863600 }
+  ]
+}</pre>
+                <p><strong>Example</strong></p>
+                <pre class="code-block">curl "{{ base_url }}/api/v1/daily-stats?start=2026-09-01&end=2026-09-07"</pre>
+            </section>
+        </div>
+    </div>
+    {% include "footer.html" %}
+</body>
+</html>

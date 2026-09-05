@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Channels API - Ship Talkers</title>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body class="api-docs">
+    {% include "header.html" %}
+    <div class="container docs-wrap">
+        {% include "docs/sidebar.html" %}
+        <div class="docs-content">
+            <h2>Channels</h2>
+            <p>Per-channel stats, mirroring the website's channel pages.</p>
+
+            <section id="channel" class="endpoint">
+                <div class="endpoint-head">
+                    <span class="method">GET</span>
+                    <code>/api/v1/channels/&#123;channel_id&#125;</code>
+                    <span class="tag">Public</span>
+                </div>
+                <p>
+                    Message count, active users, first/last message timestamps, and top
+                    posters for one channel.
+                </p>
+                <p><strong>Path parameters</strong></p>
+                <ul class="api-list">
+                    <li><span class="param">channel_id</span> - Slack channel id, e.g. <code>C0123ABCD</code>.</li>
+                </ul>
+                <p><strong>Example response</strong></p>
+                <pre class="code-block">{
+  "channel_id": "C0123ABCD",
+  "name": "ship",
+  "total_messages": 1294,
+  "active_users": 312,
+  "first_message_ts": 1704067200000000,
+  "last_message_ts": 1736092800123456,
+  "top_posters": [
+    { "slack_id": "U0123ABCD", "display_name": "Orpheus", "pfp": "/pfp/U0123ABCD", "messages": 210 }
+  ]
+}</pre>
+                <p><strong>Example</strong></p>
+                <pre class="code-block">curl {{ base_url }}/api/v1/channels/C0123ABCD</pre>
+            </section>
+        </div>
+    </div>
+    {% include "footer.html" %}
+</body>
+</html>

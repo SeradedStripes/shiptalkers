@@ -136,3 +136,117 @@ table a:hover { text-decoration: underline; }
 .table-card h2 { font-size: 1.25rem; margin-bottom: 1rem; display: flex; align-items: center; gap: 0.5rem; }
 .empty { text-align: center; color: #666; }
 
+body.api-docs .container { max-width: 1200px; }
+body.api-docs h2 { font-size: 1.5rem; margin: 2rem 0 1rem; }
+body.api-docs p { color: #888; line-height: 1.6; margin-bottom: 1rem; }
+body.api-docs code { background: #262626; padding: 0.15rem 0.4rem; border-radius: 6px; font-size: 0.9rem; }
+body.api-docs a { color: #f472b6; }
+
+.docs-wrap { display: flex; gap: 2rem; align-items: flex-start; }
+
+.docs-sidebar {
+    position: sticky;
+    top: 1rem;
+    flex: 0 0 230px;
+    display: flex;
+    flex-direction: column;
+    gap: 0.1rem;
+    border-right: 1px solid #262626;
+    padding-right: 1rem;
+}
+.docs-sidebar a {
+    text-decoration: none;
+    padding: 0.3rem 0.6rem;
+    border-radius: 8px;
+    font-size: 0.9rem;
+    color: #aaa;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.docs-sidebar a:hover { color: #fff; background: #1a1a1a; }
+.docs-sidebar a.active { color: #f472b6; background: #1a1a1a; }
+.docs-sidebar a.docs-sub {
+    padding-left: 1.25rem;
+    font-size: 0.8rem;
+    color: #888;
+}
+.docs-sidebar a.docs-sub code { background: transparent; padding: 0; color: #666; font-size: 0.7rem; }
+.docs-sidebar a code { background: transparent; padding: 0; color: #666; font-size: 0.75rem; }
+.docs-sidebar .docs-group {
+    margin: 1rem 0 0.25rem;
+    padding: 0 0.6rem;
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: #666;
+}
+
+.docs-content { flex: 1; min-width: 0; }
+.docs-content section { scroll-margin-top: 1rem; }
+
+@media (max-width: 900px) {
+    .docs-wrap { flex-direction: column; }
+    .docs-sidebar {
+        position: static;
+        flex: none;
+        width: 100%;
+        flex-direction: row;
+        flex-wrap: wrap;
+        gap: 0.25rem;
+        border-right: none;
+        border-bottom: 1px solid #262626;
+        padding-right: 0;
+        padding-bottom: 0.75rem;
+        margin-bottom: 1rem;
+    }
+    .docs-sidebar a code { display: none; }
+    .docs-sidebar .docs-group { margin: 0; }
+}
+
+.api-list { list-style: none; padding: 0; margin: 0 0 1rem; }
+.api-list li { padding: 0.25rem 0; color: #aaa; line-height: 1.6; }
+.api-list strong { color: #fff; }
+.api-list .param { color: #f472b6; font-size: 0.85rem; }
+
+.docs-content .endpoint { scroll-margin-top: 1rem; }
+
+.code-block {
+    background: #1a1a1a;
+    border: 1px solid #262626;
+    border-radius: 12px;
+    padding: 1rem 1.25rem;
+    overflow-x: auto;
+    color: #e5e5e5;
+    font-size: 0.875rem;
+    line-height: 1.6;
+    margin-bottom: 1rem;
+}
+
+.endpoint {
+    background: #1a1a1a;
+    border: 1px solid #262626;
+    border-radius: 12px;
+    padding: 1.25rem 1.5rem;
+    margin-bottom: 1rem;
+}
+.endpoint-head { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.75rem; }
+.endpoint-head code { background: transparent; padding: 0; font-size: 1.05rem; color: #fff; }
+.endpoint > p { margin-bottom: 0.75rem; }
+.endpoint .method {
+    background: #f472b6;
+    color: #1a1a1a;
+    font-weight: 700;
+    font-size: 0.75rem;
+    padding: 0.25rem 0.6rem;
+    border-radius: 6px;
+}
+.endpoint .tag {
+    margin-left: auto;
+    background: #262626;
+    color: #aaa;
+    font-size: 0.75rem;
+    padding: 0.25rem 0.6rem;
+    border-radius: 6px;
+}
+

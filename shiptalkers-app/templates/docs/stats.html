@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Stats API - Ship Talkers</title>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body class="api-docs">
+    {% include "header.html" %}
+    <div class="container docs-wrap">
+        {% include "docs/sidebar.html" %}
+        <div class="docs-content">
+            <h2>Stats</h2>
+            <p>
+                Global counters and per-entity stats. These endpoints mirror the website's
+                homepage, leaderboards, and profile pages.
+            </p>
+
+            <section id="stats" class="endpoint">
+                <div class="endpoint-head">
+                    <span class="method">GET</span>
+                    <code>/api/v1/stats</code>
+                    <span class="tag">Public</span>
+                </div>
+                <p>
+                    Aggregate counters for the whole workspace: total messages, channels,
+                    users, coding time, Slack time, and database size.
+                </p>
+                <p><strong>Query parameters</strong></p>
+                <ul class="api-list">
+                    <li><span class="param">include</span> - response fields to include, comma-separated. Defaults to all. Example: <code>include=messages,channels</code>.</li>
+                </ul>
+                <p><strong>Example response</strong></p>
+                <pre class="code-block">{
+  "total_messages": 938152,
+  "total_channels": 16813,
+  "total_users": 4812,
+  "coding_minutes": 1048379,
+  "slack_time_secs": 394661834,
+  "db_size_bytes": 2147482736,
+  "updated": 1736092800
+}</pre>
+                <p><strong>Example</strong></p>
+                <pre class="code-block">curl {{ base_url }}/api/v1/stats?include=messages,channels</pre>
+            </section>
+
+            <section id="leaderboard" class="endpoint">
+                <div class="endpoint-head">
+                    <span class="method">GET</span>
+                    <code>/api/v1/leaderboard/&#123;category&#125;</code>
+                    <span class="tag">Public</span>
+                </div>
+                <p>
+                    Returns ranked entries for a leaderboard category. With no query params
+                    this returns the top 100. Pass <code>rank=N</code> to fetch a small
+                    window around rank N, or <code>q=name</code> to look up an entity by
+                    name and fetch its rank window.
+                </p>
+                <p><strong>Path parameters</strong></p>
+                <ul class="api-list">
+                    <li><span class="param">category</span> - <code>talkers</code>, <code>coders</code>, <code>channels</code>, <code>combined</code>, or <code>words</code>.</li>
+                </ul>
+                <p><strong>Query parameters</strong></p>
+                <ul class="api-list">
+                    <li><span class="param">rank</span> - jump to a rank and return a window around it (3 below, 3 above). Mutually exclusive with <code>q</code>.</li>
+                    <li><span class="param">q</span> - look up an entry by display name (users/channels) or by exact/prefixed word (words) and return its rank window. Mutually exclusive with <code>rank</code>.</li>
+                    <li><span class="param">limit</span> - max entries, default 100, max 500.</li>
+                </ul>
+                <p><strong>Example response</strong></p>
+                <pre class="code-block">{
+  "category": "talkers",
+  "total": 4812,
+  "entries": [
+    {
+      "rank": 1,
+      "id": "U0123ABCD",
+      "name": "Orpheus",
+      "value": 394661834,
+      "extra": 1294
+    }
+  ]
+}</pre>
+                <p><strong>Example</strong></p>
+                <pre class="code-block">curl {{ base_url }}/api/v1/leaderboard/talkers?q=Orpheus</pre>
+            </section>
+
+            <section id="users" class="endpoint">
+                <div class="endpoint-head">
+                    <span class="method">GET</span>
+                    <code>/api/v1/users/&#123;slack_id&#125;</code>
+                    <span class="tag">Public</span>
+                </div>
+                <p>
+                    Slack-time sessionizer output, coding minutes, leaderboard rank, and top
+                    channels for one user. Bot and deleted-user stats are returned but
+                    excluded from rankings.
+                </p>
+                <p><strong>Path parameters</strong></p>
+                <ul class="api-list">
+                    <li><span class="param">slack_id</span> - Slack user id, e.g. <code>U0123ABCD</code>.</li>
+                </ul>
+                <p><strong>Example response</strong></p>
+                <pre class="code-block">{
+  "slack_id": "U0123ABCD",
+  "display_name": "Orpheus",
+  "pfp": "/pfp/U0123ABCD",
+  "is_bot": false,
+  "is_deleted": false,
+  "found": true,
+  "scores": {
+    "score": 1948532,
+    "total_time_secs": 946703,
+    "messages": 1294,
+    "sessions": 812,
+    "longest_secs": 3600,
+    "days": 214,
+    "channels": 48,
+    "active_hour": 1
+  },
+  "coding_minutes": 3420,
+  "leaderboard_rank": 1,
+  "top_channels": [
+    { "channel_id": "C0123ABCD", "channel_name": "ship", "messages": 210 }
+  ]
+}</pre>
+                <p><strong>Example</strong></p>
+                <pre class="code-block">curl {{ base_url }}/api/v1/users/U0123ABCD</pre>
+            </section>
+        </div>
+    </div>
+    {% include "footer.html" %}
+</body>
+</html>

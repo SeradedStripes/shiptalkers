@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Account API - Ship Talkers</title>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body class="api-docs">
+    {% include "header.html" %}
+    <div class="container docs-wrap">
+        {% include "docs/sidebar.html" %}
+        <div class="docs-content">
+            <h2>Account</h2>
+            <p>
+                Your own data and API key management. Reading your own stats requires an API
+                key; creating and revoking keys requires the signed-in session cookie.
+            </p>
+
+            <section id="me" class="endpoint">
+                <div class="endpoint-head">
+                    <span class="method">GET</span>
+                    <code>/api/v1/me</code>
+                    <span class="tag">Account</span>
+                </div>
+                <p>
+                    Identifies the caller from the API key and returns that user's stats. The
+                    profile, scores, and coding minutes belong to the key owner and are
+                    identical to the public user endpoint for the same id.
+                </p>
+                <p><strong>Auth</strong>: <code>Authorization: Bearer &lt;key&gt;</code></p>
+                <p><strong>Responses</strong></p>
+                <ul class="api-list">
+                    <li><span class="param">200</span> - your <a href="/api/docs/stats#users"><code>UserStats</code></a>.</li>
+                    <li><span class="param">401</span> - missing or invalid API key.</li>
+                </ul>
+                <p><strong>Example</strong></p>
+                <pre class="code-block">curl -H "Authorization: Bearer shiptalkers_..." \
+     {{ base_url }}/api/v1/me</pre>
+            </section>
+
+            <section id="keys" class="endpoint">
+                <div class="endpoint-head">
+                    <span class="method">GET/POST</span>
+                    <code>/api/v1/keys</code>
+                    <span class="tag">Account</span>
+                </div>
+                <p>
+                    <strong>GET</strong> lists the signed-in user's active keys: public id,
+                    creation time, and last-used time. Full keys are never returned.
+                </p>
+                <p>
+                    <strong>POST</strong> creates a new key. The full key is returned exactly
+                    once at creation; store it, as it can never be retrieved again (only a
+                    hash is stored).
+                </p>
+                <p><strong>Auth</strong>: signed-in session cookie.</p>
+                <p><strong>Example</strong></p>
+                <pre class="code-block">curl -b session.cookie {{ base_url }}/api/v1/keys
+
+curl -b session.cookie -X POST {{ base_url }}/api/v1/keys</pre>
+                <p><strong>POST example response</strong></p>
+                <pre class="code-block">{
+  "key_id": "key_9f3a",
+  "key": "shiptalkers_2f8d1a9c...",
+  "created_at": 1736092800
+}</pre>
+            </section>
+
+            <section id="keys-revoke" class="endpoint">
+                <div class="endpoint-head">
+                    <span class="method">DELETE</span>
+                    <code>/api/v1/keys/&#123;key_id&#125;</code>
+                    <span class="tag">Account</span>
+                </div>
+                <p>
+                    Permanently revokes one of your API keys. Requests authenticated with a
+                    revoked key are rejected immediately.
+                </p>
+                <p><strong>Path parameters</strong></p>
+                <ul class="api-list">
+                    <li><span class="param">key_id</span> - public id of the key to revoke.</li>
+                </ul>
+                <p><strong>Auth</strong>: signed-in session cookie.</p>
+                <p><strong>Responses</strong></p>
+                <ul class="api-list">
+                    <li><span class="param">204</span> - revoked.</li>
+                    <li><span class="param">401</span> - not signed in.</li>
+                    <li><span class="param">404</span> - no such key for this user.</li>
+                </ul>
+                <p><strong>Example</strong></p>
+                <pre class="code-block">curl -b session.cookie -X DELETE \
+     {{ base_url }}/api/v1/keys/key_9f3a</pre>
+            </section>
+        </div>
+    </div>
+    {% include "footer.html" %}
+</body>
+</html>

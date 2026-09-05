@@ -195,6 +195,60 @@ pub struct LeaderboardTemplate {
 }
 
 #[derive(Template)]
+#[template(path = "docs/overview.html")]
+pub struct ApiDocsOverview {
+    pub signed_in: bool,
+    pub page_load_ms: String,
+    pub base_url: String,
+    pub current: &'static str,
+}
+
+#[derive(Template)]
+#[template(path = "docs/stats.html")]
+pub struct ApiDocsStats {
+    pub signed_in: bool,
+    pub page_load_ms: String,
+    pub base_url: String,
+    pub current: &'static str,
+}
+
+#[derive(Template)]
+#[template(path = "docs/channels.html")]
+pub struct ApiDocsChannels {
+    pub signed_in: bool,
+    pub page_load_ms: String,
+    pub base_url: String,
+    pub current: &'static str,
+}
+
+#[derive(Template)]
+#[template(path = "docs/daily_stats.html")]
+pub struct ApiDocsDailyStats {
+    pub signed_in: bool,
+    pub page_load_ms: String,
+    pub base_url: String,
+    pub current: &'static str,
+}
+
+#[derive(Template)]
+#[template(path = "docs/search.html")]
+pub struct ApiDocsSearch {
+    pub signed_in: bool,
+    pub page_load_ms: String,
+    pub base_url: String,
+    pub current: &'static str,
+}
+
+#[derive(Template)]
+#[template(path = "docs/account.html")]
+pub struct ApiDocsAccount {
+    pub signed_in: bool,
+    pub page_load_ms: String,
+    pub base_url: String,
+    pub current: &'static str,
+}
+
+#[derive(Template)]
 #[template(path = "leaderboard_category.html")]
 pub struct LeaderboardCategoryTemplate {
     pub title: String,
@@ -256,6 +310,8 @@ pub fn router(
         .route("/stats/{id}", get(get_stats_for_id))
         .route("/leaderboard", get(get_leaderboard))
         .route("/leaderboard/{category}", get(get_leaderboard_category))
+        .route("/api/docs", get(get_api_docs))
+        .route("/api/docs/{topic}", get(get_api_docs))
         .route("/search", get(get_search))
         .route("/pfp/{id}", get(get_pfp))
         .route("/auth/hackclub/login", get(auth::auth_hackclub_login))
@@ -347,6 +403,65 @@ async fn get_index(
     let html = template
         .render()
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Html(html))
+}
+
+async fn get_api_docs(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    topic: Option<Path<String>>,
+) -> Result<Html<String>, StatusCode> {
+    let started = Instant::now();
+    let signed_in = signed_in(&state, &headers);
+    let page_load_ms = format!("{}ms", started.elapsed().as_millis());
+    let base_url = state.settings.get("BASE_URL");
+    let topic = topic.as_ref().map(|p| p.as_str());
+    let html = match topic {
+        None | Some("overview") => ApiDocsOverview {
+            signed_in,
+            page_load_ms,
+            base_url: base_url.clone(),
+            current: "overview",
+        }
+        .render(),
+        Some("stats") => ApiDocsStats {
+            signed_in,
+            page_load_ms: page_load_ms.clone(),
+            base_url: base_url.clone(),
+            current: "stats",
+        }
+        .render(),
+        Some("channels") => ApiDocsChannels {
+            signed_in,
+            page_load_ms: page_load_ms.clone(),
+            base_url: base_url.clone(),
+            current: "channels",
+        }
+        .render(),
+        Some("daily-stats") => ApiDocsDailyStats {
+            signed_in,
+            page_load_ms: page_load_ms.clone(),
+            base_url: base_url.clone(),
+            current: "daily-stats",
+        }
+        .render(),
+        Some("search") => ApiDocsSearch {
+            signed_in,
+            page_load_ms: page_load_ms.clone(),
+            base_url: base_url.clone(),
+            current: "search",
+        }
+        .render(),
+        Some("account") => ApiDocsAccount {
+            signed_in,
+            page_load_ms: page_load_ms.clone(),
+            base_url,
+            current: "account",
+        }
+        .render(),
+        _ => return Err(StatusCode::NOT_FOUND),
+    }
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Html(html))
 }
 

@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>API Docs - Ship Talkers</title>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body class="api-docs">
+    {% include "header.html" %}
+    <div class="container docs-wrap">
+        {% include "docs/sidebar.html" %}
+        <div class="docs-content">
+            <h1>API Documentation</h1>
+
+            <p>
+                The Ship Talkers API serves the same numbers the website shows: global stats,
+                live leaderboards, per-user and per-channel stats, and search. Everything is
+                JSON.
+            </p>
+
+            <section id="base-url" class="table-card">
+                <h2>Base URL</h2>
+                <ul class="api-list">
+                    <li><code>{{ base_url }}/api/v1</code></li>
+                </ul>
+                <p>
+                    All endpoints are versioned under <code>/api/v1</code>.
+                </p>
+            </section>
+
+            <section id="authentication" class="table-card">
+                <h2>Authentication</h2>
+                <p>
+                    Keys are issued on demand from your account page while signed in, stored
+                    hashed, and can be revoked at any time. Send one as
+                    <code>Authorization: Bearer &lt;key&gt;</code>.
+                </p>
+                <pre class="code-block">curl -H "Authorization: Bearer shiptalkers_..." \
+     {{ base_url }}/api/v1/me</pre>
+                <p>
+                    Only <code>GET /api/v1/me</code> and the key management endpoints require
+                    a key. All other endpoints work without one. Reading someone else's
+                    data requires their key (or, in a future release, a grant they issue to
+                    your key).
+                </p>
+            </section>
+
+            <section id="errors" class="table-card">
+                <h2>Errors</h2>
+                <p>Errors use the following shape:</p>
+                <pre class="code-block">{
+  "error": "human-readable message"
+}</pre>
+            </section>
+        </div>
+    </div>
+    {% include "footer.html" %}
+</body>
+</html>

@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Search API - Ship Talkers</title>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body class="api-docs">
+    {% include "header.html" %}
+    <div class="container docs-wrap">
+        {% include "docs/sidebar.html" %}
+        <div class="docs-content">
+            <h2>Search</h2>
+            <p>Find users and channels by name, mirroring the website's search.</p>
+
+            <section id="search" class="endpoint">
+                <div class="endpoint-head">
+                    <span class="method">GET</span>
+                    <code>/api/v1/search</code>
+                    <span class="tag">Public</span>
+                </div>
+                <p>
+                    Case-insensitive substring search over user display names, Slack user
+                    ids, and channel names. Up to 25 results per type.
+                </p>
+                <p><strong>Query parameters</strong></p>
+                <ul class="api-list">
+                    <li><span class="param">q</span> - search query, required.</li>
+                </ul>
+                <p><strong>Example response</strong></p>
+                <pre class="code-block">{
+  "query": "orp",
+  "users": [
+    {
+      "slack_id": "U0123ABCD",
+      "display_name": "Orpheus",
+      "pfp": "/pfp/U0123ABCD",
+      "is_deleted": false
+    }
+  ],
+  "channels": []
+}</pre>
+                <p><strong>Example</strong></p>
+                <pre class="code-block">curl "{{ base_url }}/api/v1/search?q=orp"</pre>
+            </section>
+        </div>
+    </div>
+    {% include "footer.html" %}
+</body>
+</html>

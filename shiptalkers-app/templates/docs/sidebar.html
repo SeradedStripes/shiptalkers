@@ -1,0 +1,32 @@
+<nav class="docs-sidebar">
+    <span class="docs-group">Docs</span>
+    <a href="/api/docs" {% if current == "overview" %}class="active"{% endif %}>Overview</a>
+
+    <span class="docs-group">Data</span>
+    <a href="/api/docs/stats" {% if current == "stats" %}class="active"{% endif %}>Stats</a>
+    {% if current == "stats" %}
+    <a href="#stats" class="docs-sub"><code>GET</code> /stats</a>
+    <a href="#leaderboard" class="docs-sub"><code>GET</code> /leaderboard/{category}</a>
+    <a href="#users" class="docs-sub"><code>GET</code> /users/{slack_id}</a>
+    {% endif %}
+    <a href="/api/docs/channels" {% if current == "channels" %}class="active"{% endif %}>Channels</a>
+    {% if current == "channels" %}
+    <a href="#channel" class="docs-sub"><code>GET</code> /channels/{channel_id}</a>
+    {% endif %}
+    <a href="/api/docs/daily-stats" {% if current == "daily-stats" %}class="active"{% endif %}>Daily Stats</a>
+    {% if current == "daily-stats" %}
+    <a href="#daily-stats" class="docs-sub"><code>GET</code> /daily-stats</a>
+    {% endif %}
+    <a href="/api/docs/search" {% if current == "search" %}class="active"{% endif %}>Search</a>
+    {% if current == "search" %}
+    <a href="#search" class="docs-sub"><code>GET</code> /search</a>
+    {% endif %}
+
+    <span class="docs-group">Account</span>
+    <a href="/api/docs/account" {% if current == "account" %}class="active"{% endif %}>API Keys</a>
+    {% if current == "account" %}
+    <a href="#me" class="docs-sub"><code>GET</code> /me</a>
+    <a href="#keys" class="docs-sub"><code>GET/POST</code> /keys</a>
+    <a href="#keys-revoke" class="docs-sub"><code>DELETE</code> /keys/{key_id}</a>
+    {% endif %}
+</nav>

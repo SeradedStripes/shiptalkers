@@ -70,7 +70,7 @@ Coding time for every non-bot, non-deleted user is pulled from hackatime on a 30
 
 ### `src/website/`
 
-- `mod.rs` - axum router, server-rendered `/stats`, `/stats/:id` (user or channel, `U`/`C` prefix), `/leaderboard`, `/search` via askama. `/pfp/:id` redirects to stored Slack pfp URL.
+- `mod.rs` - axum router, server-rendered `/stats`, `/stats/:id` (user or channel, `U`/`C` prefix), `/leaderboard`, `/search`, and the API reference at `/api/docs` (one askama template per page in `templates/docs/`: `overview`, `stats`, `channels`, `daily_stats`, `search`, `account`, sharing a `sidebar.html` partial) via askama. `/pfp/:id` redirects to stored Slack pfp URL. The documented `/api/v1/*` JSON endpoints are the intended API surface; handlers are not implemented yet.
 - `auth.rs` - hackatime OAuth login/callback/disconnect. The callback validates the token via the shared `fetch_hackatime_me` and stores it; the scraper's `resync_all` loop picks it up on its next 30m pass.
 
 ## Slack Time Formula
