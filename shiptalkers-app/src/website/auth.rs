@@ -63,19 +63,19 @@ pub async fn get_link(
 ) -> Result<Html<String>, StatusCode> {
     let started = Instant::now();
     let session = session_from_request(&headers, &auth_config(&state));
-    let hackatime_connected = match &session {
-        Some(s) => hackatime::is_hackatime_connected(&state.pool, &s.slack_id)
+    let hackatime_connected = match (&session, state.pool.as_ref()) {
+        (Some(s), Some(pool)) => hackatime::is_hackatime_connected(pool, &s.slack_id)
             .await
             .unwrap_or(false),
-        None => false,
+        _ => false,
     };
-    let name = match &session {
-        Some(s) => {
+    let name = match (&session, state.pool()) {
+        (Some(s), Ok(pool)) => {
             let display_name: String = sqlx::query_scalar::<_, Option<String>>(
                 "SELECT display_name FROM users WHERE user_id = $1",
             )
             .bind(&s.slack_id)
-            .fetch_one(&state.pool)
+            .fetch_one(pool)
             .await
             .ok()
             .flatten()
@@ -86,7 +86,8 @@ pub async fn get_link(
                 display_name
             }
         }
-        None => String::new(),
+        (Some(s), Err(_)) => s.name.clone(),
+        (None, _) => String::new(),
     };
     let template = LinkTemplate {
         signed_in: session.is_some(),
@@ -159,7 +160,7 @@ pub async fn auth_hackclub_callback(
         .or(identity.last_name)
         .unwrap_or_else(|| "Hacker".to_string());
 
-    if let Err(e) = state.auth_db.mark_linked(&slack_id, &name).await {
+    if let Err(e) = state.auth_db()?.mark_linked(&slack_id, &name).await {
         tracing::error!("Failed to record linked user {}: {}", slack_id, e);
         return Err(StatusCode::INTERNAL_SERVER_ERROR);
     }
@@ -260,7 +261,7 @@ pub async fn auth_hackatime_callback(
     }
 
     if let Err(e) =
-        hackatime::upsert_hackatime_connection(&state.pool, &session.slack_id, &token).await
+        hackatime::upsert_hackatime_connection(state.pool()?, &session.slack_id, &token).await
     {
         tracing::warn!(
             "upsert hackatime connection failed for {}: {}",
@@ -291,7 +292,7 @@ pub async fn auth_hackatime_disconnect(
 ) -> Result<Redirect, StatusCode> {
     let session =
         session_from_request(&headers, &auth_config(&state)).ok_or(StatusCode::UNAUTHORIZED)?;
-    hackatime::delete_hackatime_connection(&state.pool, &session.slack_id)
+    hackatime::delete_hackatime_connection(state.pool()?, &session.slack_id)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Redirect::to("/link"))

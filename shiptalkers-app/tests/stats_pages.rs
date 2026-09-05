@@ -38,17 +38,19 @@ async fn stats_routes_match() {
     }
 
     let app = router(
-        PgPoolOptions::new()
-            .max_connections(1)
-            .connect_lazy(dsn())
-            .expect("lazy pool"),
-        RuntimeSettings::load(),
-        std::sync::Arc::new(AuthDb::new(
+        Some(
             PgPoolOptions::new()
                 .max_connections(1)
                 .connect_lazy(dsn())
                 .expect("lazy pool"),
-        )),
+        ),
+        RuntimeSettings::load(),
+        Some(std::sync::Arc::new(AuthDb::new(
+            PgPoolOptions::new()
+                .max_connections(1)
+                .connect_lazy(dsn())
+                .expect("lazy pool"),
+        ))),
     );
     for uri in [
         "/stats/U01MPHKFZ7S",

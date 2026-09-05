@@ -18,50 +18,62 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let settings = settings::RuntimeSettings::load();
 
     let database_url = settings.get("DATABASE_URL");
-    if database_url.is_empty() {
-        return Err("DATABASE_URL is not set. Point it at your Postgres instance.".into());
+    let pool = if database_url.is_empty() {
+        tracing::warn!(
+            "DATABASE_URL not set, starting without a database; stats pages and sign-in need one"
+        );
+        None
+    } else {
+        tracing::info!("Connecting to Postgres...");
+        Some(db::postgres_db::connect(&database_url).await?)
+    };
+    let auth_db = pool
+        .as_ref()
+        .map(|p| std::sync::Arc::new(db::postgres_db::AuthDb::new(p.clone())));
+
+    if let Some(pool) = &pool {
+        {
+            let pool_for_words = pool.clone();
+            tokio::spawn(async move {
+                loop {
+                    if let Err(e) = db::refresh::refresh_word_totals(&pool_for_words).await {
+                        tracing::warn!("Failed to refresh word totals: {}", e);
+                    }
+                    tokio::time::sleep(std::time::Duration::from_secs(30 * 60)).await;
+                }
+            });
+        }
+
+        {
+            let pool_for_stats = pool.clone();
+            tokio::spawn(async move {
+                loop {
+                    if let Err(e) = db::refresh::refresh_page_stats(&pool_for_stats).await {
+                        tracing::warn!("Failed to refresh page stats: {}", e);
+                    }
+                    tokio::time::sleep(std::time::Duration::from_secs(30 * 60)).await;
+                }
+            });
+        }
     }
-    tracing::info!("Connecting to Postgres...");
-    let pool = db::postgres_db::connect(&database_url).await?;
-    let auth_db = std::sync::Arc::new(db::postgres_db::AuthDb::new(pool.clone()));
 
     let has_app_tokens = !settings.get_list("SLACK_APP_TOKENS").is_empty();
-
-    {
-        let pool_for_words = pool.clone();
-        tokio::spawn(async move {
-            loop {
-                if let Err(e) = db::refresh::refresh_word_totals(&pool_for_words).await {
-                    tracing::warn!("Failed to refresh word totals: {}", e);
-                }
-                tokio::time::sleep(std::time::Duration::from_secs(30 * 60)).await;
-            }
-        });
-    }
-
-    {
-        let pool_for_stats = pool.clone();
-        tokio::spawn(async move {
-            loop {
-                if let Err(e) = db::refresh::refresh_page_stats(&pool_for_stats).await {
-                    tracing::warn!("Failed to refresh page stats: {}", e);
-                }
-                tokio::time::sleep(std::time::Duration::from_secs(30 * 60)).await;
-            }
-        });
-    }
-
     if has_app_tokens {
-        let socket_config = slack::SocketConfig::new(settings.get_list("SLACK_APP_TOKENS"));
-        let pool_for_socket = pool.clone();
-        let settings_for_socket = settings.clone();
-        tokio::spawn(async move {
-            if let Err(e) =
-                slack::start_socket_mode(socket_config, pool_for_socket, settings_for_socket).await
-            {
-                tracing::error!("Socket Mode error: {}", e);
-            }
-        });
+        if let Some(pool) = &pool {
+            let socket_config = slack::SocketConfig::new(settings.get_list("SLACK_APP_TOKENS"));
+            let pool_for_socket = pool.clone();
+            let settings_for_socket = settings.clone();
+            tokio::spawn(async move {
+                if let Err(e) =
+                    slack::start_socket_mode(socket_config, pool_for_socket, settings_for_socket)
+                        .await
+                {
+                    tracing::error!("Socket Mode error: {}", e);
+                }
+            });
+        } else {
+            tracing::warn!("SLACK_APP_TOKENS set but no DATABASE_URL, Socket Mode disabled");
+        }
     } else {
         tracing::warn!("SLACK_APP_TOKENS not set, Socket Mode disabled");
     }

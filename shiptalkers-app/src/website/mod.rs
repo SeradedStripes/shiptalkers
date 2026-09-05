@@ -95,11 +95,22 @@ struct StatsSnapshot {
 
 #[derive(Clone)]
 pub struct AppState {
-    pub pool: PgPool,
+    pub pool: Option<PgPool>,
     pub http: reqwest::Client,
-    pub auth_db: std::sync::Arc<crate::db::postgres_db::AuthDb>,
+    pub auth_db: Option<std::sync::Arc<crate::db::postgres_db::AuthDb>>,
     pub cache: AppCache,
     pub settings: RuntimeSettings,
+}
+
+impl AppState {
+    /// The shared Postgres pool, or 503 when the server was started without a database (DATABASE_URL unset) so static pages still work in dev.
+    pub fn pool(&self) -> Result<&PgPool, StatusCode> {
+        self.pool.as_ref().ok_or(StatusCode::SERVICE_UNAVAILABLE)
+    }
+
+    fn auth_db(&self) -> Result<&std::sync::Arc<crate::db::postgres_db::AuthDb>, StatusCode> {
+        self.auth_db.as_ref().ok_or(StatusCode::SERVICE_UNAVAILABLE)
+    }
 }
 
 #[derive(Template)]
@@ -224,9 +235,9 @@ pub struct UserStats {
 }
 
 pub fn router(
-    pool: PgPool,
+    pool: Option<PgPool>,
     settings: RuntimeSettings,
-    auth_db: std::sync::Arc<crate::db::postgres_db::AuthDb>,
+    auth_db: Option<std::sync::Arc<crate::db::postgres_db::AuthDb>>,
 ) -> Router {
     crate::init_tls();
     let state = AppState {
@@ -293,14 +304,18 @@ fn signed_in(state: &AppState, headers: &HeaderMap) -> bool {
 }
 
 async fn get_pfp(State(state): State<AppState>, Path(user_id): Path<String>) -> Response {
-    let url: String =
-        sqlx::query_scalar::<_, Option<String>>("SELECT pfp FROM users WHERE user_id = $1")
-            .bind(&user_id)
-            .fetch_one(&state.pool)
-            .await
-            .ok()
-            .flatten()
-            .unwrap_or_default();
+    let url: String = match state.pool() {
+        Ok(pool) => {
+            sqlx::query_scalar::<_, Option<String>>("SELECT pfp FROM users WHERE user_id = $1")
+                .bind(&user_id)
+                .fetch_one(pool)
+                .await
+                .ok()
+                .flatten()
+                .unwrap_or_default()
+        }
+        Err(_) => String::new(),
+    };
     if url.is_empty() {
         return StatusCode::NOT_FOUND.into_response();
     }
@@ -358,55 +373,58 @@ async fn get_search(
     let started = Instant::now();
     let signed_in = signed_in(&state, &headers);
     let query = params.get("q").cloned().unwrap_or_default();
+    let pool = state.pool().ok();
 
-    let results = if query.trim().is_empty() {
-        Vec::new()
-    } else {
-        let pattern = format!("%{}%", query.trim());
-        sqlx::query_as::<_, (String, String, String, i16)>(
-            "SELECT user_id, display_name, pfp, is_deleted FROM users
-             WHERE display_name ILIKE $1 OR user_id ILIKE $1
-             ORDER BY (display_name ILIKE $1) DESC, display_name
-             LIMIT 25",
-        )
-        .bind(&pattern)
-        .fetch_all(&state.pool)
-        .await
-        .unwrap_or_default()
-        .into_iter()
-        .map(|(user_id, display_name, pfp, is_deleted)| SearchResult {
-            display_name: if is_deleted == 1 {
-                "Deleted account".to_string()
-            } else {
-                display_name
-            },
-            pfp: local_pfp(&user_id, &pfp),
-            user_id,
-        })
-        .collect()
+    let results = match (pool, query.trim().is_empty()) {
+        (Some(pool), false) => {
+            let pattern = format!("%{}%", query.trim());
+            sqlx::query_as::<_, (String, String, String, i16)>(
+                "SELECT user_id, display_name, pfp, is_deleted FROM users
+                 WHERE display_name ILIKE $1 OR user_id ILIKE $1
+                 ORDER BY (display_name ILIKE $1) DESC, display_name
+                 LIMIT 25",
+            )
+            .bind(&pattern)
+            .fetch_all(pool)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(user_id, display_name, pfp, is_deleted)| SearchResult {
+                display_name: if is_deleted == 1 {
+                    "Deleted account".to_string()
+                } else {
+                    display_name
+                },
+                pfp: local_pfp(&user_id, &pfp),
+                user_id,
+            })
+            .collect()
+        }
+        _ => Vec::new(),
     };
 
-    let channels = if query.trim().is_empty() {
-        Vec::new()
-    } else {
-        let pattern = format!("%{}%", query.trim());
-        sqlx::query_as::<_, (String, String)>(
-            "SELECT channel_id, name FROM slack_channels
-             WHERE name ILIKE $1
-             ORDER BY name
-             LIMIT 25",
-        )
-        .bind(&pattern)
-        .fetch_all(&state.pool)
-        .await
-        .unwrap_or_default()
-        .into_iter()
-        .map(|(channel_id, name)| SearchResult {
-            display_name: name,
-            pfp: String::new(),
-            user_id: channel_id,
-        })
-        .collect()
+    let channels = match (pool, query.trim().is_empty()) {
+        (Some(pool), false) => {
+            let pattern = format!("%{}%", query.trim());
+            sqlx::query_as::<_, (String, String)>(
+                "SELECT channel_id, name FROM slack_channels
+                 WHERE name ILIKE $1
+                 ORDER BY name
+                 LIMIT 25",
+            )
+            .bind(&pattern)
+            .fetch_all(pool)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(channel_id, name)| SearchResult {
+                display_name: name,
+                pfp: String::new(),
+                user_id: channel_id,
+            })
+            .collect()
+        }
+        _ => Vec::new(),
     };
 
     let template = SearchTemplate {
@@ -568,7 +586,7 @@ async fn get_leaderboard_category(
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<Html<String>, StatusCode> {
     let started = Instant::now();
-    let ch = &state.pool;
+    let ch = state.pool()?;
     let signed_in = signed_in(&state, &headers);
     let query = params.get("q").cloned().unwrap_or_default();
     let q = query.trim();
@@ -898,7 +916,7 @@ async fn get_user_stats(
     slack_id: &str,
 ) -> Result<Html<String>, StatusCode> {
     let started = Instant::now();
-    let ch = &state.pool;
+    let ch = state.pool()?;
     let signed_in = signed_in(state, headers);
 
     #[derive(Debug)]
@@ -1099,7 +1117,7 @@ async fn get_channel_stats(
     channel_id: &str,
 ) -> Result<Html<String>, StatusCode> {
     let started = Instant::now();
-    let ch = &state.pool;
+    let ch = state.pool()?;
     let signed_in = signed_in(state, headers);
 
     let channel_name: String = sqlx::query_scalar::<_, Option<String>>(
@@ -1258,7 +1276,16 @@ async fn load_stats(state: &AppState, headers: &HeaderMap) -> Stats {
 }
 
 async fn compute_stats(state: &AppState) -> StatsSnapshot {
-    let ch = &state.pool;
+    let Ok(ch) = state.pool() else {
+        return StatsSnapshot {
+            total_messages: 0,
+            total_channels: 0,
+            total_users: 0,
+            coding_minutes: 0,
+            slack_time_secs: 0,
+            db_size_bytes: 0,
+        };
+    };
 
     let cached: Option<(i64, i64, i64, i64, i64, i64)> = sqlx::query_as(
         "SELECT total_messages, total_channels, total_users, coding_minutes, slack_time_secs, db_size_bytes
