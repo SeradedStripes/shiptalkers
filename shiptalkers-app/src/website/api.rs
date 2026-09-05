@@ -26,7 +26,7 @@ fn forbidden() -> Response {
     error_response(StatusCode::FORBIDDEN, "missing or invalid CSRF token")
 }
 
-/// State-changing session-authenticated endpoints require the CSRF token that matches the session cookie. 
+/// State-changing session-authenticated endpoints require the CSRF token that matches the session cookie.
 fn csrf_ok(headers: &HeaderMap, config: &crate::auth::AuthConfig) -> bool {
     let provided = headers.get("x-csrf-token").and_then(|v| v.to_str().ok());
     csrf_matches(headers, config, provided)
