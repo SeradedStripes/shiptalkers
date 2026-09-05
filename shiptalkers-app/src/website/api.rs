@@ -8,7 +8,7 @@ use axum::response::{IntoResponse, Response};
 use serde::Serialize;
 
 use super::AppState;
-use super::auth::session_from_request;
+use super::auth::{csrf_matches, session_from_request};
 
 fn auth_config(state: &AppState) -> crate::auth::AuthConfig {
     state.settings.auth_config()
@@ -22,11 +22,24 @@ fn unauthorized() -> Response {
     error_response(StatusCode::UNAUTHORIZED, "missing or invalid API key")
 }
 
+fn forbidden() -> Response {
+    error_response(StatusCode::FORBIDDEN, "missing or invalid CSRF token")
+}
+
+/// State-changing session-authenticated endpoints require the CSRF token that matches the session cookie. 
+fn csrf_ok(headers: &HeaderMap, config: &crate::auth::AuthConfig) -> bool {
+    let provided = headers.get("x-csrf-token").and_then(|v| v.to_str().ok());
+    csrf_matches(headers, config, provided)
+}
+
 pub async fn create_api_key(State(state): State<AppState>, headers: HeaderMap) -> Response {
     let session = match session_from_request(&headers, &auth_config(&state)) {
         Some(s) => s,
         None => return unauthorized(),
     };
+    if !csrf_ok(&headers, &auth_config(&state)) {
+        return forbidden();
+    }
     let db = match state.auth_db() {
         Ok(db) => db,
         Err(status) => return status.into_response(),
@@ -79,6 +92,9 @@ pub async fn revoke_api_key(
         Some(s) => s,
         None => return unauthorized(),
     };
+    if !csrf_ok(&headers, &auth_config(&state)) {
+        return forbidden();
+    }
     let db = match state.auth_db() {
         Ok(db) => db,
         Err(status) => return status.into_response(),

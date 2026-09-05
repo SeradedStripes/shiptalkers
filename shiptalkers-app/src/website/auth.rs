@@ -3,10 +3,10 @@ use crate::db::hackatime;
 use crate::db::postgres_db::ApiKeyRow;
 use crate::sqlx;
 use askama::Template;
-use axum::extract::{Path, Query, State};
+use axum::extract::{Form, Path, Query, State};
 use axum::http::header::{COOKIE, SET_COOKIE};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
-use axum::response::{Html, IntoResponse, Redirect};
+use axum::response::{Html, IntoResponse, Redirect, Response};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::time::Instant;
@@ -14,6 +14,7 @@ use std::time::Instant;
 use super::AppState;
 
 const SESSION_COOKIE: &str = "st_session";
+const CSRF_COOKIE: &str = "st_csrf";
 const STATE_COOKIE: &str = "st_state";
 
 fn cookies(headers: &HeaderMap) -> HashMap<String, String> {
@@ -58,10 +59,24 @@ pub(crate) fn session_from_request(
     )
 }
 
+/// The CSRF token for the request's session cookie, used to validate state-changing calls.
+pub(crate) fn csrf_token_for(headers: &HeaderMap, config: &auth::AuthConfig) -> Option<String> {
+    let session_cookie = cookies(headers).get(SESSION_COOKIE).cloned()?;
+    auth::csrf_token(&session_cookie, config.session_secret.as_str())
+}
+
+pub(crate) fn csrf_matches(
+    headers: &HeaderMap,
+    config: &auth::AuthConfig,
+    provided: Option<&str>,
+) -> bool {
+    auth::csrf_ok(csrf_token_for(headers, config).as_deref(), provided)
+}
+
 pub async fn get_link(
     State(state): State<AppState>,
     headers: HeaderMap,
-) -> Result<Html<String>, StatusCode> {
+) -> Result<Response, StatusCode> {
     link_html(&state, &headers, None).await
 }
 
@@ -85,7 +100,7 @@ async fn link_html(
     state: &AppState,
     headers: &HeaderMap,
     new_api_key: Option<String>,
-) -> Result<Html<String>, StatusCode> {
+) -> Result<Response, StatusCode> {
     let started = Instant::now();
     let session = session_from_request(headers, &auth_config(state));
     let hackatime_connected = match (&session, state.pool.as_ref()) {
@@ -122,8 +137,11 @@ async fn link_html(
             .unwrap_or_default(),
         _ => Vec::new(),
     };
+    let config = auth_config(state);
+    let csrf_token = csrf_token_for(headers, &config).unwrap_or_default();
     let template = LinkTemplate {
         signed_in: session.is_some(),
+        csrf_token: csrf_token.clone(),
         name,
         slack_id: session
             .as_ref()
@@ -137,15 +155,26 @@ async fn link_html(
     let html = template
         .render()
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    Ok(Html(html))
+    let mut response = Html(html).into_response();
+    if session.is_some() {
+        response
+            .headers_mut()
+            .append(SET_COOKIE, set_cookie(CSRF_COOKIE, &csrf_token, None));
+    }
+    Ok(response)
 }
 
 pub async fn link_create_api_key(
     State(state): State<AppState>,
     headers: HeaderMap,
-) -> Result<Html<String>, StatusCode> {
+    Form(params): Form<HashMap<String, String>>,
+) -> Result<Response, StatusCode> {
     let session =
         session_from_request(&headers, &auth_config(&state)).ok_or(StatusCode::UNAUTHORIZED)?;
+    let config = auth_config(&state);
+    if !csrf_matches(&headers, &config, params.get("csrf").map(String::as_str)) {
+        return Err(StatusCode::FORBIDDEN);
+    }
     let created_at = time::OffsetDateTime::now_utc().unix_timestamp();
     let (key, _) = state
         .auth_db()?
@@ -162,9 +191,14 @@ pub async fn link_revoke_api_key(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(key_id): Path<String>,
+    Form(params): Form<HashMap<String, String>>,
 ) -> Result<Redirect, StatusCode> {
     let session =
         session_from_request(&headers, &auth_config(&state)).ok_or(StatusCode::UNAUTHORIZED)?;
+    let config = auth_config(&state);
+    if !csrf_matches(&headers, &config, params.get("csrf").map(String::as_str)) {
+        return Err(StatusCode::FORBIDDEN);
+    }
     state
         .auth_db()?
         .revoke_api_key(&session.slack_id, &key_id)
@@ -180,6 +214,7 @@ pub async fn link_revoke_api_key(
 #[template(path = "link.html")]
 struct LinkTemplate {
     signed_in: bool,
+    csrf_token: String,
     name: String,
     slack_id: String,
     hackatime_connected: bool,
@@ -246,11 +281,16 @@ pub async fn auth_hackclub_callback(
 
     let session = auth::Session { slack_id, name };
     let cookie = auth::issue_session(&session, auth_config(&state).session_secret.as_str());
+    let csrf = auth::csrf_token(&cookie, auth_config(&state).session_secret.as_str());
 
     let mut response = Redirect::to("/link").into_response();
     response
         .headers_mut()
         .insert(SET_COOKIE, set_cookie(SESSION_COOKIE, &cookie, None));
+    response.headers_mut().append(
+        SET_COOKIE,
+        set_cookie(CSRF_COOKIE, csrf.as_deref().unwrap_or_default(), None),
+    );
     response
         .headers_mut()
         .append(SET_COOKIE, clear_cookie(STATE_COOKIE));

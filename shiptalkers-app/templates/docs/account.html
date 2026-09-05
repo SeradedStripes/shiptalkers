@@ -55,10 +55,16 @@
                     hash is stored).
                 </p>
                 <p><strong>Auth</strong>: signed-in session cookie.</p>
+                <p>
+                    <strong>CSRF</strong>: POST and DELETE requests must include the token from
+                    the <code>st_csrf</code> cookie in an <code>X-CSRF-Token</code> header. The
+                    cookie is set at sign-in and refreshed on the account page.
+                </p>
                 <p><strong>Example</strong></p>
                 <pre class="code-block">curl -b session.cookie {{ base_url }}/api/v1/keys
 
-curl -b session.cookie -X POST {{ base_url }}/api/v1/keys</pre>
+curl -b session.cookie -H "X-CSRF-Token: &lt;st_csrf from the account page&gt;" \
+     -X POST {{ base_url }}/api/v1/keys</pre>
                 <p><strong>POST example response</strong></p>
                 <pre class="code-block">{
   "key_id": "key_9f3a",
@@ -86,10 +92,13 @@ curl -b session.cookie -X POST {{ base_url }}/api/v1/keys</pre>
                 <ul class="api-list">
                     <li><span class="param">204</span> - revoked.</li>
                     <li><span class="param">401</span> - not signed in.</li>
+                    <li><span class="param">403</span> - missing or invalid CSRF token.</li>
                     <li><span class="param">404</span> - no such key for this user.</li>
                 </ul>
+                <p><strong>CSRF</strong>: include <code>X-CSRF-Token</code> as above.</p>
                 <p><strong>Example</strong></p>
-                <pre class="code-block">curl -b session.cookie -X DELETE \
+                <pre class="code-block">curl -b session.cookie -H "X-CSRF-Token: &lt;st_csrf from the account page&gt;" \
+     -X DELETE \
      {{ base_url }}/api/v1/keys/key_9f3a</pre>
             </section>
         </div>

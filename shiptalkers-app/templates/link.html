@@ -47,6 +47,7 @@
             </p>
             {% endif %}
             <form action="/link/api-keys" method="post">
+                <input type="hidden" name="csrf" value="{{ csrf_token }}">
                 <button type="submit" class="btn" style="margin-top: 1rem;">Generate API key</button>
             </form>
             {% if api_keys.is_empty() %}
@@ -59,6 +60,7 @@
                     <code>{{ key.key_id }}</code>
                     <span class="status">created {{ key.created }}{% if key.last_used != "-" %} · last used {{ key.last_used }}{% endif %}</span>
                     <form action="/link/api-keys/{{ key.key_id }}/revoke" method="post" style="display: inline;">
+                        <input type="hidden" name="csrf" value="{{ csrf_token }}">
                         <button type="submit" class="btn" style="margin: 0 0 0 0.5rem; padding: 0.25rem 0.75rem; font-size: 0.8rem;">Revoke</button>
                     </form>
                 </li>

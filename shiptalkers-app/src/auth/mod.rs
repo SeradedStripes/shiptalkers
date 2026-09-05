@@ -4,7 +4,7 @@ use hmac::{Hmac, KeyInit, Mac};
 use rand::Rng;
 use rand::rng;
 use serde::{Deserialize, Serialize};
-use sha2::Sha256;
+use sha2::{Digest, Sha256};
 
 const HCA_AUTHORIZE_URL: &str = "https://auth.hackclub.com/oauth/authorize";
 const HCA_TOKEN_URL: &str = "https://auth.hackclub.com/oauth/token";
@@ -74,6 +74,22 @@ pub fn random_state() -> String {
     let mut bytes = [0u8; 16];
     rng().fill_bytes(&mut bytes);
     URL_SAFE_NO_PAD.encode(bytes)
+}
+
+/// Stateless CSRF token derived from a signed session cookie: an HMAC over the session's payload
+pub fn csrf_token(cookie: &str, secret: &str) -> Option<String> {
+    let payload = cookie.rsplit_once('.').map(|(payload, _sig)| payload)?;
+    Some(sign(&format!("csrf:{payload}"), secret.as_bytes()))
+}
+
+/// Compares a provided token against the expected one via SHA-256 digests so the comparison itself leaks nothing about the token bytes.
+pub fn csrf_ok(expected: Option<&str>, provided: Option<&str>) -> bool {
+    match (expected, provided) {
+        (Some(expected), Some(provided)) => {
+            Sha256::digest(expected.as_bytes()) == Sha256::digest(provided.as_bytes())
+        }
+        _ => false,
+    }
 }
 
 pub fn hca_authorize_url(config: &AuthConfig, state: &str) -> String {
