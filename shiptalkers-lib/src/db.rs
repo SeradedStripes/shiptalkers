@@ -313,6 +313,19 @@ pub async fn init_tables(pool: &PgPool) -> Result<(), Box<dyn std::error::Error>
     .execute(pool)
     .await?;
 
+    // Only the hash of each API key is stored
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS api_keys (
+            key_id TEXT PRIMARY KEY,
+            slack_id TEXT NOT NULL,
+            key_hash TEXT NOT NULL,
+            created_at BIGINT NOT NULL,
+            last_used_at BIGINT
+        )",
+    )
+    .execute(pool)
+    .await?;
+
     // One-time cleanup of leftovers no longer created by this schema: the
     // denormalized slack_messages_by_user copy (and its trigger/function/index)
     // and any stale compaction flag from the removed compact_toast_once task.

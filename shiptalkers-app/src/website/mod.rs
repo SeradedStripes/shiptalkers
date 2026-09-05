@@ -5,7 +5,7 @@ use axum::Router;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Redirect, Response};
-use axum::routing::get;
+use axum::routing::{delete, get, post};
 use std::collections::HashMap;
 use std::future::Future;
 use std::sync::Arc;
@@ -19,6 +19,7 @@ const EXCLUDE_BOTS_DELETED: &str =
 const EXCLUDE_BOTS_DELETED_SLACK_ID: &str =
     "slack_id NOT IN (SELECT user_id FROM users WHERE is_bot = 1 OR is_deleted = 1)";
 
+pub mod api;
 pub mod auth;
 
 struct TtlValue<T> {
@@ -312,6 +313,17 @@ pub fn router(
         .route("/leaderboard/{category}", get(get_leaderboard_category))
         .route("/api/docs", get(get_api_docs))
         .route("/api/docs/{topic}", get(get_api_docs))
+        .route("/api/v1/me", get(api::get_me))
+        .route(
+            "/api/v1/keys",
+            get(api::list_api_keys).post(api::create_api_key),
+        )
+        .route("/api/v1/keys/{key_id}", delete(api::revoke_api_key))
+        .route("/link/api-keys", post(auth::link_create_api_key))
+        .route(
+            "/link/api-keys/{key_id}/revoke",
+            post(auth::link_revoke_api_key),
+        )
         .route("/search", get(get_search))
         .route("/pfp/{id}", get(get_pfp))
         .route("/auth/hackclub/login", get(auth::auth_hackclub_login))

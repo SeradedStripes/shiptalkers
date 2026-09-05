@@ -37,6 +37,39 @@
             {% endif %}
         </div>
 
+        <div class="card">
+            <h2>API Keys</h2>
+            {% if signed_in %}
+            {% if !new_api_key.is_empty() %}
+            <p class="status connected">
+                Your new API key (shown once, store it now):
+                <code>{{ new_api_key }}</code>
+            </p>
+            {% endif %}
+            <form action="/link/api-keys" method="post">
+                <button type="submit" class="btn" style="margin-top: 1rem;">Generate API key</button>
+            </form>
+            {% if api_keys.is_empty() %}
+            <p class="status">No API keys yet. Generate one to query the API.</p>
+            {% else %}
+            <h3 style="margin: 1.5rem 0 0.5rem;">Your keys</h3>
+            <ul class="api-list">
+                {% for key in api_keys %}
+                <li>
+                    <code>{{ key.key_id }}</code>
+                    <span class="status">created {{ key.created }}{% if key.last_used != "-" %} · last used {{ key.last_used }}{% endif %}</span>
+                    <form action="/link/api-keys/{{ key.key_id }}/revoke" method="post" style="display: inline;">
+                        <button type="submit" class="btn" style="margin: 0 0 0 0.5rem; padding: 0.25rem 0.75rem; font-size: 0.8rem;">Revoke</button>
+                    </form>
+                </li>
+                {% endfor %}
+            </ul>
+            {% endif %}
+            {% else %}
+            <p class="status">Sign in to generate and manage API keys.</p>
+            {% endif %}
+        </div>
+
         <p><a href="/" class="btn" style="margin-top: 1rem;">Back</a>
         {% if signed_in %}
         <a href="/auth/logout" class="btn" style="margin-top: 1rem;">Log out</a>

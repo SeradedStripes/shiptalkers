@@ -1,8 +1,9 @@
 use crate::auth;
 use crate::db::hackatime;
+use crate::db::postgres_db::ApiKeyRow;
 use crate::sqlx;
 use askama::Template;
-use axum::extract::{Query, State};
+use axum::extract::{Path, Query, State};
 use axum::http::header::{COOKIE, SET_COOKIE};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{Html, IntoResponse, Redirect};
@@ -61,8 +62,32 @@ pub async fn get_link(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Html<String>, StatusCode> {
+    link_html(&state, &headers, None).await
+}
+
+fn fmt_day(secs: i64) -> String {
+    let (year, month, day) = crate::auth::civil_from_days(secs / 86400);
+    format!("{year:04}-{month:02}-{day:02}")
+}
+
+fn key_view(key: ApiKeyRow) -> ApiKeyView {
+    ApiKeyView {
+        key_id: key.key_id,
+        created: fmt_day(key.created_at),
+        last_used: key
+            .last_used_at
+            .map(fmt_day)
+            .unwrap_or_else(|| "-".to_string()),
+    }
+}
+
+async fn link_html(
+    state: &AppState,
+    headers: &HeaderMap,
+    new_api_key: Option<String>,
+) -> Result<Html<String>, StatusCode> {
     let started = Instant::now();
-    let session = session_from_request(&headers, &auth_config(&state));
+    let session = session_from_request(headers, &auth_config(state));
     let hackatime_connected = match (&session, state.pool.as_ref()) {
         (Some(s), Some(pool)) => hackatime::is_hackatime_connected(pool, &s.slack_id)
             .await
@@ -89,6 +114,14 @@ pub async fn get_link(
         (Some(s), Err(_)) => s.name.clone(),
         (None, _) => String::new(),
     };
+    let api_keys = match (&session, state.auth_db()) {
+        (Some(s), Ok(db)) => db
+            .list_api_keys(&s.slack_id)
+            .await
+            .map(|keys| keys.into_iter().map(key_view).collect())
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    };
     let template = LinkTemplate {
         signed_in: session.is_some(),
         name,
@@ -97,12 +130,50 @@ pub async fn get_link(
             .map(|s| s.slack_id.clone())
             .unwrap_or_default(),
         hackatime_connected,
+        api_keys,
+        new_api_key: new_api_key.unwrap_or_default(),
         page_load_ms: format!("{}ms", started.elapsed().as_millis()),
     };
     let html = template
         .render()
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Html(html))
+}
+
+pub async fn link_create_api_key(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Html<String>, StatusCode> {
+    let session =
+        session_from_request(&headers, &auth_config(&state)).ok_or(StatusCode::UNAUTHORIZED)?;
+    let created_at = time::OffsetDateTime::now_utc().unix_timestamp();
+    let (key, _) = state
+        .auth_db()?
+        .create_api_key(&session.slack_id, created_at)
+        .await
+        .map_err(|e| {
+            tracing::error!("create_api_key failed for {}: {}", session.slack_id, e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    link_html(&state, &headers, Some(key)).await
+}
+
+pub async fn link_revoke_api_key(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(key_id): Path<String>,
+) -> Result<Redirect, StatusCode> {
+    let session =
+        session_from_request(&headers, &auth_config(&state)).ok_or(StatusCode::UNAUTHORIZED)?;
+    state
+        .auth_db()?
+        .revoke_api_key(&session.slack_id, &key_id)
+        .await
+        .map_err(|e| {
+            tracing::error!("revoke_api_key failed for {}: {}", session.slack_id, e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    Ok(Redirect::to("/link"))
 }
 
 #[derive(Template)]
@@ -112,7 +183,15 @@ struct LinkTemplate {
     name: String,
     slack_id: String,
     hackatime_connected: bool,
+    api_keys: Vec<ApiKeyView>,
+    new_api_key: String,
     page_load_ms: String,
+}
+
+struct ApiKeyView {
+    key_id: String,
+    created: String,
+    last_used: String,
 }
 
 pub async fn auth_hackclub_login(

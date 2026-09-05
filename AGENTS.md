@@ -60,7 +60,7 @@ Coding time for every non-bot, non-deleted user is pulled from hackatime on a 30
 
 ### `src/db/` (app)
 
-- `postgres_db.rs` - `AuthDb` (linked-user upsert/lookup) plus the shared db primitives re-exported from `shiptalkers-lib` (`connect`, `init_tables`, `placeholders`, `INSERT_CHUNK`, `SlackChannelRow`, `insert_new_channels_rows`). The scraper crate keeps its own copy with the scrape inserts/checkpoints and timestamp helpers (`slack_ts_to_micros`, `micros_to_slack_ts`, `parse_date`). Only the scraper runs `init_tables`; the app connects and reads existing tables so it can run with a read-only DB role.
+- `postgres_db.rs` - `AuthDb` (linked-user upsert/lookup plus API key CRUD: `create_api_key`, `list_api_keys`, `revoke_api_key`, `slack_id_for_key` with hashed keys in `api_keys`, `ApiKeyRow`) plus the shared db primitives re-exported from `shiptalkers-lib` (`connect`, `init_tables`, `placeholders`, `INSERT_CHUNK`, `SlackChannelRow`, `insert_new_channels_rows`). The scraper crate keeps its own copy with the scrape inserts/checkpoints and timestamp helpers (`slack_ts_to_micros`, `micros_to_slack_ts`, `parse_date`). Only the scraper runs `init_tables`; the app connects and reads existing tables so it can run with a read-only DB role.
 - `refresh.rs` - background tasks: `refresh_word_totals` (incremental fold with daily full rebuild, watermark tracked in `word_refresh_meta`), `refresh_daily_stats` (sessionizer pass over every message, replaces `daily_stats`).
 
 ### `shiptalkers-scraper/src/db/`
@@ -70,7 +70,8 @@ Coding time for every non-bot, non-deleted user is pulled from hackatime on a 30
 
 ### `src/website/`
 
-- `mod.rs` - axum router, server-rendered `/stats`, `/stats/:id` (user or channel, `U`/`C` prefix), `/leaderboard`, `/search`, and the API reference at `/api/docs` (one askama template per page in `templates/docs/`: `overview`, `stats`, `channels`, `daily_stats`, `search`, `account`, sharing a `sidebar.html` partial) via askama. `/pfp/:id` redirects to stored Slack pfp URL. The documented `/api/v1/*` JSON endpoints are the intended API surface; handlers are not implemented yet.
+- `mod.rs` - axum router, server-rendered `/stats`, `/stats/:id` (user or channel, `U`/`C` prefix), `/leaderboard`, `/search`, and the API reference at `/api/docs` (one askama template per page in `templates/docs/`: `overview`, `stats`, `channels`, `daily_stats`, `search`, `account`, sharing a `sidebar.html` partial) via askama. `/pfp/:id` redirects to stored Slack pfp URL. The `/api/v1/*` JSON endpoints are the documented API surface; the Account ones (`/api/v1/me`, `/api/v1/keys`) are implemented in `api.rs` (bearer key for `/me`, session cookie for key management), the Public ones are not implemented yet.
+- `api.rs` - the implemented JSON handlers: `list_api_keys` / `create_api_key` / `revoke_api_key` (session-authenticated key management) and `get_me` (bearer-key-authenticated, loads the key owner's stats via `load_user_stats`). Errors are `{"error": "..."}`. Key management is also reachable from the `/link` account tab (`link_create_api_key`, `link_revoke_api_key` in `auth.rs`), which shows a new key exactly once.
 - `auth.rs` - hackatime OAuth login/callback/disconnect. The callback validates the token via the shared `fetch_hackatime_me` and stores it; the scraper's `resync_all` loop picks it up on its next 30m pass.
 
 ## Slack Time Formula
