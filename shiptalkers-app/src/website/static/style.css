@@ -223,6 +223,32 @@ body.api-docs .docs-content a { color: #f472b6; }
     margin-bottom: 1rem;
 }
 
+dialog[open] {
+    background: #1a1a1a;
+    border: 1px solid #262626;
+    border-radius: 12px;
+    padding: 1.5rem;
+    max-width: 36rem;
+    margin-top: 20vh;
+}
+
+dialog[open]::backdrop {
+    background: rgba(0, 0, 0, 0.6);
+}
+
+dialog[open] h3 { margin-bottom: 0.5rem; }
+
+dialog[open] p { color: #aaa; margin-bottom: 1rem; }
+
+dialog[open] .new-key {
+    display: block;
+    overflow-wrap: anywhere;
+    color: #f472b6;
+    margin-bottom: 1.5rem;
+}
+
+dialog[open] .btn { display: inline-block; }
+
 .endpoint {
     background: #1a1a1a;
     border: 1px solid #262626;
