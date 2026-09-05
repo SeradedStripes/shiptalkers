@@ -140,7 +140,7 @@ body.api-docs .container { max-width: 1200px; }
 body.api-docs h2 { font-size: 1.5rem; margin: 2rem 0 1rem; }
 body.api-docs p { color: #888; line-height: 1.6; margin-bottom: 1rem; }
 body.api-docs code { background: #262626; padding: 0.15rem 0.4rem; border-radius: 6px; font-size: 0.9rem; }
-body.api-docs a { color: #f472b6; }
+body.api-docs .docs-content a { color: #f472b6; }
 
 .docs-wrap { display: flex; gap: 2rem; align-items: flex-start; }
 
