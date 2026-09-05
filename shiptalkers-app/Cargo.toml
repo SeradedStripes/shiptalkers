@@ -2,6 +2,7 @@
 name = "ship-talkers"
 version = "0.1.0"
 edition = "2024"
+default-run = "ship-talkers"
 
 [dependencies]
 ship-talkers-lib = { path = "../shiptalkers-lib" }
