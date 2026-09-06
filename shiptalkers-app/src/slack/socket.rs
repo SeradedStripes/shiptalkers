@@ -513,6 +513,17 @@ async fn query_stats(
 }
 
 async fn query_slack_seconds(pool: &sqlx::PgPool, user: &str, range: &TimeRange) -> u64 {
+    // All-time answers come from user_scores
+    if matches!(range, TimeRange::AllTime) {
+        return sqlx::query_scalar::<_, i64>("SELECT total_time FROM user_scores WHERE user_id = $1")
+            .bind(user)
+            .fetch_optional(pool)
+            .await
+            .unwrap_or(None)
+            .unwrap_or(0)
+            .max(0) as u64;
+    }
+
     let boundary = crate::sessionize::SESSION_GAP_BOUNDARY_SECS;
     let rate = crate::sessionize::MESSAGE_TYPING_CHARS_PER_SEC;
     let overhead = crate::sessionize::MESSAGE_READ_OVERHEAD_SECS;
