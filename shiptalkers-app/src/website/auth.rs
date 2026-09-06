@@ -16,6 +16,8 @@ use super::AppState;
 const SESSION_COOKIE: &str = "st_session";
 const CSRF_COOKIE: &str = "st_csrf";
 const STATE_COOKIE: &str = "st_state";
+/// How long the session and CSRF cookies stay valid.
+const SESSION_MAX_AGE_SECS: i64 = 180 * 24 * 60 * 60;
 
 fn cookies(headers: &HeaderMap) -> HashMap<String, String> {
     headers
@@ -284,12 +286,17 @@ pub async fn auth_hackclub_callback(
     let csrf = auth::csrf_token(&cookie, auth_config(&state).session_secret.as_str());
 
     let mut response = Redirect::to("/link").into_response();
-    response
-        .headers_mut()
-        .insert(SET_COOKIE, set_cookie(SESSION_COOKIE, &cookie, None));
+    response.headers_mut().insert(
+        SET_COOKIE,
+        set_cookie(SESSION_COOKIE, &cookie, Some(SESSION_MAX_AGE_SECS)),
+    );
     response.headers_mut().append(
         SET_COOKIE,
-        set_cookie(CSRF_COOKIE, csrf.as_deref().unwrap_or_default(), None),
+        set_cookie(
+            CSRF_COOKIE,
+            csrf.as_deref().unwrap_or_default(),
+            Some(SESSION_MAX_AGE_SECS),
+        ),
     );
     response
         .headers_mut()
@@ -402,6 +409,9 @@ pub async fn auth_logout() -> impl IntoResponse {
     response
         .headers_mut()
         .insert(SET_COOKIE, clear_cookie(SESSION_COOKIE));
+    response
+        .headers_mut()
+        .append(SET_COOKIE, clear_cookie(CSRF_COOKIE));
     response
 }
 

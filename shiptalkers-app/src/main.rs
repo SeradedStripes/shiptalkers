@@ -17,6 +17,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let settings = settings::RuntimeSettings::load();
 
+    if settings.get("SESSION_SECRET").is_empty() {
+        tracing::warn!(
+            "SESSION_SECRET not set; session cookies are signed with an empty key. \
+             Set a stable long random value so sessions survive restarts"
+        );
+    }
+
     let database_url = settings.get("DATABASE_URL");
     let pool = if database_url.is_empty() {
         tracing::warn!(
