@@ -92,6 +92,7 @@ struct StatsSnapshot {
     coding_minutes: u64,
     slack_time_secs: u64,
     db_size_bytes: u64,
+    updated: u64,
 }
 
 #[derive(Clone)]
@@ -314,6 +315,12 @@ pub fn router(
         .route("/api/docs", get(get_api_docs))
         .route("/api/docs/{topic}", get(get_api_docs))
         .route("/api/v1/me", get(api::get_me))
+        .route("/api/v1/stats", get(api::get_stats))
+        .route("/api/v1/leaderboard/{category}", get(api::get_leaderboard))
+        .route("/api/v1/users/{slack_id}", get(api::get_user))
+        .route("/api/v1/channels/{channel_id}", get(api::get_channel))
+        .route("/api/v1/daily-stats", get(api::get_daily_stats))
+        .route("/api/v1/search", get(api::get_search))
         .route(
             "/api/v1/keys",
             get(api::list_api_keys).post(api::create_api_key),
@@ -1411,11 +1418,12 @@ async fn compute_stats(state: &AppState) -> StatsSnapshot {
             coding_minutes: 0,
             slack_time_secs: 0,
             db_size_bytes: 0,
+            updated: 0,
         };
     };
 
-    let cached: Option<(i64, i64, i64, i64, i64, i64)> = sqlx::query_as(
-        "SELECT total_messages, total_channels, total_users, coding_minutes, slack_time_secs, db_size_bytes
+    let cached: Option<(i64, i64, i64, i64, i64, i64, i64)> = sqlx::query_as(
+        "SELECT total_messages, total_channels, total_users, coding_minutes, slack_time_secs, db_size_bytes, updated
          FROM stats_meta WHERE id = 1",
     )
     .fetch_optional(ch)
@@ -1431,6 +1439,7 @@ async fn compute_stats(state: &AppState) -> StatsSnapshot {
             coding_minutes,
             slack_time_secs,
             db_size_bytes,
+            updated,
         )) => StatsSnapshot {
             total_messages: total_messages.max(0) as u64,
             total_channels: total_channels.max(0) as u64,
@@ -1438,6 +1447,7 @@ async fn compute_stats(state: &AppState) -> StatsSnapshot {
             coding_minutes: coding_minutes.max(0) as u64,
             slack_time_secs: slack_time_secs.max(0) as u64,
             db_size_bytes: db_size_bytes.max(0) as u64,
+            updated: updated.max(0) as u64,
         },
         None => {
             // First run before the background refresh has written a row.
@@ -1494,6 +1504,7 @@ async fn compute_stats(state: &AppState) -> StatsSnapshot {
                 coding_minutes: coding_minutes as u64,
                 slack_time_secs: slack_time_secs as u64,
                 db_size_bytes: db_size_bytes as u64,
+                updated: 0,
             }
         }
     }

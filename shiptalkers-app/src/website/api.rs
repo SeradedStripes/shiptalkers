@@ -1,11 +1,10 @@
 use crate::sqlx;
 use axum::Json;
-use axum::extract::Path;
-use axum::extract::State;
+use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::AppState;
 use super::auth::{csrf_matches, session_from_request};
@@ -335,4 +334,569 @@ async fn load_user_stats(
         leaderboard_rank,
         top_channels,
     })
+}
+
+#[derive(Deserialize)]
+pub struct StatsParams {
+    include: Option<String>,
+}
+
+const STATS_FIELDS: &[(&str, &str)] = &[
+    ("messages", "total_messages"),
+    ("channels", "total_channels"),
+    ("users", "total_users"),
+    ("coding", "coding_minutes"),
+    ("slack_time", "slack_time_secs"),
+    ("db_size", "db_size_bytes"),
+    ("updated", "updated"),
+];
+
+pub async fn get_stats(
+    State(state): State<AppState>,
+    Query(params): Query<StatsParams>,
+) -> Response {
+    if let Err(status) = state.pool() {
+        return status.into_response();
+    }
+    let snapshot = state
+        .cache
+        .stats
+        .get_or(async { super::compute_stats(&state).await })
+        .await;
+    let requested: Option<Vec<&str>> = params
+        .include
+        .as_deref()
+        .map(|s| s.split(',').map(str::trim).collect());
+    let wanted = |token: &str| {
+        requested
+            .as_ref()
+            .map(|list| list.contains(&token))
+            .unwrap_or(true)
+    };
+    let mut map = serde_json::Map::new();
+    for (token, key) in STATS_FIELDS {
+        if !wanted(token) {
+            continue;
+        }
+        let value: u64 = match *key {
+            "total_messages" => snapshot.total_messages,
+            "total_channels" => snapshot.total_channels,
+            "total_users" => snapshot.total_users,
+            "coding_minutes" => snapshot.coding_minutes,
+            "slack_time_secs" => snapshot.slack_time_secs,
+            "db_size_bytes" => snapshot.db_size_bytes,
+            "updated" => snapshot.updated,
+            _ => 0,
+        };
+        map.insert((*key).to_string(), serde_json::json!(value));
+    }
+    Json(serde_json::Value::Object(map)).into_response()
+}
+
+#[derive(Deserialize)]
+pub struct LeaderboardParams {
+    rank: Option<u64>,
+    q: Option<String>,
+    limit: Option<u32>,
+}
+
+enum LeaderboardKind {
+    Users,
+    Channels,
+    Words,
+}
+
+pub async fn get_leaderboard(
+    State(state): State<AppState>,
+    Path(category): Path<String>,
+    Query(params): Query<LeaderboardParams>,
+) -> Response {
+    let pool = match state.pool() {
+        Ok(pool) => pool,
+        Err(status) => return status.into_response(),
+    };
+    let q = params.q.unwrap_or_default();
+    let parsed_rank = params.rank;
+    let limit = params.limit.map(|n| n.clamp(1, 500) as u64).unwrap_or(100);
+
+    if let Some(n) = parsed_rank
+        && n == 0
+    {
+        return error_response(StatusCode::BAD_REQUEST, "rank must be at least 1");
+    }
+    if parsed_rank.is_some() && !q.trim().is_empty() {
+        return error_response(StatusCode::BAD_REQUEST, "rank and q are mutually exclusive");
+    }
+
+    let (inner, kind) = match category.as_str() {
+        "talkers" => (
+            format!(
+                "SELECT user_id AS id, score AS value, messages::bigint AS extra, \
+                 row_number() OVER (ORDER BY score DESC) AS rank \
+                 FROM user_scores \
+                 WHERE {sup}",
+                sup = super::EXCLUDE_BOTS_DELETED
+            ),
+            LeaderboardKind::Users,
+        ),
+        "coders" => (
+            format!(
+                "SELECT id, value, CAST(NULL AS BIGINT) AS extra, rank \
+                 FROM ( \
+                     SELECT slack_id AS id, total_minutes::bigint AS value, \
+                            row_number() OVER (ORDER BY total_minutes DESC) AS rank \
+                     FROM hackatime_connections \
+                     WHERE {sup} \
+                 )",
+                sup = super::EXCLUDE_BOTS_DELETED_SLACK_ID
+            ),
+            LeaderboardKind::Users,
+        ),
+        "channels" => (
+            "SELECT channel_id AS id, total_time::bigint AS value, \
+             messages::bigint AS extra, \
+             row_number() OVER (ORDER BY total_time DESC) AS rank \
+             FROM channel_scores"
+                .to_string(),
+            LeaderboardKind::Channels,
+        ),
+        "combined" => (
+            format!(
+                "SELECT id, value, CAST(NULL AS BIGINT) AS extra, rank \
+                 FROM ( \
+                     SELECT user_id AS id, value, row_number() OVER (ORDER BY value DESC) AS rank \
+                     FROM ( \
+                         SELECT user_id, sum(v)::bigint AS value \
+                         FROM ( \
+                             SELECT user_id, total_time::bigint AS v \
+                             FROM user_scores \
+                             UNION ALL \
+                             SELECT slack_id AS user_id, (total_minutes * 60)::bigint AS v \
+                             FROM hackatime_connections \
+                         ) \
+                         GROUP BY user_id \
+                     ) \
+                     WHERE {sup} \
+                 )",
+                sup = super::EXCLUDE_BOTS_DELETED
+            ),
+            LeaderboardKind::Users,
+        ),
+        "words" => (
+            "SELECT word AS id, cnt::bigint AS value, CAST(NULL AS BIGINT) AS extra, rank \
+             FROM ( \
+                 SELECT word, cnt, row_number() OVER (ORDER BY cnt DESC) AS rank \
+                 FROM word_totals \
+             )"
+            .to_string(),
+            LeaderboardKind::Words,
+        ),
+        _ => {
+            return error_response(
+                StatusCode::NOT_FOUND,
+                "unknown category; use talkers, coders, channels, combined, or words",
+            );
+        }
+    };
+
+    let total: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+        "SELECT count(*) FROM ({inner}) q"
+    )))
+    .fetch_one(pool)
+    .await
+    .unwrap_or(0)
+    .max(0);
+
+    let qq = q.trim();
+    let rows = if parsed_rank.is_none() && qq.is_empty() {
+        super::fetch_rank_window(pool, &inner, 1, limit).await
+    } else {
+        let lo_hi =
+            parsed_rank.map(|n| (n.saturating_sub(super::RANK_WINDOW), n + super::RANK_WINDOW));
+        let lo_hi = match lo_hi {
+            Some(lo_hi) => lo_hi,
+            None => {
+                let resolve = match kind {
+                    LeaderboardKind::Users => super::resolve_user_sql(&inner, qq),
+                    LeaderboardKind::Channels => {
+                        let eq = super::sql_escape(&qq.to_lowercase());
+                        format!(
+                            "SELECT c.channel_id AS id FROM slack_channels AS c \
+                             JOIN ({inner}) lb ON c.channel_id = lb.id \
+                             WHERE lower(c.name) LIKE '%{eq}%' \
+                             ORDER BY (lower(c.name) = '{eq}') DESC, lb.rank, lower(c.name) \
+                             LIMIT 1"
+                        )
+                    }
+                    LeaderboardKind::Words => {
+                        let eq = super::sql_escape(&qq.to_lowercase());
+                        format!(
+                            "SELECT id FROM ({inner}) WHERE id = '{eq}' OR id LIKE '{eq}%' \
+                             ORDER BY (id = '{eq}') DESC LIMIT 1"
+                        )
+                    }
+                };
+                match super::resolve_id(pool, &resolve).await {
+                    Some(id) => match super::fetch_rank_of(pool, &inner, &id).await {
+                        Some(rank) => (
+                            rank.saturating_sub(super::RANK_WINDOW),
+                            rank + super::RANK_WINDOW,
+                        ),
+                        None => {
+                            return error_response(
+                                StatusCode::NOT_FOUND,
+                                &format!("'{}' is not on this leaderboard", qq),
+                            );
+                        }
+                    },
+                    None => {
+                        return error_response(
+                            StatusCode::NOT_FOUND,
+                            &format!("no matches for '{}'", qq),
+                        );
+                    }
+                }
+            }
+        };
+        super::fetch_rank_window(pool, &inner, lo_hi.0, lo_hi.1).await
+    };
+
+    let names = fetch_display_names(pool, &rows, &kind).await;
+    let entries: Vec<serde_json::Value> = rows
+        .into_iter()
+        .map(|r| {
+            serde_json::json!({
+                "rank": r.rank,
+                "id": r.id,
+                "name": names.get(&r.id).cloned().unwrap_or_else(|| r.id.clone()),
+                "value": r.value.max(0),
+                "extra": r.extra.map(|v| v.max(0)),
+            })
+        })
+        .collect();
+
+    Json(serde_json::json!({
+        "category": category,
+        "total": total,
+        "entries": entries,
+    }))
+    .into_response()
+}
+
+async fn fetch_display_names(
+    pool: &crate::sqlx::PgPool,
+    rows: &[super::RankedRow],
+    kind: &LeaderboardKind,
+) -> std::collections::HashMap<String, String> {
+    let mut names = std::collections::HashMap::new();
+    let ids: Vec<String> = rows.iter().map(|r| r.id.clone()).collect();
+    if ids.is_empty() {
+        return names;
+    }
+    match kind {
+        LeaderboardKind::Users => {
+            let found: Vec<(String, String)> =
+                sqlx::query_as("SELECT user_id, display_name FROM users WHERE user_id = ANY($1)")
+                    .bind(&ids)
+                    .fetch_all(pool)
+                    .await
+                    .unwrap_or_default();
+            for (id, name) in found {
+                names.insert(id, name);
+            }
+        }
+        LeaderboardKind::Channels => {
+            let found: Vec<(String, String)> = sqlx::query_as(
+                "SELECT channel_id, name FROM slack_channels WHERE channel_id = ANY($1)",
+            )
+            .bind(&ids)
+            .fetch_all(pool)
+            .await
+            .unwrap_or_default();
+            for (id, name) in found {
+                names.insert(id, name);
+            }
+        }
+        LeaderboardKind::Words => {}
+    }
+    names
+}
+
+pub async fn get_user(State(state): State<AppState>, Path(slack_id): Path<String>) -> Response {
+    let pool = match state.pool() {
+        Ok(pool) => pool,
+        Err(status) => return status.into_response(),
+    };
+    match load_user_stats(pool, &slack_id).await {
+        Ok(stats) => Json(stats).into_response(),
+        Err(e) => {
+            tracing::error!("load_user_stats failed for {}: {}", slack_id, e);
+            error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "failed to load user stats",
+            )
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct ChannelStatsJson {
+    channel_id: String,
+    name: String,
+    total_messages: i64,
+    active_users: i64,
+    first_message_ts: i64,
+    last_message_ts: i64,
+    top_posters: Vec<TopPosterJson>,
+}
+
+#[derive(Serialize)]
+struct TopPosterJson {
+    slack_id: String,
+    display_name: String,
+    pfp: String,
+    messages: i64,
+}
+
+async fn load_channel_stats(
+    pool: &crate::sqlx::PgPool,
+    channel_id: &str,
+) -> Result<Option<ChannelStatsJson>, String> {
+    let name: Option<String> =
+        sqlx::query_scalar("SELECT name FROM slack_channels WHERE channel_id = $1")
+            .bind(channel_id)
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| e.to_string())?;
+
+    let total_messages: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM slack_messages WHERE channel_id = $1")
+            .bind(channel_id)
+            .fetch_one(pool)
+            .await
+            .map_err(|e| e.to_string())?;
+
+    let active_users: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+        "SELECT count(DISTINCT user_id) FROM slack_messages \
+         WHERE channel_id = $1 AND {sup}",
+        sup = super::EXCLUDE_BOTS_DELETED
+    )))
+    .bind(channel_id)
+    .fetch_one(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let first_message_ts: i64 = sqlx::query_scalar::<_, Option<i64>>(
+        "SELECT min(message_ts) FROM slack_messages WHERE channel_id = $1",
+    )
+    .bind(channel_id)
+    .fetch_one(pool)
+    .await
+    .map_err(|e| e.to_string())?
+    .unwrap_or(0)
+    .max(0);
+
+    let last_message_ts: i64 = sqlx::query_scalar::<_, Option<i64>>(
+        "SELECT max(message_ts) FROM slack_messages WHERE channel_id = $1",
+    )
+    .bind(channel_id)
+    .fetch_one(pool)
+    .await
+    .map_err(|e| e.to_string())?
+    .unwrap_or(0)
+    .max(0);
+
+    let posters: Vec<(String, i64)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT user_id, count(*) AS messages \
+         FROM slack_messages \
+         WHERE channel_id = $1 AND {sup} \
+         GROUP BY user_id \
+         ORDER BY messages DESC \
+         LIMIT 10",
+        sup = super::EXCLUDE_BOTS_DELETED
+    )))
+    .bind(channel_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let name_ids: Vec<String> = posters.iter().map(|(id, _)| id.clone()).collect();
+    let mut poster_names = std::collections::HashMap::new();
+    if !name_ids.is_empty() {
+        let found: Vec<(String, String, String)> =
+            sqlx::query_as("SELECT user_id, display_name, pfp FROM users WHERE user_id = ANY($1)")
+                .bind(&name_ids)
+                .fetch_all(pool)
+                .await
+                .map_err(|e| e.to_string())?;
+        for (user_id, display_name, pfp) in found {
+            poster_names.insert(user_id, (display_name, pfp));
+        }
+    }
+
+    let top_posters: Vec<TopPosterJson> = posters
+        .into_iter()
+        .map(|(user_id, messages)| {
+            let (display_name, pfp) = poster_names.get(&user_id).cloned().unwrap_or_default();
+            TopPosterJson {
+                slack_id: user_id.clone(),
+                display_name: if display_name.is_empty() {
+                    user_id.clone()
+                } else {
+                    display_name
+                },
+                pfp: super::local_pfp(&user_id, &pfp),
+                messages,
+            }
+        })
+        .collect();
+
+    if total_messages == 0 && name.as_deref().unwrap_or_default().is_empty() {
+        return Ok(None);
+    }
+
+    Ok(Some(ChannelStatsJson {
+        channel_id: channel_id.to_string(),
+        name: name.unwrap_or_else(|| channel_id.to_string()),
+        total_messages,
+        active_users,
+        first_message_ts,
+        last_message_ts,
+        top_posters,
+    }))
+}
+
+pub async fn get_channel(
+    State(state): State<AppState>,
+    Path(channel_id): Path<String>,
+) -> Response {
+    let pool = match state.pool() {
+        Ok(pool) => pool,
+        Err(status) => return status.into_response(),
+    };
+    match load_channel_stats(pool, &channel_id).await {
+        Ok(Some(stats)) => Json(stats).into_response(),
+        Ok(None) => error_response(StatusCode::NOT_FOUND, "no such channel"),
+        Err(e) => {
+            tracing::error!("load_channel_stats failed for {}: {}", channel_id, e);
+            error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "failed to load channel stats",
+            )
+        }
+    }
+}
+
+#[derive(Deserialize)]
+pub struct DailyStatsParams {
+    start: Option<String>,
+    end: Option<String>,
+}
+
+fn is_iso_date(s: &str) -> bool {
+    let b = s.as_bytes();
+    b.len() == 10
+        && b[4] == b'-'
+        && b[7] == b'-'
+        && b[..4].iter().all(u8::is_ascii_digit)
+        && b[5..7].iter().all(u8::is_ascii_digit)
+        && b[8..10].iter().all(u8::is_ascii_digit)
+}
+
+pub async fn get_daily_stats(
+    State(state): State<AppState>,
+    Query(params): Query<DailyStatsParams>,
+) -> Response {
+    let pool = match state.pool() {
+        Ok(pool) => pool,
+        Err(status) => return status.into_response(),
+    };
+    if let Some(start) = params.start.as_deref()
+        && !is_iso_date(start)
+    {
+        return error_response(StatusCode::BAD_REQUEST, "start must be YYYY-MM-DD");
+    }
+    if let Some(end) = params.end.as_deref()
+        && !is_iso_date(end)
+    {
+        return error_response(StatusCode::BAD_REQUEST, "end must be YYYY-MM-DD");
+    }
+    let points: Vec<serde_json::Value> = sqlx::query_as::<_, (String, i64)>(
+        "SELECT to_char(date, 'YYYY-MM-DD') AS date, slack_secs::bigint \
+         FROM daily_stats \
+         WHERE ($1::date IS NULL OR date >= $1::date) \
+           AND ($2::date IS NULL OR date <= $2::date) \
+         ORDER BY date",
+    )
+    .bind(params.start)
+    .bind(params.end)
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default()
+    .into_iter()
+    .map(|(date, slack_secs)| serde_json::json!({ "date": date, "slack_secs": slack_secs.max(0) }))
+    .collect();
+
+    Json(serde_json::json!({ "points": points })).into_response()
+}
+
+#[derive(Deserialize)]
+pub struct SearchParams {
+    q: String,
+}
+
+pub async fn get_search(
+    State(state): State<AppState>,
+    Query(params): Query<SearchParams>,
+) -> Response {
+    let pool = match state.pool() {
+        Ok(pool) => pool,
+        Err(status) => return status.into_response(),
+    };
+    let q = params.q.trim();
+    if q.is_empty() {
+        return error_response(StatusCode::BAD_REQUEST, "q is required");
+    }
+    let pattern = format!("%{}%", q);
+    let users: Vec<serde_json::Value> = sqlx::query_as::<_, (String, String, String, i16)>(
+        "SELECT user_id, display_name, pfp, is_deleted FROM users \
+         WHERE display_name ILIKE $1 OR user_id ILIKE $1 \
+         ORDER BY (display_name ILIKE $1) DESC, display_name \
+         LIMIT 25",
+    )
+    .bind(&pattern)
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default()
+    .into_iter()
+    .map(|(slack_id, display_name, pfp, is_deleted)| {
+        serde_json::json!({
+            "slack_id": slack_id,
+            "display_name": display_name,
+            "pfp": super::local_pfp(&slack_id, &pfp),
+            "is_deleted": is_deleted == 1,
+        })
+    })
+    .collect();
+
+    let channels: Vec<serde_json::Value> = sqlx::query_as::<_, (String, String)>(
+        "SELECT channel_id, name FROM slack_channels \
+         WHERE name ILIKE $1 \
+         ORDER BY name \
+         LIMIT 25",
+    )
+    .bind(&pattern)
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default()
+    .into_iter()
+    .map(|(channel_id, name)| serde_json::json!({ "channel_id": channel_id, "name": name }))
+    .collect();
+
+    Json(serde_json::json!({
+        "query": q,
+        "users": users,
+        "channels": channels,
+    }))
+    .into_response()
 }
