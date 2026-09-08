@@ -15,13 +15,16 @@ jobs:
     steps:
       - name: Wait for CI to pass
         run: |
-          until gh pr checks "$PR_URL" --json name,state,conclusion \
-            --jq '[.[] | select(.name != "auto-merge")] as $c | ($c | length) > 0 and ($c | all(.state == "COMPLETED"))' \
+          until gh pr checks "$PR_URL" --json name,state \
+            --jq '[.[] | select(.name != "auto-merge")] as $c |
+              ($c | length) > 0 and
+              ($c | all(.state | ascii_downcase | IN("pending", "in_progress", "queued", "waiting") | not))' \
             | grep -qx true; do
             sleep 30
           done
-          gh pr checks "$PR_URL" --json name,state,conclusion \
-            --jq '[.[] | select(.name != "auto-merge")] | all(.conclusion == "SUCCESS")' \
+          gh pr checks "$PR_URL" --json name,state \
+            --jq '[.[] | select(.name != "auto-merge")] |
+              (length) > 0 and all(.state | ascii_downcase == "success")' \
             | grep -qx true
         timeout-minutes: 60
         env:
