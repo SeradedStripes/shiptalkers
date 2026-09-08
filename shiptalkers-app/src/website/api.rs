@@ -116,23 +116,26 @@ pub struct GrantParams {
     key_id: String,
 }
 
-async fn key_id_for(state: &AppState, headers: &HeaderMap) -> Result<(String, String), Response> {
+async fn key_id_for(
+    state: &AppState,
+    headers: &HeaderMap,
+) -> Result<(String, String), Box<Response>> {
     let Some(token) = bearer_token(headers) else {
-        return Err(unauthorized());
+        return Err(Box::new(unauthorized()));
     };
     let db = match state.auth_db() {
         Ok(db) => db,
-        Err(status) => return Err(status.into_response()),
+        Err(status) => return Err(Box::new(status.into_response())),
     };
     match db.resolve_key(&token).await {
         Ok(Some((key_id, slack_id))) => Ok((key_id, slack_id)),
-        Ok(None) => Err(unauthorized()),
+        Ok(None) => Err(Box::new(unauthorized())),
         Err(e) => {
             tracing::error!("resolve_key failed: {}", e);
-            Err(error_response(
+            Err(Box::new(error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "failed to look up API key",
-            ))
+            )))
         }
     }
 }
@@ -141,7 +144,7 @@ async fn key_id_for(state: &AppState, headers: &HeaderMap) -> Result<(String, St
 pub async fn list_grants(State(state): State<AppState>, headers: HeaderMap) -> Response {
     let (key_id, owner) = match key_id_for(&state, &headers).await {
         Ok(pair) => pair,
-        Err(resp) => return resp,
+        Err(resp) => return *resp,
     };
     let db = match state.auth_db() {
         Ok(db) => db,
@@ -197,7 +200,7 @@ pub async fn get_granted_stats(
 ) -> Response {
     let (key_id, _owner) = match key_id_for(&state, &headers).await {
         Ok(pair) => pair,
-        Err(resp) => return resp,
+        Err(resp) => return *resp,
     };
     let db = match state.auth_db() {
         Ok(db) => db,
