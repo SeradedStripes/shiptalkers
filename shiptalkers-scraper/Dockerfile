@@ -1,6 +1,6 @@
 FROM rust:1.95-alpine3.22 AS dev
 
-RUN apk add --no-cache build-base
+RUN apk add --no-cache build-base curl
 
 RUN cargo install cargo-watch
 
@@ -34,7 +34,7 @@ RUN cargo build --release --locked --bin ship-talkers-scraper
 
 FROM alpine:3.22 AS runtime
 
-RUN apk add --no-cache ca-certificates \
+RUN apk add --no-cache ca-certificates curl \
     && addgroup -S -g 10001 app \
     && adduser -S -G app -u 10001 app
 
