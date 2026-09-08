@@ -224,12 +224,15 @@ body.api-docs .docs-content a { color: #f472b6; }
 }
 
 dialog[open] {
+    position: fixed;
+    inset: 0;
+    margin: auto;
     background: #1a1a1a;
     border: 1px solid #262626;
     border-radius: 12px;
     padding: 1.5rem;
     max-width: 36rem;
-    margin-top: 20vh;
+    height: fit-content;
 }
 
 dialog[open]::backdrop {
