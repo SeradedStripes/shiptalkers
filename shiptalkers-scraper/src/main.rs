@@ -1,4 +1,4 @@
-use ship_talkers_scraper::{db, hackatime, scraper, settings, slack};
+use ship_talkers_scraper::{db, hackatime, health, scraper, settings, slack};
 
 use dotenvy::dotenv;
 use std::time::Duration;
@@ -18,6 +18,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .init();
 
     let settings = settings::RuntimeSettings::load();
+
+    // answers 200 as long as the scraper process runs.
+    tokio::spawn(health::serve(settings.get_u64("HEALTH_PORT") as u16));
 
     let database_url = settings.get("DATABASE_URL");
     if database_url.is_empty() {

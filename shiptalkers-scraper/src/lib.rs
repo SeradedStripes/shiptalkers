@@ -12,6 +12,7 @@ pub fn init_tls() {
 
 pub mod db;
 pub mod hackatime;
+pub mod health;
 pub mod scraper;
 pub mod settings;
 pub mod slack;
