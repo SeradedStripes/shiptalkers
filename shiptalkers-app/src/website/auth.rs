@@ -1,6 +1,6 @@
 use crate::auth;
 use crate::db::hackatime;
-use crate::db::postgres_db::ApiKeyRow;
+use crate::db::postgres_db::{ApiGrantRow, ApiKeyRow};
 use crate::sqlx;
 use askama::Template;
 use axum::extract::{Form, Path, Query, State};
@@ -139,6 +139,14 @@ async fn link_html(
             .unwrap_or_default(),
         _ => Vec::new(),
     };
+    let grants = match (&session, state.auth_db()) {
+        (Some(s), Ok(db)) => db
+            .list_grants(&s.slack_id)
+            .await
+            .map(|grants| grants.into_iter().map(grant_view).collect())
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    };
     let config = auth_config(state);
     let csrf_token = csrf_token_for(headers, &config).unwrap_or_default();
     let template = LinkTemplate {
@@ -151,6 +159,7 @@ async fn link_html(
             .unwrap_or_default(),
         hackatime_connected,
         api_keys,
+        grants,
         new_api_key: new_api_key.unwrap_or_default(),
         page_load_ms: format!("{}ms", started.elapsed().as_millis()),
     };
@@ -212,6 +221,57 @@ pub async fn link_revoke_api_key(
     Ok(Redirect::to("/link"))
 }
 
+pub async fn link_create_grant(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Form(params): Form<HashMap<String, String>>,
+) -> Result<Redirect, StatusCode> {
+    let session =
+        session_from_request(&headers, &auth_config(&state)).ok_or(StatusCode::UNAUTHORIZED)?;
+    let config = auth_config(&state);
+    if !csrf_matches(&headers, &config, params.get("csrf").map(String::as_str)) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    let Some(key_id) = params.get("key_id").map(String::as_str).map(str::trim) else {
+        return Err(StatusCode::BAD_REQUEST);
+    };
+    if !key_id.is_empty() {
+        let created_at = time::OffsetDateTime::now_utc().unix_timestamp();
+        state
+            .auth_db()?
+            .create_grant(&session.slack_id, key_id, created_at)
+            .await
+            .map_err(|e| {
+                tracing::error!("create_grant failed for {}: {}", session.slack_id, e);
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+    }
+    Ok(Redirect::to("/link"))
+}
+
+pub async fn link_revoke_grant(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(key_id): Path<String>,
+    Form(params): Form<HashMap<String, String>>,
+) -> Result<Redirect, StatusCode> {
+    let session =
+        session_from_request(&headers, &auth_config(&state)).ok_or(StatusCode::UNAUTHORIZED)?;
+    let config = auth_config(&state);
+    if !csrf_matches(&headers, &config, params.get("csrf").map(String::as_str)) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    state
+        .auth_db()?
+        .revoke_grant(&session.slack_id, &key_id)
+        .await
+        .map_err(|e| {
+            tracing::error!("revoke_grant failed for {}: {}", session.slack_id, e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    Ok(Redirect::to("/link"))
+}
+
 #[derive(Template)]
 #[template(path = "link.html")]
 struct LinkTemplate {
@@ -221,6 +281,7 @@ struct LinkTemplate {
     slack_id: String,
     hackatime_connected: bool,
     api_keys: Vec<ApiKeyView>,
+    grants: Vec<ApiGrantView>,
     new_api_key: String,
     page_load_ms: String,
 }
@@ -229,6 +290,18 @@ struct ApiKeyView {
     key_id: String,
     created: String,
     last_used: String,
+}
+
+struct ApiGrantView {
+    key_id: String,
+    created: String,
+}
+
+fn grant_view(grant: ApiGrantRow) -> ApiGrantView {
+    ApiGrantView {
+        key_id: grant.key_id,
+        created: fmt_day(grant.created_at),
+    }
 }
 
 pub async fn auth_hackclub_login(

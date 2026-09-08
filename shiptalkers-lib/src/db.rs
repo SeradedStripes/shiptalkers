@@ -326,6 +326,18 @@ pub async fn init_tables(pool: &PgPool) -> Result<(), Box<dyn std::error::Error>
     .execute(pool)
     .await?;
 
+    // A grant lets one user (grantor) open their data to a specific API key
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS api_key_grants (
+            grantor_id TEXT NOT NULL,
+            key_id TEXT NOT NULL REFERENCES api_keys(key_id) ON DELETE CASCADE,
+            created_at BIGINT NOT NULL,
+            PRIMARY KEY (grantor_id, key_id)
+        )",
+    )
+    .execute(pool)
+    .await?;
+
     // One-time cleanup of leftovers no longer created by this schema: the
     // denormalized slack_messages_by_user copy (and its trigger/function/index)
     // and any stale compaction flag from the removed compact_toast_once task.

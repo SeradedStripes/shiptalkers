@@ -39,10 +39,10 @@
                 <pre class="code-block">curl -H "Authorization: Bearer shiptalkers_..." \
      {{ base_url }}/api/v1/me</pre>
                 <p>
-                    Only <code>GET /api/v1/me</code> and the key management endpoints require
-                    a key. All other endpoints work without one. Reading someone else's
-                    data requires their key (or, in a future release, a grant they issue to
-                    your key).
+                    Only <code>GET /api/v1/me</code>, the key management endpoints, and the
+                    grants endpoints require a key or session. All other endpoints work without
+                    one. Reading someone else's data requires their key, or a grant they issue
+                    to your key (see <a href="/api/docs/grants">Grants</a>).
                 </p>
             </section>
 

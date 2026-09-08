@@ -128,9 +128,16 @@ impl AuthDb {
 
     /// Looks up the owner of a full API key by its hash, touching `last_used_at` on success.
     pub async fn slack_id_for_key(&self, key: &str) -> Result<Option<String>, String> {
-        let row: Option<String> = sqlx::query_scalar(
+        self.resolve_key(key)
+            .await
+            .map(|row| row.map(|(_, slack_id)| slack_id))
+    }
+
+    /// Resolves a full API key to its `(key_id, owner_slack_id)`, touching `last_used_at` on success.
+    pub async fn resolve_key(&self, key: &str) -> Result<Option<(String, String)>, String> {
+        let row: Option<(String, String)> = sqlx::query_as(
             "UPDATE api_keys SET last_used_at = $2
-             WHERE key_hash = $1 RETURNING slack_id",
+             WHERE key_hash = $1 RETURNING key_id, slack_id",
         )
         .bind(sha256_hex(key))
         .bind(time::OffsetDateTime::now_utc().unix_timestamp())
@@ -138,6 +145,88 @@ impl AuthDb {
         .await
         .map_err(|e| e.to_string())?;
         Ok(row)
+    }
+}
+
+/// A stored grant's public metadata: which key the grantor opened their data to.
+#[derive(Clone, Serialize)]
+pub struct ApiGrantRow {
+    pub key_id: String,
+    pub created_at: i64,
+}
+
+impl AuthDb {
+    /// Grants the grantor's data to `key_id`, creating the row when the key
+    /// exists. Refreshing the timestamp for an existing grant is a no-op.
+    /// Returns false when the key does not exist.
+    pub async fn create_grant(
+        &self,
+        grantor_id: &str,
+        key_id: &str,
+        created_at: i64,
+    ) -> Result<bool, String> {
+        sqlx::query(
+            "INSERT INTO api_key_grants (grantor_id, key_id, created_at)
+             SELECT $1, key_id, $3 FROM api_keys WHERE key_id = $2
+             ON CONFLICT (grantor_id, key_id) DO UPDATE SET created_at = EXCLUDED.created_at",
+        )
+        .bind(grantor_id)
+        .bind(key_id)
+        .bind(created_at)
+        .execute(&self.pool)
+        .await
+        .map(|result| result.rows_affected() > 0)
+        .map_err(|e| e.to_string())
+    }
+
+    pub async fn revoke_grant(&self, grantor_id: &str, key_id: &str) -> Result<bool, String> {
+        sqlx::query("DELETE FROM api_key_grants WHERE grantor_id = $1 AND key_id = $2")
+            .bind(grantor_id)
+            .bind(key_id)
+            .execute(&self.pool)
+            .await
+            .map(|result| result.rows_affected() > 0)
+            .map_err(|e| e.to_string())
+    }
+
+    pub async fn list_grants(&self, grantor_id: &str) -> Result<Vec<ApiGrantRow>, String> {
+        sqlx::query_as::<_, (String, i64)>(
+            "SELECT key_id, created_at FROM api_key_grants
+             WHERE grantor_id = $1 ORDER BY created_at DESC",
+        )
+        .bind(grantor_id)
+        .fetch_all(&self.pool)
+        .await
+        .map(|rows| {
+            rows.into_iter()
+                .map(|(key_id, created_at)| ApiGrantRow { key_id, created_at })
+                .collect()
+        })
+        .map_err(|e| e.to_string())
+    }
+
+    /// Users who granted this key access to their data, newest first.
+    pub async fn granted_users(&self, key_id: &str) -> Result<Vec<(String, i64)>, String> {
+        sqlx::query_as(
+            "SELECT grantor_id, created_at FROM api_key_grants
+             WHERE key_id = $1 ORDER BY created_at DESC",
+        )
+        .bind(key_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| e.to_string())
+    }
+
+    pub async fn has_grant(&self, grantor_id: &str, key_id: &str) -> Result<bool, String> {
+        sqlx::query_scalar::<_, i32>(
+            "SELECT 1 FROM api_key_grants WHERE grantor_id = $1 AND key_id = $2",
+        )
+        .bind(grantor_id)
+        .bind(key_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map(|row| row.is_some())
+        .map_err(|e| e.to_string())
     }
 }
 

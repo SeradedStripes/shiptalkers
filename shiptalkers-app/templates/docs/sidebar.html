@@ -29,4 +29,11 @@
     <a href="#keys" class="docs-sub"><code>GET/POST</code> /keys</a>
     <a href="#keys-revoke" class="docs-sub"><code>DELETE</code> /keys/{key_id}</a>
     {% endif %}
+    <a href="/api/docs/grants" {% if current == "grants" %}class="active"{% endif %}>Grants</a>
+    {% if current == "grants" %}
+    <a href="#list" class="docs-sub"><code>GET</code> /grants</a>
+    <a href="#get" class="docs-sub"><code>GET</code> /grants/{slack_id}</a>
+    <a href="#create" class="docs-sub"><code>POST</code> /grants</a>
+    <a href="#revoke" class="docs-sub"><code>DELETE</code> /grants/{key_id}</a>
+    {% endif %}
 </nav>

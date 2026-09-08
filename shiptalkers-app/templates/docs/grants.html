@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Grants API - Ship Talkers</title>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body class="api-docs">
+    {% include "header.html" %}
+    <div class="container docs-wrap">
+        {% include "docs/sidebar.html" %}
+        <div class="docs-content">
+            <h2>Grants</h2>
+            <p>
+                A grant lets one user (the grantor) open their stats to a specific API key held
+                by someone else. The key owner can then read the grantor's stats through this
+                API the same way they read their own. Grants are granted and revoked from the
+                account page or the endpoints below, and they die automatically when the key
+                they target is revoked.
+            </p>
+
+            <section id="list" class="endpoint">
+                <div class="endpoint-head">
+                    <span class="method">GET</span>
+                    <code>/api/v1/grants</code>
+                    <span class="tag">Account</span>
+                </div>
+                <p>
+                    Lists the users who granted the calling key access to their data. The key
+                    owner's own user is never listed; their stats are always readable via
+                    <code>/me</code>.
+                </p>
+                <p><strong>Auth</strong>: <code>Authorization: Bearer &lt;key&gt;</code></p>
+                <p><strong>Example response</strong></p>
+                <pre class="code-block">{
+  "key_id": "key_9f3a",
+  "grants": [
+    {
+      "slack_id": "U0123ABCD",
+      "display_name": "Orpheus",
+      "created_at": 1736092800
+    }
+  ]
+}</pre>
+            </section>
+
+            <section id="get" class="endpoint">
+                <div class="endpoint-head">
+                    <span class="method">GET</span>
+                    <code>/api/v1/grants/&#123;slack_id&#125;</code>
+                    <span class="tag">Account</span>
+                </div>
+                <p>
+                    Returns the <a href="/api/docs/stats#users"><code>UserStats</code></a> of a
+                    user who granted the calling key access. Identical shape to
+                    <code>GET /api/v1/users/&#123;slack_id&#125;</code>.
+                </p>
+                <p><strong>Path parameters</strong></p>
+                <ul class="api-list">
+                    <li><span class="param">slack_id</span> - Slack user id of the grantor.</li>
+                </ul>
+                <p><strong>Auth</strong>: <code>Authorization: Bearer &lt;key&gt;</code></p>
+                <p><strong>Responses</strong></p>
+                <ul class="api-list">
+                    <li><span class="param">200</span> - the grantor's <code>UserStats</code>.</li>
+                    <li><span class="param">401</span> - missing or invalid API key.</li>
+                    <li><span class="param">403</span> - this key holds no grant for that user.</li>
+                </ul>
+            </section>
+
+            <section id="create" class="endpoint">
+                <div class="endpoint-head">
+                    <span class="method">POST</span>
+                    <code>/api/v1/grants</code>
+                    <span class="tag">Account</span>
+                </div>
+                <p>
+                    Grants the signed-in user's stats to the API key with the given public id
+                    (<code>key_...</code>), as shown on the owner's account page. Grants are
+                    idempotent: granting the same key twice just refreshes the timestamp.
+                </p>
+                <p><strong>Auth</strong>: signed-in session cookie.</p>
+                <p>
+                    <strong>CSRF</strong>: include the token from the <code>st_csrf</code> cookie
+                    in an <code>X-CSRF-Token</code> header.
+                </p>
+                <p><strong>Request body</strong></p>
+                <pre class="code-block">{
+  "key_id": "key_9f3a"
+}</pre>
+                <p><strong>Responses</strong></p>
+                <ul class="api-list">
+                    <li><span class="param">201</span> - the grant was created.</li>
+                    <li><span class="param">401</span> - not signed in.</li>
+                    <li><span class="param">403</span> - missing or invalid CSRF token.</li>
+                    <li><span class="param">404</span> - no such API key.</li>
+                </ul>
+                <p><strong>Example</strong></p>
+                <pre class="code-block">curl -b session.cookie -H "Content-Type: application/json" \
+     -H "X-CSRF-Token: &lt;st_csrf from the account page&gt;" \
+     -d '{ "key_id": "key_9f3a" }' \
+     {{ base_url }}/api/v1/grants</pre>
+            </section>
+
+            <section id="revoke" class="endpoint">
+                <div class="endpoint-head">
+                    <span class="method">DELETE</span>
+                    <code>/api/v1/grants/&#123;key_id&#125;</code>
+                    <span class="tag">Account</span>
+                </div>
+                <p>
+                    Revokes the signed-in user's grant to the given key. The key immediately
+                    loses access to this user's stats. Grants also die on their own when the
+                    target key is revoked.
+                </p>
+                <p><strong>Path parameters</strong></p>
+                <ul class="api-list">
+                    <li><span class="param">key_id</span> - public id of the key to revoke access from.</li>
+                </ul>
+                <p><strong>Auth</strong>: signed-in session cookie.</p>
+                <p>
+                    <strong>CSRF</strong>: include the token from the <code>st_csrf</code> cookie
+                    in an <code>X-CSRF-Token</code> header.
+                </p>
+                <p><strong>Responses</strong></p>
+                <ul class="api-list">
+                    <li><span class="param">204</span> - revoked.</li>
+                    <li><span class="param">401</span> - not signed in.</li>
+                    <li><span class="param">403</span> - missing or invalid CSRF token.</li>
+                    <li><span class="param">404</span> - no such grant for this user.</li>
+                </ul>
+            </section>
+        </div>
+    </div>
+    {% include "footer.html" %}
+</body>
+</html>

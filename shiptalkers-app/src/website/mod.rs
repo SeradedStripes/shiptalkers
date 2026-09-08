@@ -251,6 +251,15 @@ pub struct ApiDocsAccount {
 }
 
 #[derive(Template)]
+#[template(path = "docs/grants.html")]
+pub struct ApiDocsGrants {
+    pub signed_in: bool,
+    pub page_load_ms: String,
+    pub base_url: String,
+    pub current: &'static str,
+}
+
+#[derive(Template)]
 #[template(path = "leaderboard_category.html")]
 pub struct LeaderboardCategoryTemplate {
     pub title: String,
@@ -326,10 +335,21 @@ pub fn router(
             get(api::list_api_keys).post(api::create_api_key),
         )
         .route("/api/v1/keys/{key_id}", delete(api::revoke_api_key))
+        .route(
+            "/api/v1/grants",
+            get(api::list_grants).post(api::create_grant),
+        )
+        .route("/api/v1/grants/{id}", get(api::get_granted_stats))
+        .route("/api/v1/grants/{id}", delete(api::revoke_grant))
         .route("/link/api-keys", post(auth::link_create_api_key))
         .route(
             "/link/api-keys/{key_id}/revoke",
             post(auth::link_revoke_api_key),
+        )
+        .route("/link/grants", post(auth::link_create_grant))
+        .route(
+            "/link/grants/{key_id}/revoke",
+            post(auth::link_revoke_grant),
         )
         .route("/search", get(get_search))
         .route("/pfp/{id}", get(get_pfp))
@@ -476,6 +496,13 @@ async fn get_api_docs(
             page_load_ms: page_load_ms.clone(),
             base_url,
             current: "account",
+        }
+        .render(),
+        Some("grants") => ApiDocsGrants {
+            signed_in,
+            page_load_ms,
+            base_url,
+            current: "grants",
         }
         .render(),
         _ => return Err(StatusCode::NOT_FOUND),

@@ -74,6 +74,38 @@
             {% endif %}
         </div>
 
+        <div class="card">
+            <h2>Grants</h2>
+            {% if signed_in %}
+            <p class="status">Grant someone access to your stats by entering their API key's public id.</p>
+            <form action="/link/grants" method="post">
+                <input type="hidden" name="csrf" value="{{ csrf_token }}">
+                <input type="text" name="key_id" placeholder="key_..." required
+                       style="margin-right: 0.5rem; padding: 0.4rem 0.6rem;">
+                <button type="submit" class="btn" style="margin-top: 1rem;">Grant access</button>
+            </form>
+            {% if grants.is_empty() %}
+            <p class="status">No grants yet.</p>
+            {% else %}
+            <h3 style="margin: 1.5rem 0 0.5rem;">Your grants</h3>
+            <ul class="api-list">
+                {% for grant in grants %}
+                <li>
+                    <code>{{ grant.key_id }}</code>
+                    <span class="status">granted {{ grant.created }}</span>
+                    <form action="/link/grants/{{ grant.key_id }}/revoke" method="post" style="display: inline;">
+                        <input type="hidden" name="csrf" value="{{ csrf_token }}">
+                        <button type="submit" class="btn" style="margin: 0 0 0 0.5rem; padding: 0.25rem 0.75rem; font-size: 0.8rem;">Revoke</button>
+                    </form>
+                </li>
+                {% endfor %}
+            </ul>
+            {% endif %}
+            {% else %}
+            <p class="status">Sign in to manage grants.</p>
+            {% endif %}
+        </div>
+
         <p><a href="/" class="btn" style="margin-top: 1rem;">Back</a>
         {% if signed_in %}
         <a href="/auth/logout" class="btn" style="margin-top: 1rem;">Log out</a>

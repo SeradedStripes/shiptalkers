@@ -111,6 +111,194 @@ pub async fn revoke_api_key(
     }
 }
 
+#[derive(Deserialize)]
+pub struct GrantParams {
+    key_id: String,
+}
+
+async fn key_id_for(state: &AppState, headers: &HeaderMap) -> Result<(String, String), Response> {
+    let Some(token) = bearer_token(headers) else {
+        return Err(unauthorized());
+    };
+    let db = match state.auth_db() {
+        Ok(db) => db,
+        Err(status) => return Err(status.into_response()),
+    };
+    match db.resolve_key(&token).await {
+        Ok(Some((key_id, slack_id))) => Ok((key_id, slack_id)),
+        Ok(None) => Err(unauthorized()),
+        Err(e) => {
+            tracing::error!("resolve_key failed: {}", e);
+            Err(error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "failed to look up API key",
+            ))
+        }
+    }
+}
+
+/// Users who granted the calling key access to their data.
+pub async fn list_grants(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    let (key_id, owner) = match key_id_for(&state, &headers).await {
+        Ok(pair) => pair,
+        Err(resp) => return resp,
+    };
+    let db = match state.auth_db() {
+        Ok(db) => db,
+        Err(status) => return status.into_response(),
+    };
+    let pool = match state.pool() {
+        Ok(pool) => pool,
+        Err(status) => return status.into_response(),
+    };
+    let granted = match db.granted_users(&key_id).await {
+        Ok(rows) => rows,
+        Err(e) => {
+            tracing::error!("granted_users failed for {}: {}", key_id, e);
+            return error_response(StatusCode::INTERNAL_SERVER_ERROR, "failed to list grants");
+        }
+    };
+    let mut names = std::collections::HashMap::new();
+    let ids: Vec<&String> = granted
+        .iter()
+        .map(|(grantor_id, _)| grantor_id)
+        .filter(|id| **id != owner)
+        .collect();
+    if !ids.is_empty() {
+        let found: Vec<(String, String)> =
+            sqlx::query_as("SELECT user_id, display_name FROM users WHERE user_id = ANY($1)")
+                .bind(&ids)
+                .fetch_all(pool)
+                .await
+                .unwrap_or_default();
+        for (id, name) in found {
+            names.insert(id, name);
+        }
+    }
+    let grants: Vec<serde_json::Value> = granted
+        .into_iter()
+        .filter(|(grantor_id, _)| grantor_id != &owner)
+        .map(|(grantor_id, created_at)| {
+            serde_json::json!({
+                "slack_id": grantor_id,
+                "display_name": names.get(&grantor_id).cloned().unwrap_or(grantor_id),
+                "created_at": created_at,
+            })
+        })
+        .collect();
+    Json(serde_json::json!({ "key_id": key_id, "grants": grants })).into_response()
+}
+
+/// Stats for one user whose data the calling key holds a grant for.
+pub async fn get_granted_stats(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(grantor_id): Path<String>,
+) -> Response {
+    let (key_id, _owner) = match key_id_for(&state, &headers).await {
+        Ok(pair) => pair,
+        Err(resp) => return resp,
+    };
+    let db = match state.auth_db() {
+        Ok(db) => db,
+        Err(status) => return status.into_response(),
+    };
+    let granted = match db.has_grant(&grantor_id, &key_id).await {
+        Ok(g) => g,
+        Err(e) => {
+            tracing::error!("has_grant failed for {}: {}", grantor_id, e);
+            return error_response(StatusCode::INTERNAL_SERVER_ERROR, "failed to check grant");
+        }
+    };
+    if !granted {
+        return error_response(
+            StatusCode::FORBIDDEN,
+            "this key holds no grant for that user",
+        );
+    }
+    let pool = match state.pool() {
+        Ok(pool) => pool,
+        Err(status) => return status.into_response(),
+    };
+    match load_user_stats(pool, &grantor_id).await {
+        Ok(stats) => Json(stats).into_response(),
+        Err(e) => {
+            tracing::error!("load_user_stats failed for {}: {}", grantor_id, e);
+            error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "failed to load user stats",
+            )
+        }
+    }
+}
+
+/// Signed-in grantor opens their data to another user's key.
+pub async fn create_grant(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(params): Json<GrantParams>,
+) -> Response {
+    let session = match session_from_request(&headers, &auth_config(&state)) {
+        Some(s) => s,
+        None => return unauthorized(),
+    };
+    if !csrf_ok(&headers, &auth_config(&state)) {
+        return forbidden();
+    }
+    let key_id = params.key_id.trim();
+    if key_id.is_empty() {
+        return error_response(StatusCode::BAD_REQUEST, "key_id is required");
+    }
+    let db = match state.auth_db() {
+        Ok(db) => db,
+        Err(status) => return status.into_response(),
+    };
+    let created_at = time::OffsetDateTime::now_utc().unix_timestamp();
+    match db.create_grant(&session.slack_id, key_id, created_at).await {
+        Ok(true) => (
+            StatusCode::CREATED,
+            Json(serde_json::json!({
+                "grantor_id": session.slack_id,
+                "key_id": key_id,
+                "created_at": created_at,
+            })),
+        )
+            .into_response(),
+        Ok(false) => error_response(StatusCode::NOT_FOUND, "no such API key"),
+        Err(e) => {
+            tracing::error!("create_grant failed for {}: {}", session.slack_id, e);
+            error_response(StatusCode::INTERNAL_SERVER_ERROR, "failed to create grant")
+        }
+    }
+}
+
+/// Signed-in grantor closes their data to a key.
+pub async fn revoke_grant(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(key_id): Path<String>,
+) -> Response {
+    let session = match session_from_request(&headers, &auth_config(&state)) {
+        Some(s) => s,
+        None => return unauthorized(),
+    };
+    if !csrf_ok(&headers, &auth_config(&state)) {
+        return forbidden();
+    }
+    let db = match state.auth_db() {
+        Ok(db) => db,
+        Err(status) => return status.into_response(),
+    };
+    match db.revoke_grant(&session.slack_id, &key_id).await {
+        Ok(true) => StatusCode::NO_CONTENT.into_response(),
+        Ok(false) => error_response(StatusCode::NOT_FOUND, "no such grant for this key"),
+        Err(e) => {
+            tracing::error!("revoke_grant failed for {}: {}", session.slack_id, e);
+            error_response(StatusCode::INTERNAL_SERVER_ERROR, "failed to revoke grant")
+        }
+    }
+}
+
 pub async fn get_me(State(state): State<AppState>, headers: HeaderMap) -> Response {
     let token = match bearer_token(&headers) {
         Some(t) => t,
