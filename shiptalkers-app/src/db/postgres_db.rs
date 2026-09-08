@@ -9,7 +9,8 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 pub use ship_talkers_lib::db::{
-    SlackChannelRow, connect, init_tables, insert_new_channels_rows, placeholders,
+    SlackChannelRow, SlackUserRow, connect, init_tables, insert_new_channels_rows, placeholders,
+    upsert_users,
 };
 
 pub async fn insert_new_channels(

@@ -8,6 +8,16 @@ pub struct SlackChannelRow {
     pub name: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct SlackUserRow {
+    pub user_id: String,
+    pub display_name: String,
+    pub pfp: String,
+    pub updated: u64,
+    pub is_bot: u8,
+    pub is_deleted: u8,
+}
+
 pub fn placeholders(rows: usize, cols: usize) -> String {
     (0..rows)
         .map(|r| {
@@ -378,4 +388,36 @@ pub async fn insert_new_channels_rows(
     }
     tracing::info!("Inserted {} new channels into Postgres", count);
     Ok(count)
+}
+
+/// Upserts Slack users, refreshing name/avatar/updated/flags on conflict.
+/// Used by the scraper's `users.list` sync and the app's `team_join` handler.
+pub async fn upsert_users(
+    pool: &PgPool,
+    users: &[SlackUserRow],
+) -> Result<(), Box<dyn std::error::Error>> {
+    if users.is_empty() {
+        return Ok(());
+    }
+    for chunk in users.chunks(INSERT_CHUNK) {
+        let mut sql = String::from(
+            "INSERT INTO users (user_id, display_name, pfp, updated, is_bot, is_deleted) VALUES ",
+        );
+        sql.push_str(&placeholders(chunk.len(), 6));
+        sql.push_str(
+            " ON CONFLICT (user_id) DO UPDATE SET display_name = EXCLUDED.display_name, pfp = EXCLUDED.pfp, updated = EXCLUDED.updated, is_bot = EXCLUDED.is_bot, is_deleted = EXCLUDED.is_deleted",
+        );
+        let mut q = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()));
+        for u in chunk {
+            q = q
+                .bind(&u.user_id)
+                .bind(&u.display_name)
+                .bind(&u.pfp)
+                .bind(u.updated as i64)
+                .bind(u.is_bot as i16)
+                .bind(u.is_deleted as i16);
+        }
+        q.execute(pool).await?;
+    }
+    Ok(())
 }

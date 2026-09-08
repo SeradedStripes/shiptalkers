@@ -7,7 +7,7 @@ use serde::Deserialize;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 use crate::bot_image;
-use crate::db::postgres_db::{self, SlackChannelRow};
+use crate::db::postgres_db::{self, SlackChannelRow, SlackUserRow};
 use crate::settings::RuntimeSettings;
 use crate::slack::time_range::{self, TimeRange, now_unix};
 use crate::sqlx;
@@ -252,6 +252,9 @@ async fn serve_socket(
                                     "channel_created" => {
                                         handle_channel_created(client, event, pool).await;
                                     }
+                                    "team_join" => {
+                                        handle_team_join(client, event, pool).await;
+                                    }
                                     "message" => {
                                         handle_message(
                                             client,
@@ -336,6 +339,55 @@ async fn handle_channel_created(_client: &Client, event: &serde_json::Value, poo
         postgres_db::insert_new_channels(pool, &[row], &mut std::collections::HashSet::new()).await
     {
         tracing::error!("Failed to insert new channel: {}", e);
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct TeamJoin {
+    user: JoinUser,
+}
+
+#[derive(Debug, Deserialize)]
+struct JoinUser {
+    id: String,
+    profile: JoinProfile,
+    updated: Option<f64>,
+    is_bot: Option<bool>,
+    is_deleted: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+struct JoinProfile {
+    #[serde(default)]
+    display_name: String,
+    #[serde(default)]
+    image_192: String,
+}
+
+async fn handle_team_join(_client: &Client, event: &serde_json::Value, pool: &sqlx::PgPool) {
+    let Ok(join) = serde_json::from_value::<TeamJoin>(event.clone()) else {
+        return;
+    };
+
+    let display_name = if join.user.profile.display_name.is_empty() {
+        join.user.id.clone()
+    } else {
+        join.user.profile.display_name.clone()
+    };
+
+    tracing::info!("New user joined: @{} ({})", display_name, join.user.id);
+
+    let row = SlackUserRow {
+        user_id: join.user.id,
+        display_name,
+        pfp: join.user.profile.image_192,
+        updated: join.user.updated.unwrap_or(0.0) as u64,
+        is_bot: u8::from(join.user.is_bot.unwrap_or(false)),
+        is_deleted: u8::from(join.user.is_deleted.unwrap_or(false)),
+    };
+
+    if let Err(e) = postgres_db::upsert_users(pool, &[row]).await {
+        tracing::error!("Failed to insert new user: {}", e);
     }
 }
 

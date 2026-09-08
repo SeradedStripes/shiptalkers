@@ -22,6 +22,7 @@ It then runs a comparison between your Hackatime coding time and your Slack time
 - message.channels
 - channel_created
 - channel_history_changed
+- team_join
 
 #### Bot Token Scopes
 - app_mentions:read

@@ -3,7 +3,8 @@ use crate::sqlx::PgPool;
 use std::collections::HashMap;
 
 pub use ship_talkers_lib::db::{
-    INSERT_CHUNK, SlackChannelRow, connect, init_tables, insert_new_channels_rows, placeholders,
+    INSERT_CHUNK, SlackChannelRow, SlackUserRow, connect, init_tables, insert_new_channels_rows,
+    placeholders, upsert_users,
 };
 
 /// Reconciles the maintained `message_count` with the real row count.
@@ -62,16 +63,6 @@ pub fn parse_date(s: &str) -> Option<time::Date> {
     let month: u8 = parts.next()?.parse().ok()?;
     let day: u8 = parts.next()?.parse().ok()?;
     time::Date::from_calendar_date(year, time::Month::try_from(month).ok()?, day).ok()
-}
-
-#[derive(Debug, Clone)]
-pub struct SlackUserRow {
-    pub user_id: String,
-    pub display_name: String,
-    pub pfp: String,
-    pub updated: u64,
-    pub is_bot: u8,
-    pub is_deleted: u8,
 }
 
 #[derive(Debug, Clone)]
@@ -277,36 +268,6 @@ pub async fn get_known_channel_ids(
             .fetch_all(pool)
             .await?;
     Ok(rows)
-}
-
-pub async fn upsert_users(
-    pool: &PgPool,
-    users: &[SlackUserRow],
-) -> Result<(), Box<dyn std::error::Error>> {
-    if users.is_empty() {
-        return Ok(());
-    }
-    for chunk in users.chunks(INSERT_CHUNK) {
-        let mut sql = String::from(
-            "INSERT INTO users (user_id, display_name, pfp, updated, is_bot, is_deleted) VALUES ",
-        );
-        sql.push_str(&placeholders(chunk.len(), 6));
-        sql.push_str(
-            " ON CONFLICT (user_id) DO UPDATE SET display_name = EXCLUDED.display_name, pfp = EXCLUDED.pfp, updated = EXCLUDED.updated, is_bot = EXCLUDED.is_bot, is_deleted = EXCLUDED.is_deleted",
-        );
-        let mut q = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()));
-        for u in chunk {
-            q = q
-                .bind(&u.user_id)
-                .bind(&u.display_name)
-                .bind(&u.pfp)
-                .bind(u.updated as i64)
-                .bind(u.is_bot as i16)
-                .bind(u.is_deleted as i16);
-        }
-        q.execute(pool).await?;
-    }
-    Ok(())
 }
 
 pub async fn get_user_updates(
