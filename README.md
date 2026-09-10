@@ -34,6 +34,7 @@ It then runs a comparison between your Hackatime coding time and your Slack time
 - groups:read
 - mpim:history
 - users:read
+- users:read.email
 - files:read
 - files:write
 

@@ -47,10 +47,20 @@ pub struct SlackUser {
     pub real_name: String,
     pub username: String,
     pub email: String,
+    pub title: String,
+    pub status_text: String,
+    pub status_emoji: String,
+    pub tz: String,
+    pub tz_label: String,
+    pub locale: String,
     pub pfp: String,
     pub updated: u64,
     pub is_bot: bool,
     pub is_deleted: bool,
+    pub is_admin: bool,
+    pub is_owner: bool,
+    pub is_restricted: bool,
+    pub is_app_user: bool,
 }
 
 struct Inner {
@@ -646,6 +656,52 @@ impl SlackClientPool {
                         .filter(|s| !s.is_empty())
                         .unwrap_or("")
                         .to_string();
+                    let title = profile
+                        .and_then(|p| p.get("title"))
+                        .and_then(|v| v.as_str())
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or("")
+                        .to_string();
+                    let status_text = profile
+                        .and_then(|p| p.get("status_text"))
+                        .and_then(|v| v.as_str())
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or("")
+                        .to_string();
+                    let status_emoji = profile
+                        .and_then(|p| p.get("status_emoji"))
+                        .and_then(|v| v.as_str())
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or("")
+                        .to_string();
+                    let tz = m
+                        .get("tz")
+                        .and_then(|v| v.as_str())
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or("")
+                        .to_string();
+                    let tz_label = m
+                        .get("tz_label")
+                        .and_then(|v| v.as_str())
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or("")
+                        .to_string();
+                    let locale = m
+                        .get("locale")
+                        .and_then(|v| v.as_str())
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or("")
+                        .to_string();
+                    let is_admin = m.get("is_admin").and_then(|v| v.as_bool()).unwrap_or(false);
+                    let is_owner = m.get("is_owner").and_then(|v| v.as_bool()).unwrap_or(false);
+                    let is_restricted = m
+                        .get("is_restricted")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+                    let is_app_user = m
+                        .get("is_app_user")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
                     let pfp = ["image_192", "image_72", "image_48", "image_32", "image_24"]
                         .into_iter()
                         .find_map(|key| {
@@ -668,10 +724,20 @@ impl SlackClientPool {
                         real_name,
                         username,
                         email,
+                        title,
+                        status_text,
+                        status_emoji,
+                        tz,
+                        tz_label,
+                        locale,
                         pfp,
                         updated,
                         is_bot,
                         is_deleted,
+                        is_admin,
+                        is_owner,
+                        is_restricted,
+                        is_app_user,
                     });
                 }
             }

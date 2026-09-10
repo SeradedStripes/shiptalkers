@@ -356,6 +356,20 @@ struct JoinUser {
     updated: Option<f64>,
     is_bot: Option<bool>,
     is_deleted: Option<bool>,
+    #[serde(default)]
+    tz: String,
+    #[serde(default)]
+    tz_label: String,
+    #[serde(default)]
+    locale: String,
+    #[serde(default)]
+    is_admin: bool,
+    #[serde(default)]
+    is_owner: bool,
+    #[serde(default)]
+    is_restricted: bool,
+    #[serde(default)]
+    is_app_user: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -366,6 +380,12 @@ struct JoinProfile {
     real_name: String,
     #[serde(default)]
     email: String,
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    status_text: String,
+    #[serde(default)]
+    status_emoji: String,
     #[serde(default)]
     image_192: String,
 }
@@ -401,10 +421,20 @@ async fn handle_team_join(_client: &Client, event: &serde_json::Value, pool: &sq
         real_name,
         username,
         email: join.user.profile.email,
+        title: join.user.profile.title,
+        status_text: join.user.profile.status_text,
+        status_emoji: join.user.profile.status_emoji,
+        tz: join.user.tz,
+        tz_label: join.user.tz_label,
+        locale: join.user.locale,
         pfp: join.user.profile.image_192,
         updated: join.user.updated.unwrap_or(0.0) as u64,
         is_bot: u8::from(join.user.is_bot.unwrap_or(false)),
         is_deleted: u8::from(join.user.is_deleted.unwrap_or(false)),
+        is_admin: u8::from(join.user.is_admin),
+        is_owner: u8::from(join.user.is_owner),
+        is_restricted: u8::from(join.user.is_restricted),
+        is_app_user: u8::from(join.user.is_app_user),
     };
 
     if let Err(e) = postgres_db::upsert_users(pool, &[row]).await {

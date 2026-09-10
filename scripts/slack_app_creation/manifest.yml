@@ -20,6 +20,7 @@ oauth_config:
       - groups:read
       - mpim:history
       - users:read
+      - users:read.email
       - files:write
   pkce_enabled: false
 settings:

@@ -16,10 +16,20 @@ pub struct SlackUserRow {
     pub real_name: String,
     pub username: String,
     pub email: String,
+    pub title: String,
+    pub status_text: String,
+    pub status_emoji: String,
+    pub tz: String,
+    pub tz_label: String,
+    pub locale: String,
     pub pfp: String,
     pub updated: u64,
     pub is_bot: u8,
     pub is_deleted: u8,
+    pub is_admin: u8,
+    pub is_owner: u8,
+    pub is_restricted: u8,
+    pub is_app_user: u8,
 }
 
 pub fn placeholders(rows: usize, cols: usize) -> String {
@@ -92,10 +102,20 @@ pub async fn init_tables(pool: &PgPool) -> Result<(), Box<dyn std::error::Error>
             real_name TEXT NOT NULL DEFAULT '',
             username TEXT NOT NULL DEFAULT '',
             email TEXT NOT NULL DEFAULT '',
+            title TEXT NOT NULL DEFAULT '',
+            status_text TEXT NOT NULL DEFAULT '',
+            status_emoji TEXT NOT NULL DEFAULT '',
+            tz TEXT NOT NULL DEFAULT '',
+            tz_label TEXT NOT NULL DEFAULT '',
+            locale TEXT NOT NULL DEFAULT '',
             pfp TEXT NOT NULL DEFAULT '',
             updated BIGINT NOT NULL DEFAULT 0,
             is_bot SMALLINT NOT NULL DEFAULT 0,
-            is_deleted SMALLINT NOT NULL DEFAULT 0
+            is_deleted SMALLINT NOT NULL DEFAULT 0,
+            is_admin SMALLINT NOT NULL DEFAULT 0,
+            is_owner SMALLINT NOT NULL DEFAULT 0,
+            is_restricted SMALLINT NOT NULL DEFAULT 0,
+            is_app_user SMALLINT NOT NULL DEFAULT 0
         )",
     )
     .execute(pool)
@@ -127,6 +147,40 @@ pub async fn init_tables(pool: &PgPool) -> Result<(), Box<dyn std::error::Error>
     sqlx::query("ALTER TABLE users ADD COLUMN IF NOT EXISTS email TEXT NOT NULL DEFAULT ''")
         .execute(pool)
         .await?;
+    sqlx::query("ALTER TABLE users ADD COLUMN IF NOT EXISTS title TEXT NOT NULL DEFAULT ''")
+        .execute(pool)
+        .await?;
+    sqlx::query("ALTER TABLE users ADD COLUMN IF NOT EXISTS status_text TEXT NOT NULL DEFAULT ''")
+        .execute(pool)
+        .await?;
+    sqlx::query("ALTER TABLE users ADD COLUMN IF NOT EXISTS status_emoji TEXT NOT NULL DEFAULT ''")
+        .execute(pool)
+        .await?;
+    sqlx::query("ALTER TABLE users ADD COLUMN IF NOT EXISTS tz TEXT NOT NULL DEFAULT ''")
+        .execute(pool)
+        .await?;
+    sqlx::query("ALTER TABLE users ADD COLUMN IF NOT EXISTS tz_label TEXT NOT NULL DEFAULT ''")
+        .execute(pool)
+        .await?;
+    sqlx::query("ALTER TABLE users ADD COLUMN IF NOT EXISTS locale TEXT NOT NULL DEFAULT ''")
+        .execute(pool)
+        .await?;
+    sqlx::query("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin SMALLINT NOT NULL DEFAULT 0")
+        .execute(pool)
+        .await?;
+    sqlx::query("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_owner SMALLINT NOT NULL DEFAULT 0")
+        .execute(pool)
+        .await?;
+    sqlx::query(
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS is_restricted SMALLINT NOT NULL DEFAULT 0",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS is_app_user SMALLINT NOT NULL DEFAULT 0",
+    )
+    .execute(pool)
+    .await?;
 
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS scrape_checkpoints (
@@ -436,11 +490,11 @@ pub async fn upsert_users(
     }
     for chunk in users.chunks(INSERT_CHUNK) {
         let mut sql = String::from(
-            "INSERT INTO users (user_id, merged_name, display_name, real_name, username, email, pfp, updated, is_bot, is_deleted) VALUES ",
+            "INSERT INTO users (user_id, merged_name, display_name, real_name, username, email, title, status_text, status_emoji, tz, tz_label, locale, pfp, updated, is_bot, is_deleted, is_admin, is_owner, is_restricted, is_app_user) VALUES ",
         );
-        sql.push_str(&placeholders(chunk.len(), 10));
+        sql.push_str(&placeholders(chunk.len(), 20));
         sql.push_str(
-            " ON CONFLICT (user_id) DO UPDATE SET merged_name = EXCLUDED.merged_name, display_name = EXCLUDED.display_name, real_name = EXCLUDED.real_name, username = EXCLUDED.username, email = EXCLUDED.email, pfp = EXCLUDED.pfp, updated = EXCLUDED.updated, is_bot = EXCLUDED.is_bot, is_deleted = EXCLUDED.is_deleted",
+            " ON CONFLICT (user_id) DO UPDATE SET merged_name = EXCLUDED.merged_name, display_name = EXCLUDED.display_name, real_name = EXCLUDED.real_name, username = EXCLUDED.username, email = EXCLUDED.email, title = EXCLUDED.title, status_text = EXCLUDED.status_text, status_emoji = EXCLUDED.status_emoji, tz = EXCLUDED.tz, tz_label = EXCLUDED.tz_label, locale = EXCLUDED.locale, pfp = EXCLUDED.pfp, updated = EXCLUDED.updated, is_bot = EXCLUDED.is_bot, is_deleted = EXCLUDED.is_deleted, is_admin = EXCLUDED.is_admin, is_owner = EXCLUDED.is_owner, is_restricted = EXCLUDED.is_restricted, is_app_user = EXCLUDED.is_app_user",
         );
         let mut q = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()));
         for u in chunk {
@@ -451,10 +505,20 @@ pub async fn upsert_users(
                 .bind(&u.real_name)
                 .bind(&u.username)
                 .bind(&u.email)
+                .bind(&u.title)
+                .bind(&u.status_text)
+                .bind(&u.status_emoji)
+                .bind(&u.tz)
+                .bind(&u.tz_label)
+                .bind(&u.locale)
                 .bind(&u.pfp)
                 .bind(u.updated as i64)
                 .bind(u.is_bot as i16)
-                .bind(u.is_deleted as i16);
+                .bind(u.is_deleted as i16)
+                .bind(u.is_admin as i16)
+                .bind(u.is_owner as i16)
+                .bind(u.is_restricted as i16)
+                .bind(u.is_app_user as i16);
         }
         q.execute(pool).await?;
     }

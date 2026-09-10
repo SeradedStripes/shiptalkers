@@ -118,10 +118,20 @@ pub async fn sync_users(slack_pool: &slack::SlackClientPool, pool: &sqlx::PgPool
                         real_name: u.real_name,
                         username: u.username,
                         email: u.email,
+                        title: u.title,
+                        status_text: u.status_text,
+                        status_emoji: u.status_emoji,
+                        tz: u.tz,
+                        tz_label: u.tz_label,
+                        locale: u.locale,
                         pfp: u.pfp,
                         updated: u.updated,
                         is_bot: u.is_bot as u8,
                         is_deleted: u.is_deleted as u8,
+                        is_admin: u.is_admin as u8,
+                        is_owner: u.is_owner as u8,
+                        is_restricted: u.is_restricted as u8,
+                        is_app_user: u.is_app_user as u8,
                     })
                     .collect();
                 if changed.is_empty() {
@@ -667,10 +677,20 @@ async fn upsert_bot_users(pool: &sqlx::PgPool, messages: &[slack::SlackMessage])
             real_name: String::new(),
             username: String::new(),
             email: String::new(),
+            title: String::new(),
+            status_text: String::new(),
+            status_emoji: String::new(),
+            tz: String::new(),
+            tz_label: String::new(),
+            locale: String::new(),
             pfp: String::new(),
             updated: 0,
             is_bot: 1,
             is_deleted: 0,
+            is_admin: 0,
+            is_owner: 0,
+            is_restricted: 0,
+            is_app_user: 0,
         })
         .collect();
     if bots.is_empty() {
