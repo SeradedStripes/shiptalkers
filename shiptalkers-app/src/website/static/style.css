@@ -149,6 +149,7 @@ table a:hover { text-decoration: underline; }
 }
 .member-row a { color: #f472b6; text-decoration: none; }
 .member-row a:hover { text-decoration: underline; }
+.member-row .member-none { color: #666; }
 
 .live { display: inline-block; width: 8px; height: 8px; background: #22c55e; border-radius: 50%; margin-right: 0.5rem; animation: pulse 2s infinite; }
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }

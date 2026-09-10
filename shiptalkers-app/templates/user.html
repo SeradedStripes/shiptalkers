@@ -22,9 +22,7 @@
                 </div>
             </div>
             <div class="member-details">
-                {% if !email.is_empty() %}
-                <div class="member-row"><span class="member-label">Email</span><a href="mailto:{{ email }}">{{ email }}</a></div>
-                {% endif %}
+                <div class="member-row"><span class="member-label">Email</span>{% if !email.is_empty() %}<a href="mailto:{{ email }}">{{ email }}</a>{% else %}<span class="member-none">No Email Found</span>{% endif %}</div>
                 {% if !real_name.is_empty() %}
                 <div class="member-row"><span class="member-label">Full name</span>{{ real_name }}</div>
                 {% endif %}
