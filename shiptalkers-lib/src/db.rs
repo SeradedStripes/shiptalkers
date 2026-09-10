@@ -100,8 +100,7 @@ pub async fn init_tables(pool: &PgPool) -> Result<(), Box<dyn std::error::Error>
     )
     .execute(pool)
     .await?;
-    // Keep deploying on pre-merged_name schemas: rename the old merged display_name column and add the separated profile fields. 
-    // The scraper's users.list sync backfills real_name/username/email on its next pass.
+    // Migrate pre-merged_name schemas: rename display_name to merged_name, add profile fields.
     sqlx::query(
         "DO $$
          BEGIN

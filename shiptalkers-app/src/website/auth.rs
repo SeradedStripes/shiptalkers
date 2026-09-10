@@ -470,6 +470,18 @@ pub async fn auth_hackatime_callback(
         return Err(StatusCode::INTERNAL_SERVER_ERROR);
     }
 
+    // Sync coding time immediately on link instead of waiting for the next 30m pass.
+    let pool = state.pool()?.clone();
+    let http = state.http.clone();
+    let slack_id = session.slack_id.clone();
+    let token = token.clone();
+    tokio::spawn(async move {
+        if let Err(e) = hackatime::sync_coding_activity(&pool, &http, &slack_id, Some(&token)).await
+        {
+            tracing::warn!("immediate hackatime sync failed for {slack_id}: {e}");
+        }
+    });
+
     let mut response = Redirect::to("/link").into_response();
     response
         .headers_mut()

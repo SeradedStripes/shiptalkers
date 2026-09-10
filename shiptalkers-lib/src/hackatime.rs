@@ -365,3 +365,157 @@ pub async fn get_coding_user_ids(pool: &PgPool) -> Result<Vec<String>, Box<dyn s
             .await?;
     Ok(rows)
 }
+
+const SYNC_START_DATE: &str = "2024-01-01";
+
+/// Permanent or transient reason a coding sync could not complete.
+#[derive(Debug)]
+pub enum SyncFailure {
+    /// Public stats disabled and no token to fall back on.
+    PrivateProfile,
+    /// No hackatime account for this Slack UID.
+    NoAccount,
+    /// Transient failure
+    Message(String),
+}
+
+impl std::fmt::Display for SyncFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SyncFailure::PrivateProfile => write!(f, "profile is not public"),
+            SyncFailure::NoAccount => write!(f, "no hackatime account"),
+            SyncFailure::Message(m) => write!(f, "{m}"),
+        }
+    }
+}
+
+/// Serializes coding syncs per user so link-time and resync writes never race.
+static CODING_SYNC_LOCKS: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashMap<String, std::sync::Arc<tokio::sync::Mutex<()>>>>,
+> = std::sync::OnceLock::new();
+
+fn coding_sync_lock(slack_id: &str) -> std::sync::Arc<tokio::sync::Mutex<()>> {
+    let locks =
+        CODING_SYNC_LOCKS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+    let mut guard = locks.lock().unwrap_or_else(|p| p.into_inner());
+    guard
+        .entry(slack_id.to_string())
+        .or_insert_with(|| std::sync::Arc::new(tokio::sync::Mutex::new(())))
+        .clone()
+}
+
+/// Syncs one user's coding spans and rewrites total_minutes.
+pub async fn sync_coding_activity(
+    pool: &PgPool,
+    http: &reqwest::Client,
+    slack_id: &str,
+    access_token: Option<&str>,
+) -> Result<(), SyncFailure> {
+    let lock = coding_sync_lock(slack_id);
+    let _guard = lock.lock().await;
+    let today = today_utc();
+
+    let conn = get_hackatime_connection(pool, slack_id)
+        .await
+        .map_err(|e| SyncFailure::Message(format!("read hackatime connection: {e}")))?;
+    let last_synced = conn
+        .as_ref()
+        .and_then(|c| c.last_synced_date.clone())
+        .unwrap_or_default();
+    let span_count = get_hackatime_span_count(pool, slack_id)
+        .await
+        .map_err(|e| SyncFailure::Message(format!("read hackatime_spans count: {e}")))?;
+    // No spans yet: full backfill; otherwise refetch from one day before the last sync.
+    let start_date = if span_count == 0 {
+        SYNC_START_DATE.to_string()
+    } else {
+        date_plus_days(&last_synced, -1).unwrap_or_else(|| SYNC_START_DATE.to_string())
+    };
+    let end_date = days_from_now(1);
+
+    let spans = match fetch_coding_spans(http, slack_id, access_token, &start_date, &end_date).await
+    {
+        Ok(s) => s,
+        Err((status, message)) => match (access_token, status) {
+            (Some(_), Some(401 | 403)) => {
+                // Only drop the link when the me endpoint confirms the token is dead.
+                match fetch_hackatime_me(http, access_token.unwrap()).await {
+                    Err((Some(401 | 403), _)) => {
+                        tracing::warn!(
+                            "Hackatime token for {} is invalid, removing link",
+                            slack_id
+                        );
+                        delete_hackatime_connection(pool, slack_id)
+                            .await
+                            .map_err(|e| {
+                                SyncFailure::Message(format!(
+                                    "delete stale hackatime connection: {}",
+                                    e
+                                ))
+                            })?;
+                        return Ok(());
+                    }
+                    _ => {
+                        return Err(SyncFailure::Message(format!(
+                            "hackatime returned 401/403 but the me check did not confirm a \
+                             dead token (likely down), keeping link: {message}"
+                        )));
+                    }
+                }
+            }
+            (None, Some(403)) => return Err(SyncFailure::PrivateProfile),
+            (None, Some(404)) => return Err(SyncFailure::NoAccount),
+            (_, Some(code)) => {
+                return Err(SyncFailure::Message(format!(
+                    "hackatime HTTP {code} (down, keeping data): {message}"
+                )));
+            }
+            (_, None) => {
+                return Err(SyncFailure::Message(format!(
+                    "hackatime unreachable (down, keeping data): {message}"
+                )));
+            }
+        },
+    };
+
+    let updated = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let rows: Vec<HackatimeSpanRow> = spans
+        .iter()
+        .map(|s| HackatimeSpanRow {
+            slack_id: slack_id.to_string(),
+            start_ts: s.start_time as u64,
+            duration: s.duration.round() as u64,
+            updated,
+        })
+        .collect();
+    insert_hackatime_spans(pool, &rows)
+        .await
+        .map_err(|e| SyncFailure::Message(e.to_string()))?;
+
+    let total_seconds = get_hackatime_total_seconds(pool, slack_id)
+        .await
+        .map_err(|e| SyncFailure::Message(e.to_string()))?;
+    let minutes = (total_seconds as f64 / 60.0).round() as u64;
+
+    let conn = HackatimeConnectionRow {
+        slack_id: slack_id.to_string(),
+        access_token: access_token.unwrap_or("").to_string(),
+        last_synced_date: Some(today),
+        status: String::new(),
+        total_minutes: minutes,
+    };
+    update_hackatime_connection(pool, &conn)
+        .await
+        .map_err(|e| SyncFailure::Message(e.to_string()))?;
+
+    tracing::debug!(
+        "Synced {} coding spans, {} total minutes for {}",
+        rows.len(),
+        minutes,
+        slack_id
+    );
+    Ok(())
+}
