@@ -44,7 +44,9 @@ pub struct SlackChannel {
 pub struct SlackUser {
     pub id: String,
     pub display_name: String,
-
+    pub real_name: String,
+    pub username: String,
+    pub email: String,
     pub pfp: String,
     pub updated: u64,
     pub is_bot: bool,
@@ -624,12 +626,24 @@ impl SlackClientPool {
                         .and_then(|p| p.get("display_name"))
                         .and_then(|v| v.as_str())
                         .filter(|s| !s.is_empty())
-                        .or_else(|| {
-                            profile
-                                .and_then(|p| p.get("real_name"))
-                                .and_then(|v| v.as_str())
-                                .filter(|s| !s.is_empty())
-                        })
+                        .unwrap_or("")
+                        .to_string();
+                    let real_name = profile
+                        .and_then(|p| p.get("real_name"))
+                        .and_then(|v| v.as_str())
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or("")
+                        .to_string();
+                    let username = m
+                        .get("name")
+                        .and_then(|v| v.as_str())
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or("")
+                        .to_string();
+                    let email = profile
+                        .and_then(|p| p.get("email"))
+                        .and_then(|v| v.as_str())
+                        .filter(|s| !s.is_empty())
                         .unwrap_or("")
                         .to_string();
                     let pfp = ["image_192", "image_72", "image_48", "image_32", "image_24"]
@@ -646,10 +660,14 @@ impl SlackClientPool {
                         .get("updated")
                         .and_then(|v| v.as_u64().or_else(|| v.as_f64().map(|f| f as u64)))
                         .unwrap_or(0);
-                    let is_deleted = deleted || (display_name.is_empty() && !is_bot);
+                    let is_deleted =
+                        deleted || (display_name.is_empty() && real_name.is_empty() && !is_bot);
                     page_users.push(SlackUser {
                         id: id.to_string(),
                         display_name,
+                        real_name,
+                        username,
+                        email,
                         pfp,
                         updated,
                         is_bot,

@@ -66,19 +66,30 @@ pub async fn sync_users(slack_pool: &slack::SlackClientPool, pool: &sqlx::PgPool
                 std::collections::HashSet::new()
             }
         };
+    let missing_profiles: std::collections::HashSet<String> =
+        match db::postgres_db::get_user_ids_missing_profile(pool).await {
+            Ok(ids) => ids.into_iter().collect(),
+            Err(e) => {
+                tracing::warn!("Failed to get users missing profiles: {}", e);
+                std::collections::HashSet::new()
+            }
+        };
     tracing::info!(
-        "Syncing users from Slack ({} already stored, {} missing pfps)",
+        "Syncing users from Slack ({} already stored, {} missing pfps, {} missing profiles)",
         existing.len(),
-        missing_pfps.len()
+        missing_pfps.len(),
+        missing_profiles.len()
     );
     let existing = Arc::new(existing);
     let missing_pfps = Arc::new(missing_pfps);
+    let missing_profiles = Arc::new(missing_profiles);
     let changed_total = Arc::new(AtomicU64::new(0));
     let result = slack_pool
         .fetch_users(|batch| {
             let pool = pool.clone();
             let existing = existing.clone();
             let missing_pfps = missing_pfps.clone();
+            let missing_profiles = missing_profiles.clone();
             let changed_total = changed_total.clone();
             Box::pin(async move {
                 let changed: Vec<db::postgres_db::SlackUserRow> = batch
@@ -86,13 +97,27 @@ pub async fn sync_users(slack_pool: &slack::SlackClientPool, pool: &sqlx::PgPool
                     .filter(|u| {
                         u.is_deleted
                             || match existing.get(&u.id) {
-                                Some(prev) => *prev < u.updated || missing_pfps.contains(&u.id),
+                                Some(prev) => {
+                                    *prev < u.updated
+                                        || missing_pfps.contains(&u.id)
+                                        || missing_profiles.contains(&u.id)
+                                }
                                 None => true,
                             }
                     })
                     .map(|u| db::postgres_db::SlackUserRow {
                         user_id: u.id,
-                        display_name: u.display_name,
+                        merged_name: if !u.display_name.is_empty() {
+                            u.display_name.clone()
+                        } else if !u.real_name.is_empty() {
+                            u.real_name.clone()
+                        } else {
+                            u.username.clone()
+                        },
+                        display_name: u.display_name.clone(),
+                        real_name: u.real_name,
+                        username: u.username,
+                        email: u.email,
                         pfp: u.pfp,
                         updated: u.updated,
                         is_bot: u.is_bot as u8,
@@ -637,7 +662,11 @@ async fn upsert_bot_users(pool: &sqlx::PgPool, messages: &[slack::SlackMessage])
         .filter(|m| m.user.starts_with('B') && seen.insert(m.user.clone()))
         .map(|m| db::postgres_db::SlackUserRow {
             user_id: m.user.clone(),
-            display_name: m.bot_name.clone().unwrap_or_else(|| m.user.clone()),
+            merged_name: m.bot_name.clone().unwrap_or_else(|| m.user.clone()),
+            display_name: String::new(),
+            real_name: String::new(),
+            username: String::new(),
+            email: String::new(),
             pfp: String::new(),
             updated: 0,
             is_bot: 1,

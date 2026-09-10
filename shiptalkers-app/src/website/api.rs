@@ -169,7 +169,7 @@ pub async fn list_grants(State(state): State<AppState>, headers: HeaderMap) -> R
         .collect();
     if !ids.is_empty() {
         let found: Vec<(String, String)> =
-            sqlx::query_as("SELECT user_id, display_name FROM users WHERE user_id = ANY($1)")
+            sqlx::query_as("SELECT user_id, merged_name FROM users WHERE user_id = ANY($1)")
                 .bind(&ids)
                 .fetch_all(pool)
                 .await
@@ -184,7 +184,7 @@ pub async fn list_grants(State(state): State<AppState>, headers: HeaderMap) -> R
         .map(|(grantor_id, created_at)| {
             serde_json::json!({
                 "slack_id": grantor_id,
-                "display_name": names.get(&grantor_id).cloned().unwrap_or(grantor_id),
+                "merged_name": names.get(&grantor_id).cloned().unwrap_or(grantor_id),
                 "created_at": created_at,
             })
         })
@@ -350,7 +350,11 @@ fn bearer_token(headers: &HeaderMap) -> Option<String> {
 #[derive(Serialize)]
 struct UserStatsJson {
     slack_id: String,
+    merged_name: String,
     display_name: String,
+    real_name: String,
+    username: String,
+    email: String,
     pfp: String,
     is_bot: bool,
     is_deleted: bool,
@@ -384,14 +388,23 @@ async fn load_user_stats(
     pool: &crate::sqlx::PgPool,
     slack_id: &str,
 ) -> Result<UserStatsJson, String> {
-    let (display_name, pfp_url, is_bot, is_deleted): (String, String, i16, i16) = sqlx::query_as(
-        "SELECT display_name, pfp, is_bot, is_deleted FROM users WHERE user_id = $1",
+    let (merged_name, display_name, real_name, username, email, pfp_url, is_bot, is_deleted): (
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        i16,
+        i16,
+    ) = sqlx::query_as(
+        "SELECT merged_name, display_name, real_name, username, email, pfp, is_bot, is_deleted FROM users WHERE user_id = $1",
     )
     .bind(slack_id)
     .fetch_optional(pool)
     .await
     .map_err(|e| e.to_string())?
-    .unwrap_or(("".into(), "".into(), 0, 0));
+    .unwrap_or(("".into(), "".into(), "".into(), "".into(), "".into(), "".into(), 0, 0));
 
     let is_bot = is_bot == 1;
     let is_deleted = is_deleted == 1;
@@ -480,7 +493,7 @@ async fn load_user_stats(
         .collect();
 
     let total_messages = scores.as_ref().map(|s| s.messages).unwrap_or(0);
-    let found = total_messages > 0 || coding_minutes > 0 || !display_name.is_empty();
+    let found = total_messages > 0 || coding_minutes > 0 || !merged_name.is_empty();
 
     let leaderboard_rank: Option<i64> = if is_bot || is_deleted {
         None
@@ -506,7 +519,11 @@ async fn load_user_stats(
 
     Ok(UserStatsJson {
         slack_id: slack_id.to_string(),
+        merged_name,
         display_name,
+        real_name,
+        username,
+        email,
         pfp: super::local_pfp(slack_id, &pfp_url),
         is_bot,
         is_deleted,
@@ -752,7 +769,7 @@ pub async fn get_leaderboard(
         super::fetch_rank_window(pool, &inner, lo_hi.0, lo_hi.1).await
     };
 
-    let names = fetch_display_names(pool, &rows, &kind).await;
+    let names = fetch_merged_names(pool, &rows, &kind).await;
     let entries: Vec<serde_json::Value> = rows
         .into_iter()
         .map(|r| {
@@ -774,7 +791,7 @@ pub async fn get_leaderboard(
     .into_response()
 }
 
-async fn fetch_display_names(
+async fn fetch_merged_names(
     pool: &crate::sqlx::PgPool,
     rows: &[super::RankedRow],
     kind: &LeaderboardKind,
@@ -787,7 +804,7 @@ async fn fetch_display_names(
     match kind {
         LeaderboardKind::Users => {
             let found: Vec<(String, String)> =
-                sqlx::query_as("SELECT user_id, display_name FROM users WHERE user_id = ANY($1)")
+                sqlx::query_as("SELECT user_id, merged_name FROM users WHERE user_id = ANY($1)")
                     .bind(&ids)
                     .fetch_all(pool)
                     .await
@@ -844,7 +861,7 @@ struct ChannelStatsJson {
 #[derive(Serialize)]
 struct TopPosterJson {
     slack_id: String,
-    display_name: String,
+    merged_name: String,
     pfp: String,
     messages: i64,
 }
@@ -915,26 +932,26 @@ async fn load_channel_stats(
     let mut poster_names = std::collections::HashMap::new();
     if !name_ids.is_empty() {
         let found: Vec<(String, String, String)> =
-            sqlx::query_as("SELECT user_id, display_name, pfp FROM users WHERE user_id = ANY($1)")
+            sqlx::query_as("SELECT user_id, merged_name, pfp FROM users WHERE user_id = ANY($1)")
                 .bind(&name_ids)
                 .fetch_all(pool)
                 .await
                 .map_err(|e| e.to_string())?;
-        for (user_id, display_name, pfp) in found {
-            poster_names.insert(user_id, (display_name, pfp));
+        for (user_id, merged_name, pfp) in found {
+            poster_names.insert(user_id, (merged_name, pfp));
         }
     }
 
     let top_posters: Vec<TopPosterJson> = posters
         .into_iter()
         .map(|(user_id, messages)| {
-            let (display_name, pfp) = poster_names.get(&user_id).cloned().unwrap_or_default();
+            let (merged_name, pfp) = poster_names.get(&user_id).cloned().unwrap_or_default();
             TopPosterJson {
                 slack_id: user_id.clone(),
-                display_name: if display_name.is_empty() {
+                merged_name: if merged_name.is_empty() {
                     user_id.clone()
                 } else {
-                    display_name
+                    merged_name
                 },
                 pfp: super::local_pfp(&user_id, &pfp),
                 messages,
@@ -1050,9 +1067,9 @@ pub async fn get_search(
     }
     let pattern = format!("%{}%", q);
     let users: Vec<serde_json::Value> = sqlx::query_as::<_, (String, String, String, i16)>(
-        "SELECT user_id, display_name, pfp, is_deleted FROM users \
-         WHERE display_name ILIKE $1 OR user_id ILIKE $1 \
-         ORDER BY (display_name ILIKE $1) DESC, display_name \
+        "SELECT user_id, merged_name, pfp, is_deleted FROM users \
+         WHERE merged_name ILIKE $1 OR real_name ILIKE $1 OR username ILIKE $1 OR user_id ILIKE $1 \
+         ORDER BY (merged_name ILIKE $1) DESC, merged_name, real_name \
          LIMIT 25",
     )
     .bind(&pattern)
@@ -1060,10 +1077,10 @@ pub async fn get_search(
     .await
     .unwrap_or_default()
     .into_iter()
-    .map(|(slack_id, display_name, pfp, is_deleted)| {
+    .map(|(slack_id, merged_name, pfp, is_deleted)| {
         serde_json::json!({
             "slack_id": slack_id,
-            "display_name": display_name,
+            "merged_name": merged_name,
             "pfp": super::local_pfp(&slack_id, &pfp),
             "is_deleted": is_deleted == 1,
         })

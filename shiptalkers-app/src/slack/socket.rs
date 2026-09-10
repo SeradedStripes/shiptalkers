@@ -350,6 +350,8 @@ struct TeamJoin {
 #[derive(Debug, Deserialize)]
 struct JoinUser {
     id: String,
+    #[serde(default)]
+    name: String,
     profile: JoinProfile,
     updated: Option<f64>,
     is_bot: Option<bool>,
@@ -361,6 +363,10 @@ struct JoinProfile {
     #[serde(default)]
     display_name: String,
     #[serde(default)]
+    real_name: String,
+    #[serde(default)]
+    email: String,
+    #[serde(default)]
     image_192: String,
 }
 
@@ -369,17 +375,32 @@ async fn handle_team_join(_client: &Client, event: &serde_json::Value, pool: &sq
         return;
     };
 
-    let display_name = if join.user.profile.display_name.is_empty() {
-        join.user.id.clone()
+    let display_name = join.user.profile.display_name.clone();
+    let real_name = join.user.profile.real_name.clone();
+    let username = join.user.name.clone();
+    let merged_name = if display_name.is_empty() {
+        if real_name.is_empty() {
+            if username.is_empty() {
+                join.user.id.clone()
+            } else {
+                username.clone()
+            }
+        } else {
+            real_name.clone()
+        }
     } else {
-        join.user.profile.display_name.clone()
+        display_name.clone()
     };
 
-    tracing::info!("New user joined: @{} ({})", display_name, join.user.id);
+    tracing::info!("New user joined: @{} ({})", merged_name, join.user.id);
 
     let row = SlackUserRow {
         user_id: join.user.id,
+        merged_name,
         display_name,
+        real_name,
+        username,
+        email: join.user.profile.email,
         pfp: join.user.profile.image_192,
         updated: join.user.updated.unwrap_or(0.0) as u64,
         is_bot: u8::from(join.user.is_bot.unwrap_or(false)),
@@ -780,16 +801,16 @@ async fn has_coding_data(pool: &sqlx::PgPool, user: &str) -> bool {
 
 async fn user_display_name(pool: &sqlx::PgPool, user: &str) -> (String, bool) {
     let row: Option<(String, i16)> =
-        sqlx::query_as("SELECT display_name, is_deleted FROM users WHERE user_id = $1")
+        sqlx::query_as("SELECT merged_name, is_deleted FROM users WHERE user_id = $1")
             .bind(user)
             .fetch_optional(pool)
             .await
             .unwrap_or(None);
     match row {
-        Some((display_name, 1)) if display_name.is_empty() => (user.to_string(), true),
-        Some((display_name, is_deleted)) if !display_name.is_empty() => {
-            (display_name, is_deleted == 1)
+        Some((merged_name, is_deleted)) if !merged_name.is_empty() => {
+            (merged_name, is_deleted == 1)
         }
+        Some((_, 1)) => (user.to_string(), true),
         _ => (user.to_string(), false),
     }
 }

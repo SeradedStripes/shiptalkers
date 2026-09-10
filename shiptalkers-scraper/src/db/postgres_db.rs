@@ -291,6 +291,21 @@ pub async fn get_user_ids_without_pfp(
     Ok(rows)
 }
 
+// Non-bot, non-deleted users missing their full-name/handle fields, so the users.list sync re-fetches them even if Slack's `updated` timestamp hasn't moved
+// (e.g. right after the split of display_name into separate fields).
+pub async fn get_user_ids_missing_profile(
+    pool: &PgPool,
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    let rows: Vec<String> = sqlx::query_scalar(
+        "SELECT user_id FROM users \
+         WHERE is_bot = 0 AND is_deleted = 0 \
+           AND (real_name = '' OR username = '')",
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
 pub async fn get_max_message_ts(
     pool: &PgPool,
     channel_id: &str,

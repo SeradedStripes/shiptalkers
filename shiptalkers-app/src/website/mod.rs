@@ -139,7 +139,11 @@ pub struct Stats {
 #[derive(Template)]
 #[template(path = "user.html")]
 pub struct UserTemplate {
+    pub merged_name: String,
     pub display_name: String,
+    pub real_name: String,
+    pub username: String,
+    pub email: String,
     pub pfp: String,
     pub slack_id: String,
     pub deactivated: bool,
@@ -278,7 +282,7 @@ pub struct LeaderboardCategoryTemplate {
 
 pub struct LeaderboardEntry {
     pub user_id: String,
-    pub display_name: String,
+    pub merged_name: String,
     pub pfp: String,
     pub value: String,
     pub extra: String,
@@ -288,14 +292,14 @@ pub struct LeaderboardEntry {
 }
 
 pub struct SearchResult {
-    pub display_name: String,
+    pub merged_name: String,
     pub pfp: String,
     pub user_id: String,
     pub deactivated: bool,
 }
 
 pub struct UserStats {
-    pub display_name: String,
+    pub merged_name: String,
     pub pfp: String,
     pub user_id: String,
     pub messages: String,
@@ -542,9 +546,9 @@ async fn get_search(
         (Some(pool), false) => {
             let pattern = format!("%{}%", query.trim());
             sqlx::query_as::<_, (String, String, String, i16)>(
-                "SELECT user_id, display_name, pfp, is_deleted FROM users
-                 WHERE display_name ILIKE $1 OR user_id ILIKE $1
-                 ORDER BY (display_name ILIKE $1) DESC, display_name
+                "SELECT user_id, merged_name, pfp, is_deleted FROM users
+                 WHERE merged_name ILIKE $1 OR real_name ILIKE $1 OR username ILIKE $1 OR user_id ILIKE $1
+                 ORDER BY (merged_name ILIKE $1) DESC, merged_name, real_name
                  LIMIT 25",
             )
             .bind(&pattern)
@@ -552,11 +556,11 @@ async fn get_search(
             .await
             .unwrap_or_default()
             .into_iter()
-            .map(|(user_id, display_name, pfp, is_deleted)| SearchResult {
-                display_name: if display_name.is_empty() {
+            .map(|(user_id, merged_name, pfp, is_deleted)| SearchResult {
+                merged_name: if merged_name.is_empty() {
                     user_id.clone()
                 } else {
-                    display_name
+                    merged_name
                 },
                 pfp: local_pfp(&user_id, &pfp),
                 user_id,
@@ -582,7 +586,7 @@ async fn get_search(
             .unwrap_or_default()
             .into_iter()
             .map(|(channel_id, name)| SearchResult {
-                display_name: name,
+                merged_name: name,
                 pfp: String::new(),
                 user_id: channel_id,
                 deactivated: false,
@@ -738,8 +742,8 @@ fn resolve_user_sql(inner: &str, q: &str) -> String {
     format!(
         "SELECT u.user_id AS id FROM users AS u \
          JOIN ({inner}) lb ON u.user_id = lb.id \
-         WHERE lower(u.display_name) LIKE '%{eq}%' \
-         ORDER BY (lower(u.display_name) = '{eq}') DESC, lb.rank, lower(u.display_name) \
+         WHERE lower(u.merged_name) LIKE '%{eq}%' \
+         ORDER BY (lower(u.merged_name) = '{eq}') DESC, lb.rank, lower(u.merged_name) \
          LIMIT 1"
     )
 }
@@ -928,7 +932,7 @@ async fn get_leaderboard_category(
                 .into_iter()
                 .map(|r| LeaderboardEntry {
                     user_id: r.id.clone(),
-                    display_name: r.id,
+                    merged_name: r.id,
                     pfp: String::new(),
                     value: fmt_thousands(r.value.max(0) as u64),
                     extra: String::new(),
@@ -1004,14 +1008,14 @@ async fn leaderboard_entries(
     } else {
         match source {
             LeaderboardSource::Users => sqlx::query_as::<_, (String, String, String)>(
-                "SELECT user_id, display_name, pfp FROM users WHERE user_id = ANY($1)",
+                "SELECT user_id, merged_name, pfp FROM users WHERE user_id = ANY($1)",
             )
             .bind(&name_ids)
             .fetch_all(ch)
             .await
             .unwrap_or_default()
             .into_iter()
-            .map(|(user_id, display_name, pfp)| (user_id, (display_name, pfp)))
+            .map(|(user_id, merged_name, pfp)| (user_id, (merged_name, pfp)))
             .collect(),
             LeaderboardSource::Channels => sqlx::query_as::<_, (String, String)>(
                 "SELECT channel_id, name FROM slack_channels WHERE channel_id = ANY($1)",
@@ -1029,13 +1033,13 @@ async fn leaderboard_entries(
     rows.into_iter()
         .map(|r| {
             let value = r.value.max(0) as u64;
-            let (display_name, pfp) = names.get(&r.id).cloned().unwrap_or_default();
+            let (merged_name, pfp) = names.get(&r.id).cloned().unwrap_or_default();
             LeaderboardEntry {
                 user_id: r.id.clone(),
-                display_name: if display_name.is_empty() {
+                merged_name: if merged_name.is_empty() {
                     r.id.clone()
                 } else {
-                    display_name
+                    merged_name
                 },
                 pfp: local_pfp(&r.id, &pfp),
                 value: format_value(value),
@@ -1086,30 +1090,56 @@ async fn get_user_stats(
 
     #[derive(Debug)]
     struct UserInfo {
+        merged_name: String,
         display_name: String,
+        real_name: String,
+        username: String,
+        email: String,
         pfp: String,
         is_bot: bool,
         is_deleted: bool,
     }
-    let info: Option<UserInfo> = sqlx::query_as::<_, (String, String, i16, i16)>(
-        "SELECT display_name, pfp, is_bot, is_deleted FROM users WHERE user_id = $1",
-    )
-    .bind(slack_id)
-    .fetch_optional(ch)
-    .await
-    .unwrap_or(None)
-    .map(|(display_name, pfp, is_bot, is_deleted)| UserInfo {
-        display_name,
-        pfp,
-        is_bot: is_bot == 1,
-        is_deleted: is_deleted == 1,
-    });
+    let info: Option<UserInfo> =
+        sqlx::query_as::<_, (String, String, String, String, String, String, i16, i16)>(
+            "SELECT merged_name, display_name, real_name, username, email, pfp, is_bot, is_deleted FROM users WHERE user_id = $1",
+        )
+        .bind(slack_id)
+        .fetch_optional(ch)
+        .await
+        .unwrap_or(None)
+        .map(
+            |(merged_name, display_name, real_name, username, email, pfp, is_bot, is_deleted)| {
+                UserInfo {
+                    merged_name,
+                    display_name,
+                    real_name,
+                    username,
+                    email,
+                    pfp,
+                    is_bot: is_bot == 1,
+                    is_deleted: is_deleted == 1,
+                }
+            },
+        );
     let is_bot = info.as_ref().map(|i| i.is_bot).unwrap_or(false);
     let is_deleted = info.as_ref().map(|i| i.is_deleted).unwrap_or(false);
+    let merged_name = info
+        .as_ref()
+        .map(|i| i.merged_name.clone())
+        .unwrap_or_default();
     let display_name = info
         .as_ref()
         .map(|i| i.display_name.clone())
         .unwrap_or_default();
+    let real_name = info
+        .as_ref()
+        .map(|i| i.real_name.clone())
+        .unwrap_or_default();
+    let username = info
+        .as_ref()
+        .map(|i| i.username.clone())
+        .unwrap_or_default();
+    let email = info.as_ref().map(|i| i.email.clone()).unwrap_or_default();
     let pfp_url = info.as_ref().map(|i| i.pfp.clone()).unwrap_or_default();
     let pfp = local_pfp(slack_id, &pfp_url);
 
@@ -1198,7 +1228,7 @@ async fn get_user_stats(
         .collect();
 
     let total_messages = scores.as_ref().map(|s| s.messages).unwrap_or(0);
-    let found = total_messages > 0 || coding_minutes > 0 || !display_name.is_empty();
+    let found = total_messages > 0 || coding_minutes > 0 || !merged_name.is_empty();
 
     let (slack_time_total, slack_time_avg, slack_time_longest, slack_time_per_day, active_hour) =
         match scores.as_ref() {
@@ -1246,11 +1276,15 @@ async fn get_user_stats(
     };
 
     let template = UserTemplate {
-        display_name: if display_name.is_empty() {
+        merged_name: if merged_name.is_empty() {
             slack_id.to_string()
         } else {
-            display_name
+            merged_name
         },
+        display_name,
+        real_name,
+        username,
+        email,
         pfp,
         slack_id: slack_id.to_string(),
         deactivated: is_deleted,
@@ -1353,18 +1387,18 @@ async fn get_channel_stats(
         std::collections::HashMap::new()
     } else {
         sqlx::query_as::<_, (String, String, String, i16)>(
-            "SELECT user_id, display_name, pfp, is_deleted FROM users WHERE user_id = ANY($1)",
+            "SELECT user_id, merged_name, pfp, is_deleted FROM users WHERE user_id = ANY($1)",
         )
         .bind(&name_ids)
         .fetch_all(ch)
         .await
         .unwrap_or_default()
         .into_iter()
-        .map(|(user_id, display_name, pfp, _)| {
-            let label = if display_name.is_empty() {
+        .map(|(user_id, merged_name, pfp, _)| {
+            let label = if merged_name.is_empty() {
                 user_id.clone()
             } else {
-                display_name
+                merged_name
             };
             (user_id, (label, pfp))
         })
@@ -1374,13 +1408,13 @@ async fn get_channel_stats(
     let top_posters: Vec<UserStats> = posters
         .into_iter()
         .map(|(user_id, messages)| {
-            let (display_name, pfp) = poster_names.get(&user_id).cloned().unwrap_or_default();
+            let (merged_name, pfp) = poster_names.get(&user_id).cloned().unwrap_or_default();
             UserStats {
                 user_id: user_id.clone(),
-                display_name: if display_name.is_empty() {
+                merged_name: if merged_name.is_empty() {
                     user_id.clone()
                 } else {
-                    display_name
+                    merged_name
                 },
                 pfp: local_pfp(&user_id, &pfp),
                 messages: fmt_thousands(messages.max(0) as u64),

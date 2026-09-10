@@ -113,8 +113,8 @@ async fn link_html(
     };
     let name = match (&session, state.pool()) {
         (Some(s), Ok(pool)) => {
-            let display_name: String = sqlx::query_scalar::<_, Option<String>>(
-                "SELECT display_name FROM users WHERE user_id = $1",
+            let merged_name: String = sqlx::query_scalar::<_, Option<String>>(
+                "SELECT merged_name FROM users WHERE user_id = $1",
             )
             .bind(&s.slack_id)
             .fetch_one(pool)
@@ -122,10 +122,10 @@ async fn link_html(
             .ok()
             .flatten()
             .unwrap_or_default();
-            if display_name.is_empty() {
+            if merged_name.is_empty() {
                 s.name.clone()
             } else {
-                display_name
+                merged_name
             }
         }
         (Some(s), Err(_)) => s.name.clone(),

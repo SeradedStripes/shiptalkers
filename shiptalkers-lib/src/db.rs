@@ -11,7 +11,11 @@ pub struct SlackChannelRow {
 #[derive(Debug, Clone)]
 pub struct SlackUserRow {
     pub user_id: String,
+    pub merged_name: String,
     pub display_name: String,
+    pub real_name: String,
+    pub username: String,
+    pub email: String,
     pub pfp: String,
     pub updated: u64,
     pub is_bot: u8,
@@ -83,7 +87,11 @@ pub async fn init_tables(pool: &PgPool) -> Result<(), Box<dyn std::error::Error>
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS users (
             user_id TEXT PRIMARY KEY,
+            merged_name TEXT NOT NULL DEFAULT '',
             display_name TEXT NOT NULL DEFAULT '',
+            real_name TEXT NOT NULL DEFAULT '',
+            username TEXT NOT NULL DEFAULT '',
+            email TEXT NOT NULL DEFAULT '',
             pfp TEXT NOT NULL DEFAULT '',
             updated BIGINT NOT NULL DEFAULT 0,
             is_bot SMALLINT NOT NULL DEFAULT 0,
@@ -92,6 +100,34 @@ pub async fn init_tables(pool: &PgPool) -> Result<(), Box<dyn std::error::Error>
     )
     .execute(pool)
     .await?;
+    // Keep deploying on pre-merged_name schemas: rename the old merged display_name column and add the separated profile fields. 
+    // The scraper's users.list sync backfills real_name/username/email on its next pass.
+    sqlx::query(
+        "DO $$
+         BEGIN
+             IF EXISTS (SELECT 1 FROM information_schema.columns
+                        WHERE table_name = 'users' AND column_name = 'display_name')
+             AND NOT EXISTS (SELECT 1 FROM information_schema.columns
+                             WHERE table_name = 'users' AND column_name = 'merged_name') THEN
+                 ALTER TABLE users RENAME COLUMN display_name TO merged_name;
+             END IF;
+         END
+         $$",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query("ALTER TABLE users ADD COLUMN IF NOT EXISTS display_name TEXT NOT NULL DEFAULT ''")
+        .execute(pool)
+        .await?;
+    sqlx::query("ALTER TABLE users ADD COLUMN IF NOT EXISTS real_name TEXT NOT NULL DEFAULT ''")
+        .execute(pool)
+        .await?;
+    sqlx::query("ALTER TABLE users ADD COLUMN IF NOT EXISTS username TEXT NOT NULL DEFAULT ''")
+        .execute(pool)
+        .await?;
+    sqlx::query("ALTER TABLE users ADD COLUMN IF NOT EXISTS email TEXT NOT NULL DEFAULT ''")
+        .execute(pool)
+        .await?;
 
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS scrape_checkpoints (
@@ -390,7 +426,7 @@ pub async fn insert_new_channels_rows(
     Ok(count)
 }
 
-/// Upserts Slack users, refreshing name/avatar/updated/flags on conflict.
+/// Upserts Slack users, refreshing profile fields on conflict.
 /// Used by the scraper's `users.list` sync and the app's `team_join` handler.
 pub async fn upsert_users(
     pool: &PgPool,
@@ -401,17 +437,21 @@ pub async fn upsert_users(
     }
     for chunk in users.chunks(INSERT_CHUNK) {
         let mut sql = String::from(
-            "INSERT INTO users (user_id, display_name, pfp, updated, is_bot, is_deleted) VALUES ",
+            "INSERT INTO users (user_id, merged_name, display_name, real_name, username, email, pfp, updated, is_bot, is_deleted) VALUES ",
         );
-        sql.push_str(&placeholders(chunk.len(), 6));
+        sql.push_str(&placeholders(chunk.len(), 9));
         sql.push_str(
-            " ON CONFLICT (user_id) DO UPDATE SET display_name = EXCLUDED.display_name, pfp = EXCLUDED.pfp, updated = EXCLUDED.updated, is_bot = EXCLUDED.is_bot, is_deleted = EXCLUDED.is_deleted",
+            " ON CONFLICT (user_id) DO UPDATE SET merged_name = EXCLUDED.merged_name, display_name = EXCLUDED.display_name, real_name = EXCLUDED.real_name, username = EXCLUDED.username, email = EXCLUDED.email, pfp = EXCLUDED.pfp, updated = EXCLUDED.updated, is_bot = EXCLUDED.is_bot, is_deleted = EXCLUDED.is_deleted",
         );
         let mut q = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()));
         for u in chunk {
             q = q
                 .bind(&u.user_id)
+                .bind(&u.merged_name)
                 .bind(&u.display_name)
+                .bind(&u.real_name)
+                .bind(&u.username)
+                .bind(&u.email)
                 .bind(&u.pfp)
                 .bind(u.updated as i64)
                 .bind(u.is_bot as i16)
