@@ -11,29 +11,29 @@
     {% include "header.html" %}
     <div class="container">
         {% if found %}
-        <div class="profile-head">
-            {% if !pfp.is_empty() %}
-            <img class="avatar avatar-large" src="{{ pfp }}" alt="{{ merged_name }}">
-            {% endif %}
-            <div>
-                <h1>{{ merged_name }}{% if deactivated %} <span class="deactivated">[DEACTIVATED]</span>{% endif %}</h1>
-                <p>{{ slack_id }}</p>
+        <div class="member-card">
+            <div class="member-top">
+                {% if !pfp.is_empty() %}
+                <img class="avatar member-avatar" src="{{ pfp }}" alt="{{ merged_name }}">
+                {% endif %}
+                <div>
+                    <h1>{{ merged_name }}{% if deactivated %} <span class="deactivated">[DEACTIVATED]</span>{% endif %}</h1>
+                    {% if !username.is_empty() %}<p class="member-handle">@{{ username }}</p>{% endif %}
+                </div>
+            </div>
+            <div class="member-details">
+                {% if !email.is_empty() %}
+                <div class="member-row"><span class="member-label">Email</span><a href="mailto:{{ email }}">{{ email }}</a></div>
+                {% endif %}
+                {% if !real_name.is_empty() %}
+                <div class="member-row"><span class="member-label">Full name</span>{{ real_name }}</div>
+                {% endif %}
+                {% if !display_name.is_empty() %}
+                <div class="member-row"><span class="member-label">Display name</span>{{ display_name }}</div>
+                {% endif %}
+                <div class="member-row"><span class="member-label">Slack ID</span>{{ slack_id }}</div>
             </div>
         </div>
-
-        {% if !real_name.is_empty() || !username.is_empty() || !display_name.is_empty() || !email.is_empty() %}
-        <div class="table-card">
-            <h2>Profile</h2>
-            <table>
-                <tbody>
-                    {% if !real_name.is_empty() %}<tr><td>Full name</td><td>{{ real_name }}</td></tr>{% endif %}
-                    {% if !username.is_empty() %}<tr><td>Username</td><td>@{{ username }}</td></tr>{% endif %}
-                    {% if !display_name.is_empty() %}<tr><td>Display name</td><td>{{ display_name }}</td></tr>{% endif %}
-                    {% if !email.is_empty() %}<tr><td>Email</td><td>{{ email }}</td></tr>{% endif %}
-                </tbody>
-            </table>
-        </div>
-        {% endif %}
 
         {% if show_coding_prompt %}
         <div class="card">

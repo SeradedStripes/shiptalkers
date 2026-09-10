@@ -124,10 +124,31 @@ table a:hover { text-decoration: underline; }
 
 .user-cell { display: inline-flex; align-items: center; gap: 0.6rem; }
 .avatar { width: 32px; height: 32px; border-radius: 50%; background: #262626; object-fit: cover; }
-.profile-head { display: flex; align-items: center; gap: 1.25rem; margin-bottom: 1rem; }
-.profile-head h1 { margin-bottom: 0; }
-.profile-head p { margin-bottom: 0; }
-.avatar-large { width: 96px; height: 96px; }
+
+.member-card { background: #1a1a1a; border-radius: 12px; padding: 2rem; margin-bottom: 2rem; }
+.member-top { display: flex; align-items: center; gap: 1.25rem; margin-bottom: 1.5rem; }
+.member-avatar { width: 112px; height: 112px; }
+.member-card h1 { margin-bottom: 0.25rem; font-size: 2rem; }
+.member-handle { color: #888; font-size: 1.05rem; }
+.member-details { border-top: 1px solid #262626; }
+.member-row {
+    display: flex;
+    gap: 1rem;
+    padding: 0.85rem 0;
+    border-bottom: 1px solid #262626;
+    font-size: 0.95rem;
+}
+.member-row:last-child { border-bottom: none; }
+.member-label {
+    flex: 0 0 140px;
+    color: #888;
+    text-transform: uppercase;
+    font-size: 0.75rem;
+    letter-spacing: 0.04em;
+    padding-top: 0.15rem;
+}
+.member-row a { color: #f472b6; text-decoration: none; }
+.member-row a:hover { text-decoration: underline; }
 
 .live { display: inline-block; width: 8px; height: 8px; background: #22c55e; border-radius: 50%; margin-right: 0.5rem; animation: pulse 2s infinite; }
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
