@@ -38,6 +38,8 @@ pub struct SlackMessage {
 pub struct SlackChannel {
     pub id: String,
     pub name: String,
+    pub is_archived: bool,
+    pub num_members: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -551,7 +553,7 @@ impl SlackClientPool {
 
             let mut params = vec![
                 ("types".to_string(), "public_channel".to_string()),
-                ("limit".to_string(), "200".to_string()),
+                ("limit".to_string(), "1000".to_string()),
             ];
             if let Some(ref c) = cursor {
                 params.push(("cursor".to_string(), c.clone()));
@@ -566,6 +568,14 @@ impl SlackClientPool {
                         page_channels.push(SlackChannel {
                             id: id.as_str().unwrap_or_default().to_string(),
                             name: name.as_str().unwrap_or_default().to_string(),
+                            is_archived: ch
+                                .get("is_archived")
+                                .and_then(|v| v.as_bool())
+                                .unwrap_or(false),
+                            num_members: ch
+                                .get("num_members")
+                                .and_then(|v| v.as_u64())
+                                .unwrap_or(0),
                         });
                     }
                 }

@@ -1,5 +1,6 @@
 use crate::sqlx;
 use crate::sqlx::PgPool;
+use crate::sqlx::Row;
 use std::collections::HashMap;
 
 pub use ship_talkers_lib::db::{
@@ -410,6 +411,47 @@ pub async fn mark_fully_scraped(
     .execute(pool)
     .await?;
     Ok(())
+}
+
+pub async fn clear_fully_scraped(
+    pool: &PgPool,
+    channel_id: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    sqlx::query("UPDATE scrape_checkpoints SET fully_scraped = 0 WHERE channel_id = $1")
+        .bind(channel_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+pub async fn get_archived_channel_ids(
+    pool: &PgPool,
+    channel_ids: &[String],
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    if channel_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let rows = sqlx::query(
+        "SELECT channel_id FROM slack_channels WHERE channel_id = ANY($1) AND is_archived = 1",
+    )
+    .bind(channel_ids)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(|r| r.get(0)).collect())
+}
+
+pub async fn get_archived_scraped_channel_ids(
+    pool: &PgPool,
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    let rows = sqlx::query(
+        "SELECT c.channel_id
+         FROM slack_channels c
+         JOIN scrape_checkpoints s ON s.channel_id = c.channel_id
+         WHERE c.is_archived = 1 AND s.fully_scraped = 1",
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(|r| r.get(0)).collect())
 }
 
 pub async fn is_thread_fully_scraped(

@@ -15,7 +15,6 @@ use std::time::{Duration, Instant};
 pub fn insert_page(
     pool: sqlx::PgPool,
     page: Vec<slack::SlackChannel>,
-    known_channels: Arc<Mutex<std::collections::HashSet<String>>>,
 ) -> Pin<Box<dyn Future<Output = ()> + Send>> {
     Box::pin(async move {
         let rows: Vec<db::postgres_db::SlackChannelRow> = page
@@ -23,29 +22,50 @@ pub fn insert_page(
             .map(|ch| db::postgres_db::SlackChannelRow {
                 channel_id: ch.id.clone(),
                 name: ch.name.clone(),
+                is_archived: u8::from(ch.is_archived),
+                num_members: ch.num_members,
             })
             .collect();
-
-        let new_rows: Vec<_> = {
-            let mut guard = known_channels.lock().unwrap();
-            rows.into_iter()
-                .filter(|ch| guard.insert(ch.channel_id.clone()))
-                .collect()
-        };
-
-        if new_rows.is_empty() {
+        if rows.is_empty() {
             return;
         }
 
+        let ids: Vec<String> = rows.iter().map(|r| r.channel_id.clone()).collect();
+        let previously_archived = match db::postgres_db::get_archived_channel_ids(&pool, &ids).await
+        {
+            Ok(ids) => Some(ids),
+            Err(_) => {
+                tracing::warn!("Failed to read channel archive state");
+                None
+            }
+        };
+
         match tokio::time::timeout(
             Duration::from_secs(120),
-            db::postgres_db::insert_new_channels_rows(&pool, &new_rows),
+            db::postgres_db::insert_new_channels_rows(&pool, &rows),
         )
         .await
         {
             Ok(Ok(_)) => {}
             Ok(Err(e)) => tracing::error!("Failed to insert channels: {}", e),
             Err(_) => tracing::error!("Failed to insert channels: timed out after 2m"),
+        }
+
+        // An archived channel that came back needs a full re-scrape, not an incremental one.
+        let Some(previously_archived) = previously_archived else {
+            return;
+        };
+        for row in &rows {
+            if row.is_archived == 0
+                && previously_archived.contains(&row.channel_id)
+                && let Err(e) = db::postgres_db::clear_fully_scraped(&pool, &row.channel_id).await
+            {
+                tracing::warn!(
+                    "Failed to clear fully-scraped for unarchived channel {}: {}",
+                    row.channel_id,
+                    e
+                );
+            }
         }
     })
 }
@@ -262,6 +282,16 @@ async fn scrape_all_messages(settings: &settings::RuntimeSettings, pool: &sqlx::
     };
     let scraped_set: std::collections::HashSet<&String> = scraped.iter().collect();
 
+    // Archive+fully-scraped channels are skipped: their history is frozen.
+    let skip_archived: std::collections::HashSet<String> =
+        match db::postgres_db::get_archived_scraped_channel_ids(pool).await {
+            Ok(ids) => ids.into_iter().collect(),
+            Err(e) => {
+                tracing::warn!("Failed to get archived scraped channel IDs: {}", e);
+                std::collections::HashSet::new()
+            }
+        };
+
     let new_channels: Vec<String> = channels
         .iter()
         .filter(|c| !scraped_set.contains(c))
@@ -269,15 +299,16 @@ async fn scrape_all_messages(settings: &settings::RuntimeSettings, pool: &sqlx::
         .collect();
     let check_channels: Vec<String> = channels
         .iter()
-        .filter(|c| scraped_set.contains(c))
+        .filter(|c| scraped_set.contains(c) && !skip_archived.contains(*c))
         .cloned()
         .collect();
 
     tracing::info!(
-        "{} known channels: {} new to full-scrape, {} already-scraped to check for new messages",
+        "{} known channels: {} new to full-scrape, {} already-scraped to check for new messages (skipping {} archived fully-scraped)",
         channels.len(),
         new_channels.len(),
-        check_channels.len()
+        check_channels.len(),
+        skip_archived.len()
     );
 
     let touched_users = Arc::new(Mutex::new(std::collections::HashSet::new()));
@@ -1360,21 +1391,9 @@ async fn full_fetch(
     slack_pool: &slack::SlackClientPool,
     pool: &sqlx::PgPool,
 ) -> Result<(), String> {
-    let known = match db::postgres_db::get_known_channel_ids(pool).await {
-        Ok(ids) => ids.into_iter().collect(),
-        Err(e) => {
-            tracing::warn!("Failed to pre-fetch known channel IDs: {}", e);
-            std::collections::HashSet::new()
-        }
-    };
-    let known_channels = Arc::new(Mutex::new(known));
     let pool_for_fetch = pool.clone();
-    let kc = known_channels;
     let total = slack_pool
-        .fetch_channels_paginated(
-            move |page| insert_page(pool_for_fetch.clone(), page, kc.clone()),
-            None,
-        )
+        .fetch_channels_paginated(move |page| insert_page(pool_for_fetch.clone(), page), None)
         .await
         .map_err(|e| e.to_string())?;
 

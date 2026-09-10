@@ -333,6 +333,8 @@ async fn handle_channel_created(_client: &Client, event: &serde_json::Value, poo
     let row = SlackChannelRow {
         channel_id: created.channel.id,
         name: created.channel.name,
+        is_archived: 0,
+        num_members: 0,
     };
 
     if let Err(e) =

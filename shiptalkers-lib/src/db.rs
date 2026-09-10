@@ -6,6 +6,8 @@ pub const INSERT_CHUNK: usize = 500;
 pub struct SlackChannelRow {
     pub channel_id: String,
     pub name: String,
+    pub is_archived: u8,
+    pub num_members: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -88,8 +90,22 @@ pub async fn init_tables(pool: &PgPool) -> Result<(), Box<dyn std::error::Error>
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS slack_channels (
             channel_id TEXT PRIMARY KEY,
-            name TEXT NOT NULL DEFAULT ''
+            name TEXT NOT NULL DEFAULT '',
+            is_archived SMALLINT NOT NULL DEFAULT 0,
+            num_members BIGINT NOT NULL DEFAULT 0
         )",
+    )
+    .execute(pool)
+    .await?;
+
+    // Migrate pre-existing slack_channels rows
+    sqlx::query(
+        "ALTER TABLE slack_channels ADD COLUMN IF NOT EXISTS is_archived SMALLINT NOT NULL DEFAULT 0",
+    )
+        .execute(pool)
+        .await?;
+    sqlx::query(
+        "ALTER TABLE slack_channels ADD COLUMN IF NOT EXISTS num_members BIGINT NOT NULL DEFAULT 0",
     )
     .execute(pool)
     .await?;
@@ -466,12 +482,20 @@ pub async fn insert_new_channels_rows(
     }
     let count = channels.len() as u64;
     for chunk in channels.chunks(INSERT_CHUNK) {
-        let mut sql = String::from("INSERT INTO slack_channels (channel_id, name) VALUES ");
-        sql.push_str(&placeholders(chunk.len(), 2));
-        sql.push_str(" ON CONFLICT (channel_id) DO UPDATE SET name = EXCLUDED.name");
+        let mut sql = String::from(
+            "INSERT INTO slack_channels (channel_id, name, is_archived, num_members) VALUES ",
+        );
+        sql.push_str(&placeholders(chunk.len(), 4));
+        sql.push_str(
+            " ON CONFLICT (channel_id) DO UPDATE SET name = EXCLUDED.name, is_archived = EXCLUDED.is_archived, num_members = EXCLUDED.num_members",
+        );
         let mut q = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()));
         for ch in chunk {
-            q = q.bind(&ch.channel_id).bind(&ch.name);
+            q = q
+                .bind(&ch.channel_id)
+                .bind(&ch.name)
+                .bind(ch.is_archived as i16)
+                .bind(ch.num_members as i64);
         }
         q.execute(pool).await?;
     }
