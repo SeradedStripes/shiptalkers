@@ -17,6 +17,7 @@ fn renders_valid_png() {
         other: "Coding",
         slack_time: "12h 30m",
         coding_time: "8h 45m",
+        deactivated: false,
     };
     let png = render_stats_image(&s).expect("render");
     assert!(png.starts_with(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]));
@@ -35,6 +36,7 @@ fn renders_valid_png_with_long_name() {
         other: "Coding",
         slack_time: "12h 30m",
         coding_time: "8h 45m",
+        deactivated: false,
     };
     let png = render_stats_image(&s).expect("render");
     assert!(png.starts_with(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]));

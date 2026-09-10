@@ -16,7 +16,7 @@
             <img class="avatar avatar-large" src="{{ pfp }}" alt="{{ display_name }}">
             {% endif %}
             <div>
-                <h1>{{ display_name }}</h1>
+                <h1>{{ display_name }}{% if deactivated %} <span class="deactivated">[DEACTIVATED]</span>{% endif %}</h1>
                 <p>{{ slack_id }}</p>
             </div>
         </div>

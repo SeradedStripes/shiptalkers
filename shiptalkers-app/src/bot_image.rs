@@ -27,6 +27,7 @@ pub struct StatsImage<'a> {
     pub other: &'a str,
     pub slack_time: &'a str,
     pub coding_time: &'a str,
+    pub deactivated: bool,
 }
 
 #[derive(Template)]
@@ -38,6 +39,7 @@ struct StatsTemplate<'a> {
     other: &'a str,
     slack_time: &'a str,
     coding_time: &'a str,
+    deactivated: bool,
     user_font_size: u32,
     css: &'static str,
 }
@@ -65,6 +67,11 @@ pub fn fit_font_size(text: &str) -> u32 {
 }
 
 pub fn render_stats_image(s: &StatsImage) -> Result<Vec<u8>, String> {
+    let full_name = if s.deactivated {
+        format!("{} [DEACTIVATED]", s.user)
+    } else {
+        s.user.to_string()
+    };
     let t = StatsTemplate {
         user: s.user,
         percent: s.percent,
@@ -72,7 +79,8 @@ pub fn render_stats_image(s: &StatsImage) -> Result<Vec<u8>, String> {
         other: s.other,
         slack_time: s.slack_time,
         coding_time: s.coding_time,
-        user_font_size: fit_font_size(s.user),
+        deactivated: s.deactivated,
+        user_font_size: fit_font_size(&full_name),
         css: CSS,
     };
     render_svg_template(&t)
@@ -81,6 +89,7 @@ pub fn render_stats_image(s: &StatsImage) -> Result<Vec<u8>, String> {
 pub struct SlackOnlyImage<'a> {
     pub user: &'a str,
     pub slack_time: &'a str,
+    pub deactivated: bool,
 }
 
 #[derive(Template)]
@@ -88,15 +97,22 @@ pub struct SlackOnlyImage<'a> {
 struct SlackOnlyTemplate<'a> {
     user: &'a str,
     slack_time: &'a str,
+    deactivated: bool,
     user_font_size: u32,
     css: &'static str,
 }
 
 pub fn render_slack_only_image(s: &SlackOnlyImage) -> Result<Vec<u8>, String> {
+    let full_name = if s.deactivated {
+        format!("{} [DEACTIVATED]", s.user)
+    } else {
+        s.user.to_string()
+    };
     let t = SlackOnlyTemplate {
         user: s.user,
         slack_time: s.slack_time,
-        user_font_size: fit_font_size(s.user),
+        deactivated: s.deactivated,
+        user_font_size: fit_font_size(&full_name),
         css: CSS,
     };
     render_svg_template(&t)

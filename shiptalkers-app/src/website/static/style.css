@@ -35,6 +35,8 @@ body.channel .container { max-width: 1000px; }
 body.leaderboard .container { max-width: 1000px; }
 body.search .container { max-width: 700px; }
 
+.deactivated { color: #ff4d4f; font-weight: 700; }
+
 .search { display: flex; gap: 0.5rem; }
 .search input {
     flex: 1;

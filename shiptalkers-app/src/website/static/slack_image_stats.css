@@ -1,5 +1,6 @@
 .bg { fill: #0f0f0f; }
 .user { fill: #ffffff; font-family: "DejaVu Sans"; font-size: 40px; font-weight: bold; }
+.user .deact { fill: #ff4d4f; }
 .headline { fill: #ffffff; font-family: "DejaVu Sans"; font-size: 24px; }
 .pct { fill: #f472b6; font-weight: bold; }
 .card { fill: #1c1c1c; }

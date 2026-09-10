@@ -3,7 +3,7 @@
   {{ css }}
   </style>
   <rect class="bg" x="0" y="0" width="640" height="420" rx="28"/>
-  <text class="user" x="320" y="80" text-anchor="middle" style="font-size: {{ user_font_size }}px">{{ user }}</text>
+  <text class="user" x="320" y="80" text-anchor="middle" style="font-size: {{ user_font_size }}px">{{ user }}{% if deactivated %}<tspan class="deact"> [DEACTIVATED]</tspan>{% endif %}</text>
   <text class="headline" x="320" y="142" text-anchor="middle">Spends <tspan class="pct">{{ percent }}%</tspan> more time</text>
   <text class="headline" x="320" y="180" text-anchor="middle">on {{ more }} than {{ other }}</text>
   <rect class="card" x="40" y="220" width="260" height="150" rx="20"/>

@@ -142,6 +142,7 @@ pub struct UserTemplate {
     pub display_name: String,
     pub pfp: String,
     pub slack_id: String,
+    pub deactivated: bool,
     pub total_messages: String,
     pub coding_hours: String,
     pub channels: String,
@@ -290,6 +291,7 @@ pub struct SearchResult {
     pub display_name: String,
     pub pfp: String,
     pub user_id: String,
+    pub deactivated: bool,
 }
 
 pub struct UserStats {
@@ -551,13 +553,14 @@ async fn get_search(
             .unwrap_or_default()
             .into_iter()
             .map(|(user_id, display_name, pfp, is_deleted)| SearchResult {
-                display_name: if is_deleted == 1 {
-                    "Deleted account".to_string()
+                display_name: if display_name.is_empty() {
+                    user_id.clone()
                 } else {
                     display_name
                 },
                 pfp: local_pfp(&user_id, &pfp),
                 user_id,
+                deactivated: is_deleted == 1,
             })
             .collect()
         }
@@ -582,6 +585,7 @@ async fn get_search(
                 display_name: name,
                 pfp: String::new(),
                 user_id: channel_id,
+                deactivated: false,
             })
             .collect()
         }
@@ -1242,15 +1246,14 @@ async fn get_user_stats(
     };
 
     let template = UserTemplate {
-        display_name: if is_deleted {
-            "Deleted account".to_string()
-        } else if display_name.is_empty() {
+        display_name: if display_name.is_empty() {
             slack_id.to_string()
         } else {
             display_name
         },
         pfp,
         slack_id: slack_id.to_string(),
+        deactivated: is_deleted,
         total_messages: fmt_thousands(total_messages),
         coding_hours: fmt_minutes(coding_minutes),
         channels: fmt_thousands(scores.as_ref().map(|s| s.channels).unwrap_or(0)),
@@ -1357,9 +1360,9 @@ async fn get_channel_stats(
         .await
         .unwrap_or_default()
         .into_iter()
-        .map(|(user_id, display_name, pfp, is_deleted)| {
-            let label = if is_deleted == 1 {
-                "Deleted account".to_string()
+        .map(|(user_id, display_name, pfp, _)| {
+            let label = if display_name.is_empty() {
+                user_id.clone()
             } else {
                 display_name
             };

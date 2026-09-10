@@ -468,12 +468,13 @@ async fn handle_message(
             user
         );
         let slack_seconds = query_slack_seconds(pool, &user, &range).await;
-        let user_name = user_display_name(pool, &user).await;
+        let (user_name, user_deactivated) = user_display_name(pool, &user).await;
         let slack_time = fmt_span(slack_seconds);
 
         let image = bot_image::SlackOnlyImage {
             user: &user_name,
             slack_time: &slack_time,
+            deactivated: user_deactivated,
         };
         match bot_image::render_slack_only_image(&image) {
             Ok(png) => {
@@ -500,7 +501,7 @@ async fn handle_message(
     }
 
     let (slack_seconds, coding_seconds) = query_stats(pool, &user, &range, &text).await;
-    let user_name = user_display_name(pool, &user).await;
+    let (user_name, user_deactivated) = user_display_name(pool, &user).await;
 
     let (percent, more, other) = if slack_seconds >= coding_seconds {
         let percent = if coding_seconds > 0 {
@@ -539,6 +540,7 @@ async fn handle_message(
         other,
         slack_time: &slack_time,
         coding_time: &coding_time,
+        deactivated: user_deactivated,
     };
     let png = match bot_image::render_stats_image(&image) {
         Ok(png) => png,
@@ -776,7 +778,7 @@ async fn has_coding_data(pool: &sqlx::PgPool, user: &str) -> bool {
     }
 }
 
-async fn user_display_name(pool: &sqlx::PgPool, user: &str) -> String {
+async fn user_display_name(pool: &sqlx::PgPool, user: &str) -> (String, bool) {
     let row: Option<(String, i16)> =
         sqlx::query_as("SELECT display_name, is_deleted FROM users WHERE user_id = $1")
             .bind(user)
@@ -784,9 +786,11 @@ async fn user_display_name(pool: &sqlx::PgPool, user: &str) -> String {
             .await
             .unwrap_or(None);
     match row {
-        Some((_, 1)) => "Deleted account".to_string(),
-        Some((display_name, _)) if !display_name.is_empty() => display_name,
-        _ => user.to_string(),
+        Some((display_name, 1)) if display_name.is_empty() => (user.to_string(), true),
+        Some((display_name, is_deleted)) if !display_name.is_empty() => {
+            (display_name, is_deleted == 1)
+        }
+        _ => (user.to_string(), false),
     }
 }
 
