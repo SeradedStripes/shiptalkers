@@ -232,9 +232,15 @@ pub async fn run_scraper(
         let max_inflight = settings.get_u64("SLACK_MAX_INFLIGHT") as usize;
         let bot_tokens = settings.get_list("SLACK_BOT_TOKENS");
         let user_tokens = settings.get_list("SLACK_USER_TOKENS");
-        let bot_pool = slack::SlackClientPool::new(bot_tokens, request_delay, max_inflight);
+        // lists accept any token, so fall back to user tokens for the archive sweep
+        let list_tokens = if bot_tokens.is_empty() {
+            user_tokens.clone()
+        } else {
+            bot_tokens
+        };
+        let list_pool = slack::SlackClientPool::new(list_tokens, request_delay, max_inflight);
 
-        if let Err(e) = full_fetch(&bot_pool, &pool).await {
+        if let Err(e) = full_fetch(&list_pool, &pool).await {
             tracing::warn!("Failed to fetch channel list: {}", e);
         }
 
