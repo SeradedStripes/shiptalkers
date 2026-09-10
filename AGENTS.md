@@ -80,6 +80,7 @@ Slack Time is the sessionizer output (`user_scores.total_time`, ranked by `score
 
 ## Conventions
 
+- Comments are one line and short; no multiline or long comment blocks.
 - PostgreSQL is the only datastore (sqlx, runtime queries with `$n` placeholders; no query macros).
 - `slack_messages.message_ts` is `BIGINT` microseconds; Rust row structs keep it as `u64` and bind `as i64`. `thread_ts` stays `TEXT` for Slack pagination compatibility.
 - Logging is `tracing` only. Per-channel work logs at debug; inserts at info; progress at info only when new messages were inserted.
