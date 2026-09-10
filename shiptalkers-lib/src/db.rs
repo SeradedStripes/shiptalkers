@@ -438,7 +438,7 @@ pub async fn upsert_users(
         let mut sql = String::from(
             "INSERT INTO users (user_id, merged_name, display_name, real_name, username, email, pfp, updated, is_bot, is_deleted) VALUES ",
         );
-        sql.push_str(&placeholders(chunk.len(), 9));
+        sql.push_str(&placeholders(chunk.len(), 10));
         sql.push_str(
             " ON CONFLICT (user_id) DO UPDATE SET merged_name = EXCLUDED.merged_name, display_name = EXCLUDED.display_name, real_name = EXCLUDED.real_name, username = EXCLUDED.username, email = EXCLUDED.email, pfp = EXCLUDED.pfp, updated = EXCLUDED.updated, is_bot = EXCLUDED.is_bot, is_deleted = EXCLUDED.is_deleted",
         );
