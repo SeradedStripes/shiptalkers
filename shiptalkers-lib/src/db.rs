@@ -378,12 +378,20 @@ pub async fn init_tables(pool: &PgPool) -> Result<(), Box<dyn std::error::Error>
             id SMALLINT PRIMARY KEY,
             total_messages BIGINT NOT NULL DEFAULT 0,
             total_channels BIGINT NOT NULL DEFAULT 0,
+            archived_channels BIGINT NOT NULL DEFAULT 0,
             total_users BIGINT NOT NULL DEFAULT 0,
             coding_minutes BIGINT NOT NULL DEFAULT 0,
             slack_time_secs BIGINT NOT NULL DEFAULT 0,
             db_size_bytes BIGINT NOT NULL DEFAULT 0,
             updated BIGINT NOT NULL DEFAULT 0
         )",
+    )
+    .execute(pool)
+    .await?;
+
+    // Migrate pre-existing stats_meta rows
+    sqlx::query(
+        "ALTER TABLE stats_meta ADD COLUMN IF NOT EXISTS archived_channels BIGINT NOT NULL DEFAULT 0",
     )
     .execute(pool)
     .await?;

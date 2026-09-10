@@ -88,6 +88,7 @@ impl AppCache {
 struct StatsSnapshot {
     total_messages: u64,
     total_channels: u64,
+    archived_channels: u64,
     total_users: u64,
     coding_minutes: u64,
     slack_time_secs: u64,
@@ -127,6 +128,7 @@ pub struct IndexTemplate {
 pub struct Stats {
     pub total_messages: String,
     pub total_channels: String,
+    pub archived_channels: String,
     pub total_users: String,
     pub coding_hours: String,
     pub slack_time: String,
@@ -1463,6 +1465,7 @@ async fn load_stats(state: &AppState, headers: &HeaderMap) -> Stats {
     Stats {
         total_messages: fmt_thousands(snapshot.total_messages),
         total_channels: fmt_thousands(snapshot.total_channels),
+        archived_channels: fmt_thousands(snapshot.archived_channels),
         total_users: fmt_thousands(snapshot.total_users),
         coding_hours: fmt_minutes(snapshot.coding_minutes),
         slack_time: fmt_duration(snapshot.slack_time_secs),
@@ -1478,6 +1481,7 @@ async fn compute_stats(state: &AppState) -> StatsSnapshot {
         return StatsSnapshot {
             total_messages: 0,
             total_channels: 0,
+            archived_channels: 0,
             total_users: 0,
             coding_minutes: 0,
             slack_time_secs: 0,
@@ -1486,8 +1490,8 @@ async fn compute_stats(state: &AppState) -> StatsSnapshot {
         };
     };
 
-    let cached: Option<(i64, i64, i64, i64, i64, i64, i64)> = sqlx::query_as(
-        "SELECT total_messages, total_channels, total_users, coding_minutes, slack_time_secs, db_size_bytes, updated
+    let cached: Option<(i64, i64, i64, i64, i64, i64, i64, i64)> = sqlx::query_as(
+        "SELECT total_messages, total_channels, archived_channels, total_users, coding_minutes, slack_time_secs, db_size_bytes, updated
          FROM stats_meta WHERE id = 1",
     )
     .fetch_optional(ch)
@@ -1499,6 +1503,7 @@ async fn compute_stats(state: &AppState) -> StatsSnapshot {
         Some((
             total_messages,
             total_channels,
+            archived_channels,
             total_users,
             coding_minutes,
             slack_time_secs,
@@ -1507,6 +1512,7 @@ async fn compute_stats(state: &AppState) -> StatsSnapshot {
         )) => StatsSnapshot {
             total_messages: total_messages.max(0) as u64,
             total_channels: total_channels.max(0) as u64,
+            archived_channels: archived_channels.max(0) as u64,
             total_users: total_users.max(0) as u64,
             coding_minutes: coding_minutes.max(0) as u64,
             slack_time_secs: slack_time_secs.max(0) as u64,
@@ -1528,6 +1534,12 @@ async fn compute_stats(state: &AppState) -> StatsSnapshot {
                 .await
                 .unwrap_or(0)
                 .max(0);
+            let archived_channels: i64 =
+                sqlx::query_scalar("SELECT count(*) FROM slack_channels WHERE is_archived = 1")
+                    .fetch_one(ch)
+                    .await
+                    .unwrap_or(0)
+                    .max(0);
             let total_users: i64 = sqlx::query_scalar(
                 "SELECT count(*) FROM users WHERE is_bot = 0 AND is_deleted = 0",
             )
@@ -1564,6 +1576,7 @@ async fn compute_stats(state: &AppState) -> StatsSnapshot {
             StatsSnapshot {
                 total_messages: total_messages as u64,
                 total_channels: total_channels as u64,
+                archived_channels: archived_channels as u64,
                 total_users: total_users as u64,
                 coding_minutes: coding_minutes as u64,
                 slack_time_secs: slack_time_secs as u64,
