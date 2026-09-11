@@ -51,28 +51,13 @@
                 <div class="value pink">{{ coding_hours }}</div>
             </div>
             <div class="stat">
+                <h3>Slack Time</h3>
+                <div class="value pink">{{ slack_time }}</div>
+            </div>
+            <div class="stat">
                 <h3>Channels Active In</h3>
                 <div class="value pink">{{ channels }}</div>
             </div>
-            <div class="stat">
-                <h3>Leaderboard Rank</h3>
-                <div class="value pink">
-                    {% if leaderboard_rank.is_empty() %}Not ranked{% else %}{{ leaderboard_rank }}{% endif %}
-                </div>
-            </div>
-        </div>
-
-        <div class="table-card">
-            <h2>Slack Time</h2>
-            <table>
-                <tbody>
-                    <tr><td>Total estimated Slack time</td><td>{{ slack_time_total }}</td></tr>
-                    <tr><td>Average session length</td><td>{{ slack_time_avg }}</td></tr>
-                    <tr><td>Longest session</td><td>{{ slack_time_longest }}</td></tr>
-                    <tr><td>Sessions per day</td><td>{{ slack_time_per_day }}</td></tr>
-                    <tr><td>Most active hour of the day</td><td>{{ active_hour }}</td></tr>
-                </tbody>
-            </table>
         </div>
 
         <div class="table-card">

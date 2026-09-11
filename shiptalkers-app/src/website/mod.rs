@@ -154,12 +154,7 @@ pub struct UserTemplate {
     pub total_messages: String,
     pub coding_hours: String,
     pub channels: String,
-    pub slack_time_total: String,
-    pub slack_time_avg: String,
-    pub slack_time_longest: String,
-    pub slack_time_per_day: String,
-    pub leaderboard_rank: String,
-    pub active_hour: String,
+    pub slack_time: String,
     pub top_channels: Vec<ChannelStats>,
     pub show_coding_prompt: bool,
     pub signed_in: bool,
@@ -1184,37 +1179,24 @@ async fn get_user_stats(
 
     #[derive(Debug)]
     struct ScoreRow {
-        score: i64,
         total_time: u64,
         messages: u64,
-        sessions: u64,
-        longest: u64,
-        days: u64,
         channels: u64,
-        active_hour: u8,
     }
 
-    let scores: Option<ScoreRow> = sqlx::query_as::<_, (i64, i64, i64, i64, i64, i64, i64, i16)>(
-        "SELECT score, total_time, messages, sessions, longest,
-                days, channels, active_hour
+    let scores: Option<ScoreRow> = sqlx::query_as::<_, (i64, i64, i64)>(
+        "SELECT total_time, messages, channels
          FROM user_scores WHERE user_id = $1",
     )
     .bind(slack_id)
     .fetch_optional(ch)
     .await
     .unwrap_or(None)
-    .map(
-        |(score, total_time, messages, sessions, longest, days, channels, active_hour)| ScoreRow {
-            score,
-            total_time: total_time.max(0) as u64,
-            messages: messages.max(0) as u64,
-            sessions: sessions.max(0) as u64,
-            longest: longest.max(0) as u64,
-            days: days.max(0) as u64,
-            channels: channels.max(0) as u64,
-            active_hour: active_hour.clamp(0, 23) as u8,
-        },
-    );
+    .map(|(total_time, messages, channels)| ScoreRow {
+        total_time: total_time.max(0) as u64,
+        messages: messages.max(0) as u64,
+        channels: channels.max(0) as u64,
+    });
 
     let coding_minutes: u64 = sqlx::query_scalar::<_, i64>(
         "SELECT total_minutes FROM hackatime_connections WHERE slack_id = $1",
@@ -1269,49 +1251,9 @@ async fn get_user_stats(
     let total_messages = scores.as_ref().map(|s| s.messages).unwrap_or(0);
     let found = total_messages > 0 || coding_minutes > 0 || !merged_name.is_empty();
 
-    let (slack_time_total, slack_time_avg, slack_time_longest, slack_time_per_day, active_hour) =
-        match scores.as_ref() {
-            Some(s) if s.messages > 0 => {
-                let total = s.total_time;
-                let avg_session = total.checked_div(s.sessions).unwrap_or(0);
-                let per_day = s.sessions as f64 / s.days.max(1) as f64;
-                (
-                    fmt_duration(total),
-                    fmt_duration(avg_session),
-                    fmt_duration(s.longest),
-                    format!("{:.1} / day", per_day),
-                    fmt_hour(s.active_hour),
-                )
-            }
-            _ => (
-                "0m".into(),
-                "0m".into(),
-                "0m".into(),
-                "0 / day".into(),
-                String::new(),
-            ),
-        };
-
-    let leaderboard_rank: String = {
-        if is_bot || is_deleted {
-            String::new()
-        } else {
-            match scores.as_ref() {
-                Some(s) => sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(format!(
-                    "SELECT count(*) AS rank
-                     FROM (
-                         SELECT user_id FROM user_scores
-                          WHERE {EXCLUDE_BOTS_DELETED} AND score > $1
-                     )"
-                )))
-                .bind(s.score)
-                .fetch_one(ch)
-                .await
-                .map(|rank| format!("#{}", fmt_thousands(rank.max(0) as u64 + 1)))
-                .unwrap_or_default(),
-                None => String::new(),
-            }
-        }
+    let slack_time = match scores.as_ref() {
+        Some(s) if s.messages > 0 => fmt_duration(s.total_time),
+        _ => "0m".into(),
     };
 
     let template = UserTemplate {
@@ -1330,12 +1272,7 @@ async fn get_user_stats(
         total_messages: fmt_thousands(total_messages),
         coding_hours: fmt_minutes(coding_minutes),
         channels: fmt_thousands(scores.as_ref().map(|s| s.channels).unwrap_or(0)),
-        slack_time_total,
-        slack_time_avg,
-        slack_time_longest,
-        slack_time_per_day,
-        leaderboard_rank,
-        active_hour,
+        slack_time,
         top_channels,
         show_coding_prompt: !is_bot && !is_deleted && coding_minutes == 0,
         signed_in,
