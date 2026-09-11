@@ -15,115 +15,37 @@ Use this file as the default guide for AI agents working in the repository.
 - Follow existing code style and conventions.
 - Stay minimalistic in your code and documentation.
 - Do not divert from your active task unless explicitly instructed to do so.
-- If you change something that affects anything in the "Overview" section of this file, update it accordingly.
 
 ## Commands
+
+Run all of these from the repo root.
 
 - `just check` - cargo check for all targets and features
 - `just lint` - clippy with `-D warnings`
 - `just fmt` - rustfmt
 - `just test` - cargo test
-- `just formula-test` - sessionizer tests with `--nocapture` so the demo tests print the computed numbers (lives in `shiptalkers-lib`)
-
-## Overview
-
-Scrapes every public channel and thread reply (plus their reactions) from Hack Club Slack into PostgreSQL and serves a stats website with live leaderboards. Emoji names stay in the raw message text and in `slack_reactions` for later statistics; there is no emoji catalog yet.
-
-Scraping runs in its own binary/container (`shiptalkers-scraper`, depends only on Postgres) so it keeps running while the app container restarts; the app serves the website, refresh loops, and the Socket Mode stats bot. Channel metadata (`is_archived`, `num_members`) is refreshed on every `conversations.list` pass; fully-scraped channels that are archived are skipped by the incremental sweep, and unarchiving a channel clears its `is_fully_scraped` flag so it gets fully re-scraped.
-
-Coding time for every non-bot, non-deleted user is pulled from hackatime on a 30-minute cycle (run by the `shiptalkers-scraper` container so it survives app restarts): the public spans endpoint (`/api/v1/users/{uid}/heartbeats/spans`) is called for an incremental window and the returned spans are stored with exact timestamps in `hackatime_spans`, with `hackatime_connections.total_minutes` derived from the span sum. A first sync backfills every day since `2024-01-01`. Most users sync through the public endpoint (keyed by Slack UID, no OAuth); a user whose hackatime profile is not public gets a `private` flag and only syncs once they link via OAuth. Missing profiles are recorded as `no_account` and retried every 30 days. A user with a saved OAuth token always syncs through it, and linking via the app triggers an immediate per-user sync so coding time shows up right away instead of waiting for the next 30m pass.
+- `just formula-test` - sessionizer tests with `--nocapture` so the demo tests print the computed numbers
 
 ## Repository Layout
 
-- `Cargo.toml` (root) - Cargo workspace with three members, `shiptalkers-app`, `shiptalkers-lib`, and `shiptalkers-scraper`; run `cargo`/`just` from the repo root
-- `shiptalkers-lib/` - the Rust shared library crate (`Cargo.toml`, `src/lib.rs`, `src/sessionize.rs`, `src/hackatime.rs`, `src/db.rs`, `tests/sessionizer.rs`) holding code used by both app and scraper: the sessionizer, the shared db primitives (`connect`, `init_tables`, `placeholders`, `INSERT_CHUNK`, `SlackChannelRow`, `insert_new_channels_rows`, `SlackUserRow`, `upsert_users`), and the hackatime access layer (`fetch_coding_spans`, `fetch_hackatime_me`, `span_overlap_seconds`, date helpers, `hackatime_connections`/`hackatime_spans` CRUD). It is the only crate that depends on sqlx directly (0.9, features `runtime-tokio`, `tls-rustls-ring`, `postgres`, `time`) and re-exports it (`pub use sqlx;`); both app and scraper re-export it again as `crate::sqlx` so they only use sqlx through the lib, and dynamic SQL strings are wrapped in `sqlx::AssertSqlSafe`.
-- `shiptalkers-app/` - the Rust app crate: `src/`, `templates/`, `tests/`, `Cargo.toml`, `Dockerfile`, `.env.example`; built from the workspace root (single `Cargo.lock`, context is the repo root) so the app's `Dockerfile` is used as `shiptalkers-app/Dockerfile` from `docker-compose.yml` and the CI build workflow
-- `shiptalkers-scraper/` - the Rust scraper crate (`Cargo.toml`, `src/`, `Dockerfile`, `.env.example`), its own Docker image so scraping keeps running while the app container restarts; only depends on Postgres (not on the app), plus a bare-bones TCP health endpoint (`src/health.rs`) that answers 200 while the scraper process runs (Postgres is health-checked separately)
-- `scripts/slack_app_creation/` - standalone Rust CLI (not a workspace member) for creating the Slack app and installing tokens
-- `.github/` - `workflows/` (CI, build/deploy) and `actions/setup-rust`
-- `docker-compose.yml` - local dev setup (app + scraper + Postgres)
+- `Cargo.toml` (root) - Cargo workspace with three members: `shiptalkers-app`, `shiptalkers-lib`, `shiptalkers-scraper`.
+- `shiptalkers-lib/` - shared library: sessionizer, db primitives, hackatime access layer. The only crate that depends on sqlx directly.
+- `shiptalkers-app/` - website, refresh loops, and the Socket Mode stats bot. Askama templates in `templates/`.
+- `shiptalkers-scraper/` - scrape binary plus the coding-time resync loop. Separate Docker image so scraping survives app restarts.
+- `scripts/slack_app_creation/` - standalone Rust CLI (not a workspace member) for creating the Slack app and installing tokens.
+- `.github/` - CI and build/deploy workflows.
+- `docker-compose.yml` - local dev setup (app + scraper + Postgres).
 
-## Architecture
-
-- `src/main.rs` (app) - entry point, settings + env parsing, connects to `DATABASE_URL`, spawns the refresh loops, the Socket Mode task, and the web server. When no Slack tokens are set, serves existing data read-only. When `DATABASE_URL` is unset it still boots without a database for dev; DB-backed routes return 503 and static pages work.
-- `shiptalkers-scraper/src/main.rs` (scraper) - separate binary that connects to the same `DATABASE_URL`, runs `init_tables`, starts the health endpoint (`src/health.rs`, independent of Postgres), spawns `run_scraper`, the `users.list` user-sync loop, and the hackatime `resync_all` loop (every 30m, regardless of Slack tokens), then idles until a shutdown signal.
-- `shiptalkers-scraper/src/hackatime.rs` - the coding-time sync engine for the scrape loop: `resync_all` (30m pass over every non-bot user, records `private`/`no_account` states), `record_hackatime_status`, re-exporting the shared `sync_coding_activity`/`SyncFailure`. The per-user sync logic itself (`sync_coding_activity`, token-death check via the `me` endpoint, `SyncFailure`, per-user `coding_sync_lock`) lives in `shiptalkers-lib/src/hackatime.rs` so the app can sync a user immediately when they link.
-- `shiptalkers-scraper/src/scraper.rs` - all scrape logic: `run_scraper` (30m cycle), `scrape_all_messages`, `scrape_channel_list` (shared work queue across user tokens), `scrape_one_channel` (incremental + full-scrape modes, thread re-scan), `scrape_thread`, `process_channel_page` / `process_thread_page` (per-page inserts of messages, reactions, word counts, bot users). Touched users/channels are batched for score recomputation at the end of each pass. `sync_users` runs `users.list` every 2h. The incremental already-scraped-channel sweep (`scrape_channel_list` + `ScrapeSweep`) resumes where the last pass left off instead of restarting at the list start, persisting its position in `scrape_sweep` and clearing it when a full pass completes. Every pass `full_fetch` upserts each channel's `is_archived`/`num_members` from `conversations.list` (so existing rows stay fresh), and an archived-to-unarchived transition clears the channel's `is_fully_scraped` flag in `insert_page`.
-- `shiptalkers-scraper/src/slack/mod.rs` - `SlackClient` (per-method FIFO token-bucket rate limiter, 429 backoff, page-by-page streaming pagination so whole channels/threads never sit in memory), `SlackClientPool` (round-robins pages across bot tokens). `conversations.list` pages are fetched at `limit=1000` into `SlackChannel` rows carrying `id`, `name`, `is_archived`, and `num_members`.
-- `src/slack/mod.rs` (app) - only re-exports `socket` and `time_range`; the Slack client lives in the scraper crate.
-- `src/slack/socket.rs` - Slack Socket Mode via tokio-tungstenite; one connection per `SLACK_APP_TOKENS` app, events sharded by FNV hash of `ts`. Stats bot replies to messages in `SLACK_MAIN_CHANNEL` with a PNG card. Handles `channel_created` and `team_join` by idempotently inserting the new channel/user via the lib helpers. Reconnects forever with exponential backoff (1s-60s); stale connections (no frames for 60s) and connect timeouts (30s) are handled.
-- `src/slack/time_range.rs` - `TimeRange` enum (`AllTime` / `Since` / `Between`) and `parse_time_range_at` which matches keywords like `today`, `yesterday`, `last week`, `7 days`, `3 months`, `all time`, etc.
-- `src/bot_image.rs` - renders the stats card SVG to PNG via resvg/usvg.
-- `src/lib.rs` (app) - re-exports `ship_talkers_lib::sessionize` and `ship_talkers_lib::sqlx` (as `crate::sqlx`) so the crate-wide sessionizer references and the socket/refresh queries stay in lockstep with the scraper. Slack Time sessionizer constants (`SESSION_GAP_BOUNDARY_SECS`, `MESSAGE_TYPING_CHARS_PER_SEC`, `MESSAGE_READ_OVERHEAD_SECS`, `SESSION_MAX_SECS`) and the Rust reference `sessionize` live in the shared `shiptalkers-lib` crate; edit `shiptalkers-lib/src/sessionize.rs` to change the algorithm.
-- `src/settings.rs` (app) - env var parsing with defaults, exposed as `RuntimeSettings`, including the auth/website keys. `shiptalkers-scraper/src/settings.rs` is a trimmed copy for the scraper's own knobs.
-- `src/auth/mod.rs` - OAuth login/token exchange for HCA and hackatime, signed session cookies (`Session`, `issue_session`, `parse_session`), authorize-URL helpers. The hackatime fetch helpers and date math live in `shiptalkers-lib/src/hackatime.rs` and are re-exported here (`fetch_hackatime_me`, `span_overlap_seconds`, `civil_from_days`, `date_plus_days`).
-
-### `src/db/` (app)
-
-- `postgres_db.rs` - `AuthDb` (linked-user upsert/lookup plus API key and grant CRUD: `create_api_key`, `list_api_keys`, `revoke_api_key`, `slack_id_for_key`, `resolve_key`, `create_grant`, `revoke_grant`, `list_grants`, `granted_users`, `has_grant`; keys hashed in `api_keys`, grants in `api_key_grants` as `(grantor_id, key_id)` rows that cascade away with their key) plus the shared db primitives re-exported from `shiptalkers-lib` (`connect`, `init_tables`, `placeholders`, `INSERT_CHUNK`, `SlackChannelRow`, `insert_new_channels_rows`). The scraper crate keeps its own copy with the scrape inserts/checkpoints and timestamp helpers (`slack_ts_to_micros`, `micros_to_slack_ts`, `parse_date`). Only the scraper runs `init_tables`; the app connects and reads existing tables so it can run with a read-only DB role.
-- `refresh.rs` - background tasks: `refresh_word_totals` (incremental fold with daily full rebuild, watermark tracked in `word_refresh_meta`), `refresh_daily_stats` (sessionizer pass over every message, replaces `daily_stats`).
-
-### `shiptalkers-scraper/src/db/`
-
-- `postgres_db.rs` - scraper shares the schema DDL, row structs, and insert helpers with the app via `shiptalkers-lib`, and adds its scrape-only pieces: message/channel/reaction/word-count inserts (multi-row `$n` placeholders, chunks of 500), checkpoint queries (`get_max_message_ts`, `get_scraped_channel_ids`, `mark_channels_scraped`, `mark_fully_scraped`, thread equivalents), startup backfills (`word_counts` server-side rebuild), timestamp helpers (`slack_ts_to_micros`, `micros_to_slack_ts`, `parse_date`). Scrape-only row structs: `SlackMessageRow`, `SlackReactionRow`, `WordCountRow`.
-- `scores.rs` - `sessionizer_changed` (checks `score_meta` fingerprint), `backfill_stale_user_scores` / `backfill_stale_channel_scores` (incremental or full on sessionizer change), `recompute_user_scores` / `recompute_channel_scores` (batches of 50, sessionizer SQL in Postgres).
-
-### `src/website/`
-
-- `mod.rs` - axum router, server-rendered `/stats`, `/stats/:id` (user or channel, `U`/`C` prefix), `/leaderboard`, `/search`, and the API reference at `/api/docs` (one askama template per page in `templates/docs/`: `overview`, `stats`, `channels`, `daily_stats`, `search`, `account`, `grants`, sharing a `sidebar.html` partial) via askama. `/pfp/:id` redirects to stored Slack pfp URL. The `/api/v1/*` JSON endpoints are the documented API surface and are implemented in `api.rs` (see below).
-- `api.rs` - all the documented JSON handlers. Account: `list_api_keys` / `create_api_key` / `revoke_api_key` (session-authenticated key management), `get_me` (bearer-key-authenticated, loads the key owner's stats via `load_user_stats`), and grants: `list_grants` / `get_granted_stats` (bearer-key), `create_grant` / `revoke_grant` (session-authenticated). Public: `get_stats` (counters from the shared stats TTL cache; `include` field filter), `get_leaderboard` (talkers/coders/channels/combined/words with `rank`, `q`, and `limit` params via the site's rank helpers), `get_user`, `get_channel`, `get_daily_stats`, `get_search`. Errors are `{"error": "..."}`. Key management and grants are also reachable from the `/link` account tab (`link_create_api_key`, `link_revoke_api_key`, `link_create_grant`, `link_revoke_grant` in `auth.rs`), which shows a new key exactly once in a `<dialog>`. State-changing calls must present a CSRF token derived from the signed session cookie (HMAC over the session payload, `auth::csrf_token`/`csrf_ok`): HTML forms carry it in a hidden `csrf` field, JSON/API clients read the `st_csrf` cookie and send it in `X-CSRF-Token`.
-- `auth.rs` - hackatime OAuth login/callback/disconnect. The callback validates the token via the shared `fetch_hackatime_me`, stores it, and kicks off an immediate `sync_coding_activity` for the user; the scraper's `resync_all` loop keeps them reconciled on its next 30m pass.
-
-## Slack Time Formula
-
-Slack Time is the sessionizer output (`user_scores.total_time`, ranked by `score`). To change the algorithm edit the constants in `shiptalkers-lib/src/sessionize.rs`, which is shared across all sessionizer queries and the Rust reference (both crates re-export it). A change to any constant flips `score_meta`'s stored fingerprint, so the next restart full-recomputes all user and channel scores. Tests: `shiptalkers-lib/tests/sessionizer.rs`.
+If you need details on a crate's internals, read its `src/` instead of relying on stale docs.
 
 ## Conventions
 
 - Comments are one line and short; no multiline or long comment blocks.
-- PostgreSQL is the only datastore (sqlx, runtime queries with `$n` placeholders; no query macros).
-- `slack_messages.message_ts` is `BIGINT` microseconds; Rust row structs keep it as `u64` and bind `as i64`. `thread_ts` stays `TEXT` for Slack pagination compatibility.
-- Logging is `tracing` only. Per-channel work logs at debug; inserts at info; progress at info only when new messages were inserted.
-- The website has exactly one JS file (`time.js`) for UTC-to-local timezone conversion. Everything else is server-rendered askama with `<meta http-equiv="refresh">`.
-- Tests live in `shiptalkers-app/tests/`, `shiptalkers-scraper/tests/`, and `shiptalkers-lib/tests/` (one file per area) and only reach `pub` items. Both app and scraper are lib + bin (`lib.rs` declares modules, `main.rs` imports them).
+- PostgreSQL is the only datastore. sqlx runtime queries with `$n` placeholders; no query macros.
+- Logging is `tracing` only.
+- Tests live in `*/tests/` (one file per area) and only reach `pub` items.
 - Queries that must survive transient DB issues fall back with `unwrap_or` / `unwrap_or_default`, never panic.
 - Errors use `Box<dyn std::error::Error>` (plus `Send + Sync` across await points) or `String` in scraper tasks.
-
-## Environment Variables
-
-All settings below are read from environment variables at startup (with the defaults noted); edit `shiptalkers-app/.env` / `shiptalkers-scraper/.env` and restart to change them.
-
-App (`shiptalkers-app/.env`):
-
-- `SLACK_BOT_TOKENS` - required, comma-separated bot tokens (one per Slack app), or numbered variants `SLACK_BOT_TOKENS_1`, `SLACK_BOT_TOKENS_2`, ...; stats bot replies always use the first entry.
-- `SLACK_APP_TOKENS` - optional, comma-separated app tokens or numbered variants; each opens its own Socket Mode connection and events are sharded across them.
-- `SLACK_MAIN_CHANNEL` - channel ID the stats bot watches; users posting a time range there get a threaded reply. Optional, disables the bot when unset.
-- `DATABASE_URL` - required Postgres connection string, e.g. `postgres://ship_talkers:ship_talkers@localhost:5432/ship_talkers`.
-- `HOST`, `PORT` - web server bind, default 0.0.0.0:3000.
-- Auth/website keys: `BASE_URL`, `SESSION_SECRET`, `HCA_CLIENT_ID`, `HCA_CLIENT_SECRET`, `HACKATIME_CLIENT_ID`, `HACKATIME_CLIENT_SECRET`.
-
-Scraper (`shiptalkers-scraper/.env`):
-
-- `HEALTH_PORT` - port for the bare-bones health endpoint, default 3001; an HTTP 200 "ok" is served while the scraper process runs (Postgres is health-checked separately).
-- `SLACK_BOT_TOKENS` - optional, comma-separated bot tokens (one per Slack app), or numbered variants; `conversations.list` / `users.list` pages round-robin across them. Unset, user tokens drive `conversations.list` so the archived/unarchived sweep still runs, and the scraper still runs the hackatime resync loop.
-- `SLACK_USER_TOKENS` - comma-separated user tokens or numbered variants, one SlackClient per token pulling from the shared channel work queue.
-- `SLACK_REQUEST_DELAY_MS` - request pacing per method per token, default 1200 (tier 3, 50 req/min).
-- `SLACK_MAX_INFLIGHT` - burst per method per token, default 8.
-- `SLACK_CHANNEL_CONCURRENCY` - channels scraped concurrently per token, default 8.
-- `SLACK_THREAD_RESCAN_HOURS` - thread rescan history window, default 720 (30 days).
-- `SLACK_THREAD_RESCAN_INTERVAL_HOURS` - how often fully-scraped channels are re-scanned for threads, default 6.
-- `DATABASE_URL` - required Postgres connection string, e.g. `postgres://ship_talkers:ship_talkers@localhost:5432/ship_talkers`.
-
-## Gotchas
-
-- Slack rate limits are per (token, method). `conversations.history` and `conversations.replies` have separate budgets.
-- Every token gets its own rate-limiter budget (scraper crate): bot tokens pages rotate one token per page, user tokens workers each get their own SlackClient (pulling from the shared queue). Stats bot replies (app crate) use the first bot token.
-- Socket Mode opens one connection per app. Events are sharded (FNV hash of `ts`) so only one bot replies. Duplicate `channel_created` / `team_join` events are harmless because the channel/user inserts are idempotent (and the `users` table is shared with the scraper's 2h `users.list` sync).
-- Scrape passes split into full-scrape (new channels) and incremental check (already-scraped channels) using `scraped_channels`. The incremental check skips channels that are archived and fully scraped (frozen history), but archived channels that were never fully scraped are still scraped; an archived-to-unarchived transition clears `is_fully_scraped` so the channel is re-scraped from scratch.
-- Reactions are whatever the fetch returned at that moment, so only re-fetched messages get their reactions refreshed. Slack truncates the `users` list of very popular reactions, so per-user reaction stats may undercount.
-- The `users` table keeps four separate name fields: `merged_name` (the display name everywhere on the site and API, merged as Slack display name, else real name, else handle), `display_name` (strict Slack display name/nickname), `real_name` (full name), and `username` (the `@handle`), plus `email`, `title`, `status_text`, `status_emoji`, `tz`, `tz_label`, `locale`, and boolean flags `is_admin`, `is_owner`, `is_restricted`, `is_app_user`. `init_tables` migrates old schemas by renaming the column to `merged_name` and adding any missing profile columns; the 2h `users.list` sync re-fetches any non-bot user still missing `real_name`/`username` until they are populated. `email` only appears if the Slack app scope provides it (`users:read.email` is required for `email`).
-- Coding time is stored per span in `hackatime_spans` with one total per user in `hackatime_connections.total_minutes`. The stats bot card sums each span's exact overlap with the requested range, falling back to the all-time total before a user's first sync. Coding syncs are serialized per user. A 401/403 only deletes the connection if the `me` endpoint confirms the token is dead; hackatime outages never strip links. A 403 on the unauthenticated path means `private` state; a 404 means `no_account` (both written with empty `access_token` so the resync loop skips them).
-- They are same-row views: the per-user Slack Time queries read `slack_messages` directly, served by the `slack_messages_user_ts_idx (user_id, message_ts)` index, so no denormalized per-user copy of every message is kept. `init_tables` runs a one-time cleanup that drops the old `slack_messages_by_user` table (and its trigger/function/index) plus any stale `toast_compress` flag left from the removed compaction task.
 
 ## Finally
 
