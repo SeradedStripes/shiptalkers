@@ -42,19 +42,14 @@ FROM alpine:3.22 AS runtime
 RUN apk add --no-cache \
     ca-certificates \
     curl \
-    su-exec \
     && addgroup -S -g 10001 app \
-    && adduser -S -G app -u 10001 app \
-    && mkdir -p /data
+    && adduser -S -G app -u 10001 app
 
 WORKDIR /app
 
 COPY --from=builder /app/target/release/ship-talkers /usr/local/bin/ship-talkers
-COPY shiptalkers-app/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
-RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
-USER root
+USER app
 EXPOSE 3000
 
-ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 CMD ["ship-talkers"]
