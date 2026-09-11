@@ -91,7 +91,10 @@ p { color: #888; line-height: 1.6; margin-bottom: 1.5rem; }
 
 .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; margin-bottom: 2rem; }
 body.stats .grid { grid-template-columns: repeat(4, 1fr); }
-@media (max-width: 900px) { body.stats .grid { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 900px) {
+    body.stats .grid { grid-template-columns: repeat(2, 1fr); }
+    .site-header nav { flex-wrap: wrap; }
+}
 .stat { background: #1a1a1a; border-radius: 12px; padding: 1.5rem; }
 body.stats .stat.double{ grid-column: span 2; }
 body.stats .stat.double .value { font-size: 2.25rem; }
@@ -111,6 +114,7 @@ body.stats .stat.invisible { visibility: hidden; }
 .stat h3 { color: #888; font-size: 0.875rem; text-transform: uppercase; margin-bottom: 0.5rem; }
 .stat .value { font-size: 2rem; font-weight: 700; }
 .stat .value.pink { color: #f472b6; }
+body.stats .stat .value.compact { font-size: 1rem; white-space: nowrap; }
 
 table { width: 100%; border-collapse: collapse; background: #1a1a1a; border-radius: 12px; overflow: hidden; }
 th, td { padding: 1rem; text-align: left; border-bottom: 1px solid #333; }
@@ -301,5 +305,15 @@ dialog[open] .btn { display: inline-block; }
     font-size: 0.75rem;
     padding: 0.25rem 0.6rem;
     border-radius: 6px;
+}
+
+@media (max-width: 600px) {
+    .container { padding: 1rem; }
+    .site-header nav { padding: 0.75rem 1rem; }
+    h1, body.link h1, body.stats h1 { font-size: 1.75rem; }
+    body.stats .grid { grid-template-columns: 1fr; }
+    body.stats .stat .value.compact { font-size: 1.5rem; }
+    .member-avatar { width: 72px; height: 72px; }
+    .table-card { overflow-x: auto; }
 }
 
