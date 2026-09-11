@@ -240,12 +240,14 @@ pub async fn run_scraper(
         };
         let list_pool = slack::SlackClientPool::new(list_tokens, request_delay, max_inflight);
 
-        if let Err(e) = full_fetch(&list_pool, &pool).await {
+        // List and message passes have separate rate budgets, so run them in parallel
+        let (list_result, _) = tokio::join!(full_fetch(&list_pool, &pool), async {
+            if !user_tokens.is_empty() {
+                scrape_all_messages(&settings, &pool).await;
+            }
+        });
+        if let Err(e) = list_result {
             tracing::warn!("Failed to fetch channel list: {}", e);
-        }
-
-        if !user_tokens.is_empty() {
-            scrape_all_messages(&settings, &pool).await;
         }
 
         let elapsed = cycle_start.elapsed();
