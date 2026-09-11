@@ -1214,7 +1214,7 @@ async fn get_user_stats(
          WHERE user_id = $1
          GROUP BY channel_id
          ORDER BY messages DESC
-         LIMIT 10",
+         LIMIT 5",
     )
     .bind(slack_id)
     .fetch_all(ch)
