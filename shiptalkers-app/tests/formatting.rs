@@ -1,5 +1,7 @@
 use ship_talkers::auth::civil_from_days;
-use ship_talkers::website::{fmt_duration, fmt_hour, fmt_minutes, fmt_thousands, parse_ts};
+use ship_talkers::website::{
+    fmt_duration, fmt_hour, fmt_minutes, fmt_thousands, fmt_total_time, parse_ts,
+};
 
 #[test]
 fn fmt_thousands_groups_with_commas() {
@@ -26,6 +28,22 @@ fn fmt_minutes_hrs_min() {
     assert_eq!(fmt_minutes(59), "0hrs 59min");
     assert_eq!(fmt_minutes(90), "1hrs 30min");
     assert_eq!(fmt_minutes(600), "10hrs 0min");
+}
+
+#[test]
+fn fmt_total_time_full_breakdown() {
+    assert_eq!(fmt_total_time(0), "0min");
+    assert_eq!(fmt_total_time(150), "2min");
+    assert_eq!(fmt_total_time(3661), "1h 1min");
+    assert_eq!(fmt_total_time(86400), "1d");
+    assert_eq!(fmt_total_time(2_592_000), "1mo");
+    assert_eq!(fmt_total_time(31_536_000), "1y");
+    assert_eq!(fmt_total_time(36_993_900), "1y 2mo 3d 4h 5min");
+}
+
+#[test]
+fn fmt_total_time_skips_missing_units() {
+    assert_eq!(fmt_total_time(2_592_300), "1mo 5min");
 }
 
 #[test]

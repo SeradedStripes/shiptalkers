@@ -131,6 +131,8 @@ pub struct Stats {
     pub archived_channels: String,
     pub total_users: String,
     pub coding_hours: String,
+    pub coding_time: String,
+    pub slack_hours: String,
     pub slack_time: String,
     pub combined_time: String,
     pub db_size_label: String,
@@ -1072,6 +1074,41 @@ pub fn fmt_minutes(minutes: u64) -> String {
     format!("{}hrs {}min", minutes / 60, minutes % 60)
 }
 
+pub fn fmt_total_time(secs: u64) -> String {
+    let minute = 60;
+    let hour = 60 * minute;
+    let day = 24 * hour;
+    let month = 30 * day;
+    let year = 365 * day;
+
+    let years = secs / year;
+    let months = (secs % year) / month;
+    let days = ((secs % year) % month) / day;
+    let hours = (secs % day) / hour;
+    let minutes = (secs % hour) / minute;
+
+    let mut parts = Vec::new();
+    if years > 0 {
+        parts.push(format!("{}y", years));
+    }
+    if months > 0 {
+        parts.push(format!("{}mo", months));
+    }
+    if days > 0 {
+        parts.push(format!("{}d", days));
+    }
+    if hours > 0 {
+        parts.push(format!("{}h", hours));
+    }
+    if minutes > 0 {
+        parts.push(format!("{}min", minutes));
+    }
+    if parts.is_empty() {
+        return "0min".to_string();
+    }
+    parts.join(" ")
+}
+
 pub fn fmt_hour(hour: u8) -> String {
     let ampm = if hour < 12 { "AM" } else { "PM" };
     let mut hour = hour % 12;
@@ -1468,7 +1505,9 @@ async fn load_stats(state: &AppState, headers: &HeaderMap) -> Stats {
         archived_channels: fmt_thousands(snapshot.archived_channels),
         total_users: fmt_thousands(snapshot.total_users),
         coding_hours: fmt_minutes(snapshot.coding_minutes),
-        slack_time: fmt_duration(snapshot.slack_time_secs),
+        coding_time: fmt_total_time(snapshot.coding_minutes * 60),
+        slack_hours: fmt_duration(snapshot.slack_time_secs),
+        slack_time: fmt_total_time(snapshot.slack_time_secs),
         combined_time: fmt_duration(snapshot.slack_time_secs + snapshot.coding_minutes * 60),
         db_size_label,
         signed_in: signed_in(state, headers),
