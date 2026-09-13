@@ -7,3 +7,6 @@ the scraper or application starts using PostgreSQL.
 Existing databases created by the previous runtime bootstrap must be backed up before the first migration run.
 The baseline drops incompatible legacy message and channel tables and requires
 a full rescrape under the opt-in policy. Back up any existing database first.
+
+`0002_purge_database.sql` intentionally removes all application data and
+resets identity sequences.
