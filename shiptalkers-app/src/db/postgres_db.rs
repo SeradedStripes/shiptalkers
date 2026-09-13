@@ -16,6 +16,40 @@ pub use ship_talkers_lib::db::{
     upsert_users,
 };
 
+pub async fn grant_slack_consent(pool: &PgPool, slack_id: &str) -> Result<(), String> {
+    let anonymous_id = ship_talkers_lib::base36::encode(slack_id.as_bytes());
+    sqlx::query(
+        "WITH identity AS (
+             INSERT INTO slack_identities (anonymous_id) VALUES ($1)
+             ON CONFLICT (anonymous_id) DO UPDATE SET anonymous_id = EXCLUDED.anonymous_id
+             RETURNING internal_id
+         )
+         INSERT INTO slack_consents (identity_id, consent_source)
+         SELECT internal_id, 'slack_channel' FROM identity
+         ON CONFLICT (identity_id) DO UPDATE SET consented_at = NOW(), revoked_at = NULL,
+             consent_source = EXCLUDED.consent_source",
+    )
+    .bind(anonymous_id)
+    .execute(pool)
+    .await
+    .map(|_| ())
+    .map_err(|e| e.to_string())
+}
+
+pub async fn slack_user_has_consent(pool: &PgPool, slack_id: &str) -> Result<bool, String> {
+    let anonymous_id = ship_talkers_lib::base36::encode(slack_id.as_bytes());
+    sqlx::query_scalar::<_, i32>(
+        "SELECT 1 FROM slack_consents c
+         JOIN slack_identities i ON i.internal_id = c.identity_id
+         WHERE i.anonymous_id = $1 AND c.consented_at IS NOT NULL AND c.revoked_at IS NULL",
+    )
+    .bind(anonymous_id)
+    .fetch_optional(pool)
+    .await
+    .map(|row| row.is_some())
+    .map_err(|e| e.to_string())
+}
+
 pub async fn insert_new_channels(
     pool: &PgPool,
     channels: &[SlackChannelRow],

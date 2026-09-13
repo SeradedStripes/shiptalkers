@@ -490,11 +490,49 @@ async fn handle_message(
 
     let sender = msg.user.unwrap_or_default();
     let text = msg.text.unwrap_or_default();
+    let Some(bot_token) = settings.get_list("SLACK_BOT_TOKENS").first().cloned() else {
+        tracing::warn!("Stats bot: no bot tokens configured, skipping reply");
+        return;
+    };
+
+    if text
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .eq_ignore_ascii_case("opt in")
+    {
+        if postgres_db::slack_user_has_consent(pool, &sender)
+            .await
+            .unwrap_or(false)
+        {
+            return;
+        }
+        match postgres_db::grant_slack_consent(pool, &sender).await {
+            Ok(()) => {
+                let reply = "You are opted in. Your user has been marked for scraping, and we will gradually backfill your messages.";
+                if let Err(e) = post_reply(client, &bot_token, &msg.channel, &msg.ts, reply).await {
+                    tracing::error!("Stats bot: failed to post opt-in reply: {}", e);
+                }
+            }
+            Err(e) => tracing::error!("Stats bot: failed to record opt-in: {}", e),
+        }
+        return;
+    }
 
     let Some(range) = time_range::parse_time_range_at(&text, now_unix()) else {
         return;
     };
     let user = extract_mentioned_user(&text).unwrap_or_else(|| sender.clone());
+    if !postgres_db::slack_user_has_consent(pool, &user)
+        .await
+        .unwrap_or(false)
+    {
+        let reply = "You need to opt in to use this app. Please type \"Opt In\" in the channel root to opt in.";
+        if let Err(e) = post_reply(client, &bot_token, &msg.channel, &msg.ts, reply).await {
+            tracing::error!("Stats bot: failed to post opt-in prompt: {}", e);
+        }
+        return;
+    }
     tracing::info!(
         "Stats bot: stats request for {} (from {}) in {} ({:?})",
         user,
@@ -503,10 +541,6 @@ async fn handle_message(
         text
     );
 
-    let Some(bot_token) = settings.get_list("SLACK_BOT_TOKENS").first().cloned() else {
-        tracing::warn!("Stats bot: no bot tokens configured, skipping reply");
-        return;
-    };
     let base_url = settings.get("BASE_URL");
 
     // If we have no usable coding data on the user (private or no-account
