@@ -28,7 +28,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     tracing::info!("Connecting to Postgres...");
     let pool = db::postgres_db::connect(&database_url).await?;
-    db::postgres_db::init_tables(&pool).await?;
+    db::postgres_db::migrate(&pool).await?;
 
     let pool_for_hackatime = pool.clone();
     let http_for_hackatime = reqwest::Client::new();

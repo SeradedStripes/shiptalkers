@@ -12,7 +12,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 pub use ship_talkers_lib::db::{
-    SlackChannelRow, SlackUserRow, connect, init_tables, insert_new_channels_rows, placeholders,
+    SlackChannelRow, SlackUserRow, connect, insert_new_channels_rows, migrate, placeholders,
     upsert_users,
 };
 

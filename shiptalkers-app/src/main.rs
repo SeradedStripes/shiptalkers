@@ -32,7 +32,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         None
     } else {
         tracing::info!("Connecting to Postgres...");
-        Some(db::postgres_db::connect(&database_url).await?)
+        let pool = db::postgres_db::connect(&database_url).await?;
+        db::postgres_db::migrate(&pool).await?;
+        Some(pool)
     };
     let auth_db = pool
         .as_ref()

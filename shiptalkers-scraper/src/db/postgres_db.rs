@@ -4,7 +4,7 @@ use crate::sqlx::Row;
 use std::collections::HashMap;
 
 pub use ship_talkers_lib::db::{
-    INSERT_CHUNK, SlackChannelRow, SlackUserRow, connect, init_tables, insert_new_channels_rows,
+    INSERT_CHUNK, SlackChannelRow, SlackUserRow, connect, insert_new_channels_rows, migrate,
     placeholders, upsert_users,
 };
 

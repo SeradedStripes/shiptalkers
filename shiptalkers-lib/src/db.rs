@@ -62,6 +62,11 @@ pub async fn connect(database_url: &str) -> Result<PgPool, Box<dyn std::error::E
     Ok(pool)
 }
 
+pub async fn migrate(pool: &PgPool) -> Result<(), Box<dyn std::error::Error>> {
+    sqlx::migrate!("./migrations").run(pool).await?;
+    Ok(())
+}
+
 /// Finds locators for a user's consent request.
 pub async fn locators_for_slack_user(
     pool: &PgPool,
