@@ -194,6 +194,9 @@ pub async fn run_scraper(
     pool: sqlx::PgPool,
     settings: settings::RuntimeSettings,
 ) -> Result<(), String> {
+    db::postgres_db::load_locator_caches(&pool)
+        .await
+        .map_err(|e| format!("failed to load locator caches: {e}"))?;
     if let Err(e) = db::postgres_db::seed_message_count(&pool).await {
         tracing::warn!("Failed to seed message count: {}", e);
     }
@@ -791,8 +794,11 @@ async fn process_channel_page(
             user_id: m.user.clone(),
             channel_id: m.channel.clone(),
             message_ts: db::postgres_db::slack_ts_to_micros(&m.ts),
-            text: m.text.clone(),
-            thread_ts: m.thread_ts.clone(),
+            char_count: m.text.chars().count() as i32,
+            thread_ts: m
+                .thread_ts
+                .as_deref()
+                .map(db::postgres_db::slack_ts_to_micros),
         })
         .collect();
 
@@ -849,8 +855,11 @@ async fn process_thread_page(
                 user_id: m.user.clone(),
                 channel_id: m.channel.clone(),
                 message_ts: db::postgres_db::slack_ts_to_micros(&m.ts),
-                text: m.text.clone(),
-                thread_ts: m.thread_ts.clone(),
+                char_count: m.text.chars().count() as i32,
+                thread_ts: m
+                    .thread_ts
+                    .as_deref()
+                    .map(db::postgres_db::slack_ts_to_micros),
             })
             .collect();
         inserted = db::postgres_db::insert_messages(pool, &rows)

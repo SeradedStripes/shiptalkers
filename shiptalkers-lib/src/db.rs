@@ -1,6 +1,6 @@
 use sqlx::PgPool;
 
-pub const INSERT_CHUNK: usize = 500;
+pub const INSERT_CHUNK: usize = 5_000;
 
 #[derive(Debug, Clone)]
 pub struct SlackChannelRow {
@@ -62,34 +62,40 @@ pub async fn connect(database_url: &str) -> Result<PgPool, Box<dyn std::error::E
     Ok(pool)
 }
 
+/// Finds locators for a user's consent request.
+pub async fn locators_for_slack_user(
+    pool: &PgPool,
+    slack_user_id: &str,
+) -> Result<Vec<(i32, i64)>, Box<dyn std::error::Error>> {
+    let anonymous_id = crate::base36::encode(slack_user_id.as_bytes());
+    Ok(sqlx::query_as(
+        "SELECT m.channel_id, m.message_ts
+         FROM slack_messages m
+         JOIN slack_identities i ON i.internal_id = m.identity_id
+         WHERE i.anonymous_id = $1
+         ORDER BY m.message_ts",
+    )
+    .bind(anonymous_id)
+    .fetch_all(pool)
+    .await?)
+}
+
 pub async fn init_tables(pool: &PgPool) -> Result<(), Box<dyn std::error::Error>> {
     sqlx::query(
-        "CREATE TABLE IF NOT EXISTS slack_messages (
-            user_id TEXT NOT NULL DEFAULT '',
-            channel_id TEXT NOT NULL DEFAULT '',
-            message_ts BIGINT NOT NULL,
-            text TEXT NOT NULL DEFAULT '',
-            thread_ts TEXT,
-            PRIMARY KEY (channel_id, message_ts)
+        "CREATE TABLE IF NOT EXISTS slack_identities (
+            internal_id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+            anonymous_id TEXT UNIQUE NOT NULL
         )",
     )
     .execute(pool)
     .await?;
-    // Serves the per-user Slack Time queries directly off slack_messages
-    sqlx::query(
-        "CREATE INDEX IF NOT EXISTS slack_messages_user_ts_idx ON slack_messages (user_id, message_ts)",
-    )
-    .execute(pool)
-    .await?;
-    sqlx::query(
-        "CREATE INDEX IF NOT EXISTS slack_messages_thread_idx ON slack_messages (channel_id, thread_ts) WHERE thread_ts IS NOT NULL",
-    )
-    .execute(pool)
-    .await?;
 
+    // Keep the raw channel ID for Slack API calls.
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS slack_channels (
-            channel_id TEXT PRIMARY KEY,
+            internal_id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+            anonymous_id TEXT UNIQUE NOT NULL,
+            channel_id TEXT UNIQUE NOT NULL,
             name TEXT NOT NULL DEFAULT '',
             is_archived SMALLINT NOT NULL DEFAULT 0,
             num_members BIGINT NOT NULL DEFAULT 0
@@ -98,7 +104,24 @@ pub async fn init_tables(pool: &PgPool) -> Result<(), Box<dyn std::error::Error>
     .execute(pool)
     .await?;
 
-    // Migrate pre-existing slack_channels rows
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS slack_messages (
+            identity_id INTEGER NOT NULL REFERENCES slack_identities(internal_id),
+            channel_id INTEGER NOT NULL REFERENCES slack_channels(internal_id),
+            message_ts BIGINT NOT NULL,
+            char_count INTEGER NOT NULL DEFAULT 0,
+            thread_ts BIGINT,
+            PRIMARY KEY (channel_id, message_ts)
+        )",
+    )
+    .execute(pool)
+    .await?;
+    // Add columns required by the new channel mapping.
+    sqlx::query("ALTER TABLE slack_channels ADD COLUMN IF NOT EXISTS internal_id INTEGER GENERATED ALWAYS AS IDENTITY")
+        .execute(pool).await?;
+    sqlx::query("ALTER TABLE slack_channels ADD COLUMN IF NOT EXISTS anonymous_id TEXT")
+        .execute(pool)
+        .await?;
     sqlx::query(
         "ALTER TABLE slack_channels ADD COLUMN IF NOT EXISTS is_archived SMALLINT NOT NULL DEFAULT 0",
     )
@@ -109,6 +132,13 @@ pub async fn init_tables(pool: &PgPool) -> Result<(), Box<dyn std::error::Error>
     )
     .execute(pool)
     .await?;
+
+    sqlx::query("CREATE UNIQUE INDEX IF NOT EXISTS slack_channels_anonymous_id_idx ON slack_channels (anonymous_id) WHERE anonymous_id IS NOT NULL").execute(pool).await?;
+    sqlx::query("CREATE UNIQUE INDEX IF NOT EXISTS slack_channels_internal_id_idx ON slack_channels (internal_id)").execute(pool).await?;
+    migrate_locator_messages(pool).await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS slack_messages_identity_ts_idx ON slack_messages (identity_id, message_ts)").execute(pool).await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS slack_messages_identity_channel_ts_idx ON slack_messages (identity_id, channel_id, message_ts)").execute(pool).await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS slack_messages_channel_ts_idx ON slack_messages (channel_id, message_ts)").execute(pool).await?;
 
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS users (
@@ -481,6 +511,81 @@ pub async fn init_tables(pool: &PgPool) -> Result<(), Box<dyn std::error::Error>
     Ok(())
 }
 
+async fn migrate_locator_messages(pool: &PgPool) -> Result<(), Box<dyn std::error::Error>> {
+    let has_old_user: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'slack_messages' AND column_name = 'user_id')").fetch_one(pool).await?;
+    if !has_old_user {
+        return Ok(());
+    }
+    let channel_ids: Vec<String> = sqlx::query_scalar("SELECT channel_id FROM slack_channels")
+        .fetch_all(pool)
+        .await?;
+    for id in &channel_ids {
+        sqlx::query("UPDATE slack_channels SET anonymous_id = $1 WHERE channel_id = $2 AND anonymous_id IS NULL")
+            .bind(crate::base36::encode(id.as_bytes())).bind(id).execute(pool).await?;
+    }
+
+    let old_users: Vec<String> = sqlx::query_scalar("SELECT DISTINCT user_id FROM slack_messages")
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default();
+    for id in &old_users {
+        sqlx::query("INSERT INTO slack_identities (anonymous_id) VALUES ($1) ON CONFLICT (anonymous_id) DO NOTHING")
+            .bind(crate::base36::encode(id.as_bytes())).execute(pool).await?;
+    }
+
+    // Rename legacy message columns during upgrade.
+    sqlx::query("ALTER TABLE slack_messages ADD COLUMN IF NOT EXISTS identity_id INTEGER REFERENCES slack_identities(internal_id)").execute(pool).await?;
+    sqlx::query("ALTER TABLE slack_messages ADD COLUMN IF NOT EXISTS channel_ref INTEGER REFERENCES slack_channels(internal_id)").execute(pool).await?;
+    sqlx::query(
+        "ALTER TABLE slack_messages ADD COLUMN IF NOT EXISTS char_count INTEGER NOT NULL DEFAULT 0",
+    )
+    .execute(pool)
+    .await?;
+    // The old table has text locator columns.
+    sqlx::query("ALTER TABLE slack_messages RENAME COLUMN user_id TO legacy_user_id")
+        .execute(pool)
+        .await?;
+    sqlx::query("ALTER TABLE slack_messages RENAME COLUMN channel_id TO legacy_channel_id")
+        .execute(pool)
+        .await?;
+    // Populate compact IDs before dropping raw columns.
+    let rows: Vec<(String, String, i64)> = sqlx::query_as("SELECT legacy_user_id, legacy_channel_id, message_ts FROM slack_messages WHERE identity_id IS NULL").fetch_all(pool).await?;
+    for (user, channel, ts) in rows {
+        let uid: Option<i32> =
+            sqlx::query_scalar("SELECT internal_id FROM slack_identities WHERE anonymous_id = $1")
+                .bind(crate::base36::encode(user.as_bytes()))
+                .fetch_optional(pool)
+                .await?;
+        let cid: Option<i32> =
+            sqlx::query_scalar("SELECT internal_id FROM slack_channels WHERE channel_id = $1")
+                .bind(&channel)
+                .fetch_optional(pool)
+                .await?;
+        if let (Some(uid), Some(cid)) = (uid, cid) {
+            sqlx::query("UPDATE slack_messages SET identity_id = $1, channel_ref = $2 WHERE legacy_user_id = $3 AND legacy_channel_id = $4 AND message_ts = $5")
+                    .bind(uid).bind(cid).bind(&user).bind(&channel).bind(ts).execute(pool).await?;
+        }
+    }
+    sqlx::query("UPDATE slack_messages SET char_count = char_length(text) WHERE char_count = 0")
+        .execute(pool)
+        .await?;
+    sqlx::query("ALTER TABLE slack_messages DROP CONSTRAINT IF EXISTS slack_messages_pkey")
+        .execute(pool)
+        .await?;
+    sqlx::query("ALTER TABLE slack_messages DROP COLUMN legacy_user_id, DROP COLUMN legacy_channel_id, DROP COLUMN text, DROP COLUMN thread_ts").execute(pool).await?;
+    sqlx::query("ALTER TABLE slack_messages RENAME COLUMN channel_ref TO channel_id")
+        .execute(pool)
+        .await?;
+    sqlx::query("ALTER TABLE slack_messages RENAME CONSTRAINT slack_messages_pkey TO slack_messages_old_pkey").execute(pool).await.ok();
+    sqlx::query("ALTER TABLE slack_messages ADD PRIMARY KEY (channel_id, message_ts)")
+        .execute(pool)
+        .await?;
+    sqlx::query("ALTER TABLE slack_messages ALTER COLUMN identity_id SET NOT NULL")
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 pub async fn insert_new_channels_rows(
     pool: &PgPool,
     channels: &[SlackChannelRow],
@@ -491,15 +596,16 @@ pub async fn insert_new_channels_rows(
     let count = channels.len() as u64;
     for chunk in channels.chunks(INSERT_CHUNK) {
         let mut sql = String::from(
-            "INSERT INTO slack_channels (channel_id, name, is_archived, num_members) VALUES ",
+            "INSERT INTO slack_channels (anonymous_id, channel_id, name, is_archived, num_members) VALUES ",
         );
-        sql.push_str(&placeholders(chunk.len(), 4));
+        sql.push_str(&placeholders(chunk.len(), 5));
         sql.push_str(
             " ON CONFLICT (channel_id) DO UPDATE SET name = EXCLUDED.name, is_archived = EXCLUDED.is_archived, num_members = EXCLUDED.num_members",
         );
         let mut q = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()));
         for ch in chunk {
             q = q
+                .bind(crate::base36::encode(ch.channel_id.as_bytes()))
                 .bind(&ch.channel_id)
                 .bind(&ch.name)
                 .bind(ch.is_archived as i16)

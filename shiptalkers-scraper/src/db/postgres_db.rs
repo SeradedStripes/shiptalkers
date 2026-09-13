@@ -29,8 +29,8 @@ pub struct SlackMessageRow {
     pub user_id: String,
     pub channel_id: String,
     pub message_ts: u64,
-    pub text: String,
-    pub thread_ts: Option<String>,
+    pub char_count: i32,
+    pub thread_ts: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -55,6 +55,66 @@ pub fn slack_ts_to_micros(ts: &str) -> u64 {
 /// Formats microseconds as a Slack timestamp string ("seconds.microseconds").
 pub fn micros_to_slack_ts(micros: u64) -> String {
     format!("{}.{:06}", micros / 1_000_000, micros % 1_000_000)
+}
+
+static IDENTITY_CACHE: std::sync::OnceLock<std::sync::Mutex<HashMap<String, i32>>> =
+    std::sync::OnceLock::new();
+static CHANNEL_CACHE: std::sync::OnceLock<std::sync::Mutex<HashMap<String, i32>>> =
+    std::sync::OnceLock::new();
+
+pub async fn load_locator_caches(pool: &PgPool) -> Result<(), Box<dyn std::error::Error>> {
+    let identities: Vec<(String, i32)> =
+        sqlx::query_as("SELECT anonymous_id, internal_id FROM slack_identities")
+            .fetch_all(pool)
+            .await?;
+    let channels: Vec<(String, i32)> =
+        sqlx::query_as("SELECT anonymous_id, internal_id FROM slack_channels")
+            .fetch_all(pool)
+            .await?;
+    IDENTITY_CACHE
+        .get_or_init(Default::default)
+        .lock()
+        .map_err(|_| "locator cache poisoned")?
+        .extend(identities);
+    CHANNEL_CACHE
+        .get_or_init(Default::default)
+        .lock()
+        .map_err(|_| "locator cache poisoned")?
+        .extend(channels);
+    Ok(())
+}
+
+async fn locator_id(
+    pool: &PgPool,
+    raw: &str,
+    channel: bool,
+) -> Result<i32, Box<dyn std::error::Error>> {
+    let anonymous = ship_talkers_lib::base36::encode(raw.as_bytes());
+    let cache = if channel {
+        CHANNEL_CACHE.get_or_init(Default::default)
+    } else {
+        IDENTITY_CACHE.get_or_init(Default::default)
+    };
+    if let Some(id) = cache
+        .lock()
+        .map_err(|_| "locator cache poisoned")?
+        .get(&anonymous)
+        .copied()
+    {
+        return Ok(id);
+    }
+    let id = if channel {
+        sqlx::query_scalar::<_, i32>("INSERT INTO slack_channels (anonymous_id, channel_id) VALUES ($1, $2) ON CONFLICT (anonymous_id) DO UPDATE SET anonymous_id = EXCLUDED.anonymous_id RETURNING internal_id")
+            .bind(&anonymous).bind(raw).fetch_one(pool).await?
+    } else {
+        sqlx::query_scalar::<_, i32>("INSERT INTO slack_identities (anonymous_id) VALUES ($1) ON CONFLICT (anonymous_id) DO UPDATE SET anonymous_id = EXCLUDED.anonymous_id RETURNING internal_id")
+            .bind(&anonymous).fetch_one(pool).await?
+    };
+    cache
+        .lock()
+        .map_err(|_| "locator cache poisoned")?
+        .insert(anonymous, id);
+    Ok(id)
 }
 
 /// Parses an ISO "YYYY-MM-DD" date string into a `time::Date`.
@@ -154,20 +214,22 @@ pub async fn insert_messages(
     let count = messages.len() as u64;
     for chunk in messages.chunks(INSERT_CHUNK) {
         let mut sql = String::from(
-            "INSERT INTO slack_messages (user_id, channel_id, message_ts, text, thread_ts) VALUES ",
+            "INSERT INTO slack_messages (identity_id, channel_id, message_ts, char_count, thread_ts) VALUES ",
         );
         sql.push_str(&placeholders(chunk.len(), 5));
         sql.push_str(
-            " ON CONFLICT (channel_id, message_ts) DO UPDATE SET user_id = EXCLUDED.user_id, text = EXCLUDED.text, thread_ts = EXCLUDED.thread_ts",
+            " ON CONFLICT (channel_id, message_ts) DO UPDATE SET identity_id = EXCLUDED.identity_id, char_count = EXCLUDED.char_count, thread_ts = EXCLUDED.thread_ts",
         );
         let mut q = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()));
         for msg in chunk {
+            let identity_id = locator_id(pool, &msg.user_id, false).await?;
+            let channel_id = locator_id(pool, &msg.channel_id, true).await?;
             q = q
-                .bind(&msg.user_id)
-                .bind(&msg.channel_id)
+                .bind(identity_id)
+                .bind(channel_id)
                 .bind(msg.message_ts as i64)
-                .bind(&msg.text)
-                .bind(&msg.thread_ts);
+                .bind(msg.char_count)
+                .bind(msg.thread_ts.map(|ts| ts as i64));
         }
         q.execute(pool).await?;
     }
@@ -312,7 +374,7 @@ pub async fn get_max_message_ts(
     channel_id: &str,
 ) -> Result<Option<u64>, Box<dyn std::error::Error>> {
     let row: Option<Option<i64>> =
-        sqlx::query_scalar("SELECT max(message_ts) FROM slack_messages WHERE channel_id = $1")
+        sqlx::query_scalar("SELECT max(m.message_ts) FROM slack_messages m JOIN slack_channels c ON c.internal_id = m.channel_id WHERE c.channel_id = $1")
             .bind(channel_id)
             .fetch_optional(pool)
             .await?;
@@ -367,7 +429,7 @@ pub async fn backfill_scraped_channels(pool: &PgPool) -> Result<(), Box<dyn std:
         "SELECT channel_id FROM (
             SELECT channel_id FROM scrape_checkpoints WHERE fully_scraped = 1
             UNION
-            SELECT DISTINCT channel_id FROM slack_messages
+            SELECT DISTINCT c.channel_id FROM slack_messages m JOIN slack_channels c ON c.internal_id = m.channel_id
         ) s
         WHERE channel_id NOT IN (SELECT channel_id FROM scraped_channels)",
     )
@@ -491,10 +553,10 @@ pub async fn get_max_thread_reply_ts(
     thread_ts: &str,
 ) -> Result<Option<u64>, Box<dyn std::error::Error>> {
     let row: Option<Option<i64>> = sqlx::query_scalar(
-        "SELECT max(message_ts) FROM slack_messages WHERE channel_id = $1 AND thread_ts = $2",
+        "SELECT max(m.message_ts) FROM slack_messages m JOIN slack_channels c ON c.internal_id = m.channel_id WHERE c.channel_id = $1 AND m.thread_ts = $2",
     )
     .bind(channel_id)
-    .bind(thread_ts)
+    .bind(slack_ts_to_micros(thread_ts) as i64)
     .fetch_optional(pool)
     .await?;
     Ok(row.flatten().map(|v| v.max(0) as u64))
@@ -507,14 +569,17 @@ pub async fn get_thread_roots(
     pool: &PgPool,
     channel_id: &str,
 ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
-    let rows: Vec<String> = sqlx::query_scalar(
-        "SELECT DISTINCT thread_ts FROM slack_messages \
-         WHERE channel_id = $1 AND thread_ts IS NOT NULL AND thread_ts != ''",
+    let rows: Vec<i64> = sqlx::query_scalar(
+        "SELECT DISTINCT thread_ts FROM slack_messages m JOIN slack_channels c ON c.internal_id = m.channel_id \
+         WHERE c.channel_id = $1 AND thread_ts IS NOT NULL",
     )
     .bind(channel_id)
     .fetch_all(pool)
     .await?;
-    Ok(rows)
+    Ok(rows
+        .into_iter()
+        .map(|ts| micros_to_slack_ts(ts.max(0) as u64))
+        .collect())
 }
 
 /// The channel id where the incremental sweep should resume. Empty means a fresh sweep from the start of the channel list.
