@@ -272,6 +272,12 @@ pub fn parse_time_range_at(text: &str, now: i64) -> Option<TimeRange> {
 
     ranges
         .into_iter()
-        .find(|(phrase, _)| normalized.contains(phrase))
+        .find(|(phrase, _)| {
+            if *phrase == "a" {
+                normalized.split_whitespace().any(|word| word == "a")
+            } else {
+                normalized.contains(phrase)
+            }
+        })
         .map(|(_, range)| range)
 }

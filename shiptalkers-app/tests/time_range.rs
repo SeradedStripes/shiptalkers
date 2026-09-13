@@ -64,6 +64,13 @@ fn rolling_ranges() {
 }
 
 #[test]
+fn a_only_matches_as_a_word() {
+    assert_eq!(range("a"), (None, None));
+    assert_eq!(range("show a"), (None, None));
+    assert!(parse_time_range_at("data", NOW).is_none());
+}
+
+#[test]
 fn digit_count_ranges() {
     assert_eq!(range("2 days"), (Some(NOW - 2 * 86400), None));
     assert_eq!(range("12 hours"), (Some(NOW - 12 * 3600), None));
