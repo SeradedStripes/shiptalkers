@@ -639,10 +639,11 @@ async fn query_slack_seconds(pool: &sqlx::PgPool, user: &str, range: &TimeRange)
         "WITH
          msg AS (
              SELECT message_ts / 1000000 AS ts,
-                    sum(char_length(text)) AS chars,
+                    sum(char_count) AS chars,
                     count(*) AS msgs
-             FROM slack_messages
-             WHERE user_id = $1",
+             FROM slack_messages m
+             JOIN slack_identities i ON i.internal_id = m.identity_id
+             WHERE i.anonymous_id = $1",
     );
     if range.start_ts().is_some() {
         session_sql.push_str(" AND message_ts / 1000000 >= $2");
@@ -679,7 +680,7 @@ async fn query_slack_seconds(pool: &sqlx::PgPool, user: &str, range: &TimeRange)
 
     let mut session_query =
         sqlx::query_scalar::<_, Option<i64>>(sqlx::AssertSqlSafe(session_sql.as_str()));
-    session_query = session_query.bind(user);
+    session_query = session_query.bind(ship_talkers_lib::base36::encode(user.as_bytes()));
     if let Some(start_ts) = range.start_ts() {
         session_query = session_query.bind(start_ts);
     }

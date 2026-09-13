@@ -451,16 +451,19 @@ async fn load_user_stats(
     .map_err(|e| e.to_string())?
     .unwrap_or(0)
     .max(0) as u64;
+    let anonymous_id = ship_talkers_lib::base36::encode(slack_id.as_bytes());
 
     let counts: Vec<(String, i64)> = sqlx::query_as(
         "SELECT channel_id, count(*) as messages
-         FROM slack_messages
-         WHERE user_id = $1
-         GROUP BY channel_id
+         FROM slack_messages m
+         JOIN slack_identities i ON i.internal_id = m.identity_id
+         JOIN slack_channels c ON c.internal_id = m.channel_id
+         WHERE i.anonymous_id = $1
+         GROUP BY c.channel_id
          ORDER BY messages DESC
          LIMIT 10",
     )
-    .bind(slack_id)
+    .bind(anonymous_id)
     .fetch_all(pool)
     .await
     .map_err(|e| e.to_string())?;
@@ -878,15 +881,15 @@ async fn load_channel_stats(
             .map_err(|e| e.to_string())?;
 
     let total_messages: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM slack_messages WHERE channel_id = $1")
+        sqlx::query_scalar("SELECT count(*) FROM slack_messages m JOIN slack_channels c ON c.internal_id = m.channel_id WHERE c.channel_id = $1")
             .bind(channel_id)
             .fetch_one(pool)
             .await
             .map_err(|e| e.to_string())?;
 
     let active_users: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
-        "SELECT count(DISTINCT user_id) FROM slack_messages \
-         WHERE channel_id = $1 AND {sup}",
+        "SELECT count(DISTINCT m.identity_id) FROM slack_messages m \
+         WHERE m.channel_id = (SELECT internal_id FROM slack_channels WHERE channel_id = $1) AND {sup}",
         sup = super::EXCLUDE_BOTS_DELETED
     )))
     .bind(channel_id)
@@ -895,7 +898,7 @@ async fn load_channel_stats(
     .map_err(|e| e.to_string())?;
 
     let first_message_ts: i64 = sqlx::query_scalar::<_, Option<i64>>(
-        "SELECT min(message_ts) FROM slack_messages WHERE channel_id = $1",
+        "SELECT min(m.message_ts) FROM slack_messages m JOIN slack_channels c ON c.internal_id = m.channel_id WHERE c.channel_id = $1",
     )
     .bind(channel_id)
     .fetch_one(pool)
@@ -905,7 +908,7 @@ async fn load_channel_stats(
     .max(0);
 
     let last_message_ts: i64 = sqlx::query_scalar::<_, Option<i64>>(
-        "SELECT max(message_ts) FROM slack_messages WHERE channel_id = $1",
+        "SELECT max(m.message_ts) FROM slack_messages m JOIN slack_channels c ON c.internal_id = m.channel_id WHERE c.channel_id = $1",
     )
     .bind(channel_id)
     .fetch_one(pool)
@@ -915,10 +918,12 @@ async fn load_channel_stats(
     .max(0);
 
     let posters: Vec<(String, i64)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-        "SELECT user_id, count(*) AS messages \
-         FROM slack_messages \
-         WHERE channel_id = $1 AND {sup} \
-         GROUP BY user_id \
+        "SELECT u.user_id, count(*) AS messages \
+         FROM slack_messages m \
+         JOIN slack_identities i ON i.internal_id = m.identity_id \
+         JOIN users u ON u.anonymous_id = i.anonymous_id \
+         WHERE m.channel_id = (SELECT internal_id FROM slack_channels WHERE channel_id = $1) AND {sup} \
+         GROUP BY u.user_id \
          ORDER BY messages DESC \
          LIMIT 10",
         sup = super::EXCLUDE_BOTS_DELETED

@@ -10,8 +10,7 @@ fn now_secs() -> u64 {
 
 const WORD_FULL_REBUILD_SECS: u64 = 24 * 3600;
 
-const EXCLUDE_BOTS_DELETED: &str =
-    "user_id NOT IN (SELECT user_id FROM users WHERE is_bot = 1 OR is_deleted = 1)";
+const EXCLUDE_BOTS_DELETED: &str = "NOT EXISTS (SELECT 1 FROM slack_identities bi JOIN users bu ON bu.anonymous_id = bi.anonymous_id WHERE bi.internal_id = m.identity_id AND (bu.is_bot = 1 OR bu.is_deleted = 1))";
 
 pub async fn refresh_word_totals(pool: &PgPool) -> Result<(), Box<dyn std::error::Error>> {
     let now = now_secs();
@@ -153,10 +152,10 @@ pub async fn refresh_daily_stats(pool: &PgPool) -> Result<(), Box<dyn std::error
     let slack: Vec<(time::Date, i64)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "WITH
          msg AS (
-             SELECT user_id, message_ts / 1000000 AS ts,
-                    sum(char_length(text)) AS chars,
+             SELECT m.identity_id, m.message_ts / 1000000 AS ts,
+                    sum(m.char_count) AS chars,
                     count(*) AS msgs
-             FROM slack_messages
+             FROM slack_messages m
              WHERE {EXCLUDE_BOTS_DELETED}
              GROUP BY user_id, ts
          ),

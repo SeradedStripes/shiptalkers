@@ -38,6 +38,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .as_ref()
         .map(|p| std::sync::Arc::new(db::postgres_db::AuthDb::new(p.clone())));
 
+    if let Some(auth_db) = &auth_db {
+        auth_db
+            .load_consents()
+            .await
+            .map_err(|e| format!("failed to load Slack consents: {e}"))?;
+    }
+
     if let Some(pool) = &pool {
         {
             let pool_for_words = pool.clone();

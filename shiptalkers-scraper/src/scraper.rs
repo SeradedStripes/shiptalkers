@@ -197,6 +197,9 @@ pub async fn run_scraper(
     db::postgres_db::load_locator_caches(&pool)
         .await
         .map_err(|e| format!("failed to load locator caches: {e}"))?;
+    db::postgres_db::load_consent_cache(&pool)
+        .await
+        .map_err(|e| format!("failed to load consent cache: {e}"))?;
     if let Err(e) = db::postgres_db::seed_message_count(&pool).await {
         tracing::warn!("Failed to seed message count: {}", e);
     }
@@ -799,6 +802,7 @@ async fn process_channel_page(
                 .thread_ts
                 .as_deref()
                 .map(db::postgres_db::slack_ts_to_micros),
+            text: m.text.clone(),
         })
         .collect();
 
@@ -860,6 +864,7 @@ async fn process_thread_page(
                     .thread_ts
                     .as_deref()
                     .map(db::postgres_db::slack_ts_to_micros),
+                text: m.text.clone(),
             })
             .collect();
         inserted = db::postgres_db::insert_messages(pool, &rows)

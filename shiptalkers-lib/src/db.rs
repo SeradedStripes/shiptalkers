@@ -139,10 +139,34 @@ pub async fn init_tables(pool: &PgPool) -> Result<(), Box<dyn std::error::Error>
     sqlx::query("CREATE INDEX IF NOT EXISTS slack_messages_identity_ts_idx ON slack_messages (identity_id, message_ts)").execute(pool).await?;
     sqlx::query("CREATE INDEX IF NOT EXISTS slack_messages_identity_channel_ts_idx ON slack_messages (identity_id, channel_id, message_ts)").execute(pool).await?;
     sqlx::query("CREATE INDEX IF NOT EXISTS slack_messages_channel_ts_idx ON slack_messages (channel_id, message_ts)").execute(pool).await?;
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS slack_message_contents (
+            channel_id INTEGER NOT NULL,
+            message_ts BIGINT NOT NULL,
+            text TEXT NOT NULL,
+            PRIMARY KEY (channel_id, message_ts),
+            FOREIGN KEY (channel_id, message_ts)
+                REFERENCES slack_messages(channel_id, message_ts)
+                ON DELETE CASCADE
+        )",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS slack_consents (
+            identity_id INTEGER PRIMARY KEY REFERENCES slack_identities(internal_id) ON DELETE CASCADE,
+            consented_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            revoked_at TIMESTAMPTZ,
+            consent_source TEXT
+        )",
+    )
+    .execute(pool)
+    .await?;
 
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS users (
             user_id TEXT PRIMARY KEY,
+            anonymous_id TEXT UNIQUE,
             merged_name TEXT NOT NULL DEFAULT '',
             display_name TEXT NOT NULL DEFAULT '',
             real_name TEXT NOT NULL DEFAULT '',
@@ -166,6 +190,20 @@ pub async fn init_tables(pool: &PgPool) -> Result<(), Box<dyn std::error::Error>
     )
     .execute(pool)
     .await?;
+    sqlx::query("ALTER TABLE users ADD COLUMN IF NOT EXISTS anonymous_id TEXT UNIQUE")
+        .execute(pool)
+        .await?;
+    let user_ids: Vec<String> =
+        sqlx::query_scalar("SELECT user_id FROM users WHERE anonymous_id IS NULL")
+            .fetch_all(pool)
+            .await?;
+    for user_id in user_ids {
+        sqlx::query("UPDATE users SET anonymous_id = $1 WHERE user_id = $2")
+            .bind(crate::base36::encode(user_id.as_bytes()))
+            .bind(user_id)
+            .execute(pool)
+            .await?;
+    }
     // Migrate pre-merged_name schemas: rename display_name to merged_name, add profile fields.
     sqlx::query(
         "DO $$
@@ -373,7 +411,6 @@ pub async fn init_tables(pool: &PgPool) -> Result<(), Box<dyn std::error::Error>
     )
     .execute(pool)
     .await?;
-
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS scrape_sweep (
             id SMALLINT PRIMARY KEY,
@@ -383,7 +420,6 @@ pub async fn init_tables(pool: &PgPool) -> Result<(), Box<dyn std::error::Error>
     )
     .execute(pool)
     .await?;
-
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS word_refresh_meta (
             id SMALLINT PRIMARY KEY,
@@ -393,6 +429,24 @@ pub async fn init_tables(pool: &PgPool) -> Result<(), Box<dyn std::error::Error>
     )
     .execute(pool)
     .await?;
+    let content_cleanup_done: Option<i16> =
+        sqlx::query_scalar("SELECT done FROM backfill_meta WHERE name = 'content_policy_cleanup'")
+            .fetch_optional(pool)
+            .await?;
+    if content_cleanup_done != Some(1) {
+        tracing::warn!("Clearing legacy content-derived word indexes without consent provenance");
+        sqlx::query("DELETE FROM word_counts").execute(pool).await?;
+        sqlx::query("DELETE FROM word_totals").execute(pool).await?;
+        sqlx::query("UPDATE word_refresh_meta SET watermark = 0 WHERE id = 1")
+            .execute(pool)
+            .await?;
+        sqlx::query(
+            "INSERT INTO backfill_meta (name, done) VALUES ('content_policy_cleanup', 1)
+             ON CONFLICT (name) DO UPDATE SET done = EXCLUDED.done",
+        )
+        .execute(pool)
+        .await?;
+    }
 
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS daily_stats (
@@ -569,6 +623,7 @@ async fn migrate_locator_messages(pool: &PgPool) -> Result<(), Box<dyn std::erro
     sqlx::query("UPDATE slack_messages SET char_count = char_length(text) WHERE char_count = 0")
         .execute(pool)
         .await?;
+    tracing::warn!("Dropping legacy message text; existing content has no consent provenance");
     sqlx::query("ALTER TABLE slack_messages DROP CONSTRAINT IF EXISTS slack_messages_pkey")
         .execute(pool)
         .await?;
@@ -628,16 +683,17 @@ pub async fn upsert_users(
     }
     for chunk in users.chunks(INSERT_CHUNK) {
         let mut sql = String::from(
-            "INSERT INTO users (user_id, merged_name, display_name, real_name, username, email, title, status_text, status_emoji, tz, tz_label, locale, pfp, updated, is_bot, is_deleted, is_admin, is_owner, is_restricted, is_app_user) VALUES ",
+            "INSERT INTO users (user_id, anonymous_id, merged_name, display_name, real_name, username, email, title, status_text, status_emoji, tz, tz_label, locale, pfp, updated, is_bot, is_deleted, is_admin, is_owner, is_restricted, is_app_user) VALUES ",
         );
-        sql.push_str(&placeholders(chunk.len(), 20));
+        sql.push_str(&placeholders(chunk.len(), 21));
         sql.push_str(
-            " ON CONFLICT (user_id) DO UPDATE SET merged_name = EXCLUDED.merged_name, display_name = EXCLUDED.display_name, real_name = EXCLUDED.real_name, username = EXCLUDED.username, email = EXCLUDED.email, title = EXCLUDED.title, status_text = EXCLUDED.status_text, status_emoji = EXCLUDED.status_emoji, tz = EXCLUDED.tz, tz_label = EXCLUDED.tz_label, locale = EXCLUDED.locale, pfp = EXCLUDED.pfp, updated = EXCLUDED.updated, is_bot = EXCLUDED.is_bot, is_deleted = EXCLUDED.is_deleted, is_admin = EXCLUDED.is_admin, is_owner = EXCLUDED.is_owner, is_restricted = EXCLUDED.is_restricted, is_app_user = EXCLUDED.is_app_user",
+            " ON CONFLICT (user_id) DO UPDATE SET anonymous_id = EXCLUDED.anonymous_id, merged_name = EXCLUDED.merged_name, display_name = EXCLUDED.display_name, real_name = EXCLUDED.real_name, username = EXCLUDED.username, email = EXCLUDED.email, title = EXCLUDED.title, status_text = EXCLUDED.status_text, status_emoji = EXCLUDED.status_emoji, tz = EXCLUDED.tz, tz_label = EXCLUDED.tz_label, locale = EXCLUDED.locale, pfp = EXCLUDED.pfp, updated = EXCLUDED.updated, is_bot = EXCLUDED.is_bot, is_deleted = EXCLUDED.is_deleted, is_admin = EXCLUDED.is_admin, is_owner = EXCLUDED.is_owner, is_restricted = EXCLUDED.is_restricted, is_app_user = EXCLUDED.is_app_user",
         );
         let mut q = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()));
         for u in chunk {
             q = q
                 .bind(&u.user_id)
+                .bind(crate::base36::encode(u.user_id.as_bytes()))
                 .bind(&u.merged_name)
                 .bind(&u.display_name)
                 .bind(&u.real_name)

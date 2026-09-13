@@ -23,6 +23,23 @@
         </div>
 
         <div class="card">
+            <h2>Slack message consent</h2>
+            {% if signed_in %}
+            <p class="status">Opt in to content storage for future messages, or revoke consent and remove stored content.</p>
+            <form action="/link/consent" method="post" style="display: inline;">
+                <input type="hidden" name="csrf" value="{{ csrf_token }}">
+                <button type="submit" class="btn">Opt in</button>
+            </form>
+            <form action="/link/consent/revoke" method="post" style="display: inline;">
+                <input type="hidden" name="csrf" value="{{ csrf_token }}">
+                <button type="submit" class="btn">Revoke</button>
+            </form>
+            {% else %}
+            <p class="status">Sign in to manage message consent.</p>
+            {% endif %}
+        </div>
+
+        <div class="card">
             <h2>Hackatime</h2>
             {% if hackatime_connected %}
             <p class="status connected">Connected</p>

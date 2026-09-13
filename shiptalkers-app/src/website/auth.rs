@@ -272,6 +272,56 @@ pub async fn link_revoke_grant(
     Ok(Redirect::to("/link"))
 }
 
+pub async fn link_grant_consent(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Form(params): Form<HashMap<String, String>>,
+) -> Result<Redirect, StatusCode> {
+    let session =
+        session_from_request(&headers, &auth_config(&state)).ok_or(StatusCode::UNAUTHORIZED)?;
+    if !csrf_matches(
+        &headers,
+        &auth_config(&state),
+        params.get("csrf").map(String::as_str),
+    ) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    state
+        .auth_db()?
+        .grant_consent(&session.slack_id, Some("link"))
+        .await
+        .map_err(|e| {
+            tracing::error!("grant_consent failed: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    Ok(Redirect::to("/link"))
+}
+
+pub async fn link_revoke_consent(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Form(params): Form<HashMap<String, String>>,
+) -> Result<Redirect, StatusCode> {
+    let session =
+        session_from_request(&headers, &auth_config(&state)).ok_or(StatusCode::UNAUTHORIZED)?;
+    if !csrf_matches(
+        &headers,
+        &auth_config(&state),
+        params.get("csrf").map(String::as_str),
+    ) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    state
+        .auth_db()?
+        .revoke_consent(&session.slack_id)
+        .await
+        .map_err(|e| {
+            tracing::error!("revoke_consent failed: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    Ok(Redirect::to("/link"))
+}
+
 #[derive(Template)]
 #[template(path = "link.html")]
 struct LinkTemplate {

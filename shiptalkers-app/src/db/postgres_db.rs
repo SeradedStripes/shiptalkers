@@ -7,6 +7,9 @@ use rand::Rng;
 use rand::rng;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
+use std::collections::HashSet;
+use std::sync::Arc;
+use tokio::sync::RwLock;
 
 pub use ship_talkers_lib::db::{
     SlackChannelRow, SlackUserRow, connect, init_tables, insert_new_channels_rows, placeholders,
@@ -35,11 +38,94 @@ pub async fn insert_new_channels(
 #[derive(Clone)]
 pub struct AuthDb {
     pool: PgPool,
+    consented: Arc<RwLock<HashSet<i32>>>,
 }
 
 impl AuthDb {
     pub fn new(pool: PgPool) -> Self {
-        Self { pool }
+        Self {
+            pool,
+            consented: Arc::new(RwLock::new(HashSet::new())),
+        }
+    }
+
+    pub async fn load_consents(&self) -> Result<(), String> {
+        let ids: Vec<i32> = sqlx::query_scalar(
+            "SELECT identity_id FROM slack_consents WHERE consented_at IS NOT NULL AND revoked_at IS NULL",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| e.to_string())?;
+        self.consented.write().await.extend(ids);
+        Ok(())
+    }
+
+    pub async fn identity_is_consented(&self, identity_id: i32) -> bool {
+        self.consented.read().await.contains(&identity_id)
+    }
+
+    async fn identity_id(&self, slack_id: &str) -> Result<Option<i32>, String> {
+        let anonymous_id = ship_talkers_lib::base36::encode(slack_id.as_bytes());
+        sqlx::query_scalar("SELECT internal_id FROM slack_identities WHERE anonymous_id = $1")
+            .bind(anonymous_id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| e.to_string())
+    }
+
+    pub async fn grant_consent(&self, slack_id: &str, source: Option<&str>) -> Result<(), String> {
+        let identity_id = self
+            .identity_id(slack_id)
+            .await?
+            .ok_or_else(|| "Slack identity has no stored locator".to_owned())?;
+        sqlx::query(
+            "INSERT INTO slack_consents (identity_id, consent_source) VALUES ($1, $2)
+             ON CONFLICT (identity_id) DO UPDATE SET consented_at = NOW(), revoked_at = NULL, consent_source = EXCLUDED.consent_source",
+        )
+        .bind(identity_id)
+        .bind(source)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| e.to_string())?;
+        self.consented.write().await.insert(identity_id);
+        Ok(())
+    }
+
+    pub async fn revoke_consent(&self, slack_id: &str) -> Result<(), String> {
+        let identity_id = self.identity_id(slack_id).await?;
+        let Some(identity_id) = identity_id else {
+            return Ok(());
+        };
+        let mut tx = self.pool.begin().await.map_err(|e| e.to_string())?;
+        sqlx::query("UPDATE slack_consents SET revoked_at = NOW() WHERE identity_id = $1 AND revoked_at IS NULL")
+            .bind(identity_id).execute(&mut *tx).await.map_err(|e| e.to_string())?;
+        sqlx::query(
+            "DELETE FROM slack_message_contents c USING slack_messages m
+             WHERE c.channel_id = m.channel_id AND c.message_ts = m.message_ts AND m.identity_id = $1",
+        )
+        .bind(identity_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?;
+        sqlx::query(
+            "DELETE FROM word_counts w USING users u, slack_identities i
+             WHERE w.user_id = u.user_id AND u.anonymous_id = i.anonymous_id AND i.internal_id = $1",
+        )
+        .bind(identity_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?;
+        sqlx::query("DELETE FROM word_totals")
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| e.to_string())?;
+        sqlx::query("UPDATE word_refresh_meta SET watermark = 0 WHERE id = 1")
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| e.to_string())?;
+        tx.commit().await.map_err(|e| e.to_string())?;
+        self.consented.write().await.remove(&identity_id);
+        Ok(())
     }
 
     pub async fn mark_linked(&self, slack_id: &str, display_name: &str) -> Result<(), String> {

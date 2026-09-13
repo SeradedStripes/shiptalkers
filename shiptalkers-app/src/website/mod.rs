@@ -14,8 +14,7 @@ use tokio::sync::Mutex;
 
 use crate::settings::RuntimeSettings;
 
-const EXCLUDE_BOTS_DELETED: &str =
-    "user_id NOT IN (SELECT user_id FROM users WHERE is_bot = 1 OR is_deleted = 1)";
+const EXCLUDE_BOTS_DELETED: &str = "NOT EXISTS (SELECT 1 FROM slack_identities bi JOIN users bu ON bu.anonymous_id = bi.anonymous_id WHERE bi.internal_id = m.identity_id AND (bu.is_bot = 1 OR bu.is_deleted = 1))";
 const EXCLUDE_BOTS_DELETED_SLACK_ID: &str =
     "slack_id NOT IN (SELECT user_id FROM users WHERE is_bot = 1 OR is_deleted = 1)";
 
@@ -352,6 +351,8 @@ pub fn router(
             post(auth::link_revoke_api_key),
         )
         .route("/link/grants", post(auth::link_create_grant))
+        .route("/link/consent", post(auth::link_grant_consent))
+        .route("/link/consent/revoke", post(auth::link_revoke_consent))
         .route(
             "/link/grants/{key_id}/revoke",
             post(auth::link_revoke_grant),
@@ -1121,6 +1122,7 @@ async fn get_user_stats(
     let started = Instant::now();
     let ch = state.pool()?;
     let signed_in = signed_in(state, headers);
+    let anonymous_id = ship_talkers_lib::base36::encode(slack_id.as_bytes());
 
     #[derive(Debug)]
     struct UserInfo {
@@ -1210,13 +1212,15 @@ async fn get_user_stats(
 
     let counts: Vec<(String, i64)> = sqlx::query_as(
         "SELECT channel_id, count(*) as messages
-         FROM slack_messages
-         WHERE user_id = $1
-         GROUP BY channel_id
+         FROM slack_messages m
+         JOIN slack_identities i ON i.internal_id = m.identity_id
+         JOIN slack_channels c ON c.internal_id = m.channel_id
+         WHERE i.anonymous_id = $1
+         GROUP BY c.channel_id
          ORDER BY messages DESC
          LIMIT 5",
     )
-    .bind(slack_id)
+    .bind(anonymous_id)
     .fetch_all(ch)
     .await
     .unwrap_or_default();
@@ -1305,7 +1309,7 @@ async fn get_channel_stats(
     .unwrap_or_default();
 
     let total_messages: u64 =
-        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM slack_messages WHERE channel_id = $1")
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM slack_messages m JOIN slack_channels c ON c.internal_id = m.channel_id WHERE c.channel_id = $1")
             .bind(channel_id)
             .fetch_one(ch)
             .await
@@ -1313,8 +1317,8 @@ async fn get_channel_stats(
             .max(0) as u64;
 
     let active_users: u64 = sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(format!(
-        "SELECT count(DISTINCT user_id) FROM slack_messages
-         WHERE channel_id = $1 AND {EXCLUDE_BOTS_DELETED}"
+        "SELECT count(DISTINCT m.identity_id) FROM slack_messages m
+         WHERE m.channel_id = (SELECT internal_id FROM slack_channels WHERE channel_id = $1) AND {EXCLUDE_BOTS_DELETED}"
     )))
     .bind(channel_id)
     .fetch_one(ch)
@@ -1323,7 +1327,7 @@ async fn get_channel_stats(
     .max(0) as u64;
 
     let last_ts: u64 = sqlx::query_scalar::<_, Option<i64>>(
-        "SELECT max(message_ts) FROM slack_messages WHERE channel_id = $1",
+        "SELECT max(m.message_ts) FROM slack_messages m JOIN slack_channels c ON c.internal_id = m.channel_id WHERE c.channel_id = $1",
     )
     .bind(channel_id)
     .fetch_one(ch)
@@ -1334,7 +1338,7 @@ async fn get_channel_stats(
     .max(0) as u64;
 
     let first_ts: u64 = sqlx::query_scalar::<_, Option<i64>>(
-        "SELECT min(message_ts) FROM slack_messages WHERE channel_id = $1",
+        "SELECT min(m.message_ts) FROM slack_messages m JOIN slack_channels c ON c.internal_id = m.channel_id WHERE c.channel_id = $1",
     )
     .bind(channel_id)
     .fetch_one(ch)
@@ -1345,10 +1349,12 @@ async fn get_channel_stats(
     .max(0) as u64;
 
     let posters: Vec<(String, i64)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-        "SELECT user_id, count(*) as messages
-         FROM slack_messages
-         WHERE channel_id = $1 AND {EXCLUDE_BOTS_DELETED}
-         GROUP BY user_id
+        "SELECT u.user_id, count(*) as messages
+         FROM slack_messages m
+         JOIN slack_identities i ON i.internal_id = m.identity_id
+         JOIN users u ON u.anonymous_id = i.anonymous_id
+         WHERE m.channel_id = (SELECT internal_id FROM slack_channels WHERE channel_id = $1) AND {EXCLUDE_BOTS_DELETED}
+         GROUP BY u.user_id
          ORDER BY messages DESC
          LIMIT 10"
     )))
