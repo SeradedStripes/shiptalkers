@@ -67,7 +67,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     if let Err(e) = db::refresh::refresh_page_stats(&pool_for_stats).await {
                         tracing::warn!("Failed to refresh page stats: {}", e);
                     }
-                    tokio::time::sleep(std::time::Duration::from_secs(30 * 60)).await;
+                    tokio::time::sleep(std::time::Duration::from_secs(30)).await;
                 }
             });
         }
