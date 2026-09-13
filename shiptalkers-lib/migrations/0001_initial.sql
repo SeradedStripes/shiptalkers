@@ -1,3 +1,31 @@
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.tables
+        WHERE table_schema = current_schema() AND table_name = 'slack_messages'
+    ) AND NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = current_schema()
+          AND table_name = 'slack_messages'
+          AND column_name = 'identity_id'
+    ) THEN
+        DROP TABLE slack_messages CASCADE;
+    END IF;
+
+    IF EXISTS (
+        SELECT 1 FROM information_schema.tables
+        WHERE table_schema = current_schema() AND table_name = 'slack_channels'
+    ) AND NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = current_schema()
+          AND table_name = 'slack_channels'
+          AND column_name = 'internal_id'
+    ) THEN
+        DROP TABLE slack_channels CASCADE;
+    END IF;
+END
+$$;
+
 CREATE TABLE IF NOT EXISTS slack_identities (
     internal_id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     anonymous_id TEXT UNIQUE NOT NULL
@@ -69,6 +97,9 @@ CREATE TABLE IF NOT EXISTS users (
     is_restricted SMALLINT NOT NULL DEFAULT 0,
     is_app_user SMALLINT NOT NULL DEFAULT 0
 );
+ALTER TABLE users ADD COLUMN IF NOT EXISTS anonymous_id TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS users_anonymous_id_idx
+    ON users (anonymous_id) WHERE anonymous_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS scrape_checkpoints (
     channel_id TEXT PRIMARY KEY,
