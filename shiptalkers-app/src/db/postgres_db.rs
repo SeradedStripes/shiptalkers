@@ -26,7 +26,7 @@ pub async fn grant_slack_consent(pool: &PgPool, slack_id: &str) -> Result<(), St
          )
          INSERT INTO slack_consents (identity_id, consent_source)
          SELECT internal_id, 'slack_channel' FROM identity
-         ON CONFLICT (identity_id) DO UPDATE SET consented_at = NOW(), revoked_at = NULL,
+          ON CONFLICT (identity_id) DO UPDATE SET consented_at = NOW(), revoked_at = NULL, content_backfilled_at = NULL,
              consent_source = EXCLUDED.consent_source",
     )
     .bind(anonymous_id)
@@ -114,7 +114,7 @@ impl AuthDb {
             .ok_or_else(|| "Slack identity has no stored locator".to_owned())?;
         sqlx::query(
             "INSERT INTO slack_consents (identity_id, consent_source) VALUES ($1, $2)
-             ON CONFLICT (identity_id) DO UPDATE SET consented_at = NOW(), revoked_at = NULL, consent_source = EXCLUDED.consent_source",
+             ON CONFLICT (identity_id) DO UPDATE SET consented_at = NOW(), revoked_at = NULL, content_backfilled_at = NULL, consent_source = EXCLUDED.consent_source",
         )
         .bind(identity_id)
         .bind(source)

@@ -79,6 +79,37 @@ pub async fn load_consent_cache(pool: &PgPool) -> Result<(), Box<dyn std::error:
     Ok(())
 }
 
+pub async fn pending_consent_channels(
+    pool: &PgPool,
+) -> Result<Vec<(i32, String)>, Box<dyn std::error::Error>> {
+    Ok(sqlx::query_as(
+        "SELECT i.internal_id, c.channel_id
+         FROM slack_consents consent
+         JOIN slack_identities i ON i.internal_id = consent.identity_id
+         JOIN slack_messages m ON m.identity_id = i.internal_id
+         JOIN slack_channels c ON c.internal_id = m.channel_id
+         WHERE consent.revoked_at IS NULL AND consent.content_backfilled_at IS NULL
+         GROUP BY i.internal_id, c.channel_id
+         ORDER BY i.internal_id, c.channel_id",
+    )
+    .fetch_all(pool)
+    .await?)
+}
+
+pub async fn mark_content_backfilled(
+    pool: &PgPool,
+    identity_id: i32,
+) -> Result<(), Box<dyn std::error::Error>> {
+    sqlx::query(
+        "UPDATE slack_consents SET content_backfilled_at = NOW()
+         WHERE identity_id = $1 AND revoked_at IS NULL",
+    )
+    .bind(identity_id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 async fn refresh_consent_cache(pool: &PgPool) -> Result<(), Box<dyn std::error::Error>> {
     let now = crate::db::postgres_db::now_secs();
     let previous = CONSENT_CACHE_REFRESHED.load(std::sync::atomic::Ordering::Relaxed);

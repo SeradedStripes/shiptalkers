@@ -249,6 +249,7 @@ pub async fn run_scraper(
         // List and message passes have separate rate budgets, so run them in parallel
         let (list_result, _) = tokio::join!(full_fetch(&list_pool, &pool), async {
             if !user_tokens.is_empty() {
+                backfill_consented_content(&settings, &pool).await;
                 scrape_all_messages(&settings, &pool).await;
             }
         });
@@ -269,6 +270,84 @@ pub async fn run_scraper(
             tracing::info!(
                 "Scrape cycle took {:.0}s (longer than 30m), starting next cycle immediately",
                 elapsed.as_secs_f64()
+            );
+        }
+    }
+}
+
+async fn backfill_consented_content(settings: &settings::RuntimeSettings, pool: &sqlx::PgPool) {
+    let pending = match db::postgres_db::pending_consent_channels(pool).await {
+        Ok(pending) => pending,
+        Err(e) => {
+            tracing::warn!("Failed to load consent content backfills: {}", e);
+            return;
+        }
+    };
+    if pending.is_empty() {
+        return;
+    }
+    let tokens = settings.get_list("SLACK_USER_TOKENS");
+    let Some(token) = tokens.first() else {
+        return;
+    };
+    let client = slack::SlackClient::new(
+        token.clone(),
+        Duration::from_millis(settings.get_u64("SLACK_REQUEST_DELAY_MS")),
+        settings.get_u64("SLACK_MAX_INFLIGHT") as usize,
+    );
+    let mut channels: HashMap<String, std::collections::HashSet<i32>> = HashMap::new();
+    let mut complete: HashMap<i32, bool> = HashMap::new();
+    for (identity_id, channel_id) in pending {
+        channels.entry(channel_id).or_default().insert(identity_id);
+        complete.entry(identity_id).or_insert(true);
+    }
+
+    for (channel_id, identities) in channels {
+        let pool_for_page = pool.clone();
+        let channel_for_page = channel_id.clone();
+        let failed = Arc::new(AtomicBool::new(false));
+        let failed_for_page = failed.clone();
+        let result = client
+            .stream_channel_history(&channel_id, None, move |page| {
+                let pool = pool_for_page.clone();
+                let channel_id = channel_for_page.clone();
+                let failed = failed_for_page.clone();
+                Box::pin(async move {
+                    let rows: Vec<db::postgres_db::SlackMessageRow> = page
+                        .iter()
+                        .map(|message| db::postgres_db::SlackMessageRow {
+                            user_id: message.user.clone(),
+                            channel_id: message.channel.clone(),
+                            message_ts: db::postgres_db::slack_ts_to_micros(&message.ts),
+                            char_count: message.text.chars().count() as i32,
+                            thread_ts: message
+                                .thread_ts
+                                .as_deref()
+                                .map(db::postgres_db::slack_ts_to_micros),
+                            text: message.text.clone(),
+                        })
+                        .collect();
+                    if let Err(e) = db::postgres_db::insert_messages(&pool, &rows).await {
+                        tracing::warn!("Failed to backfill content in {}: {}", channel_id, e);
+                        failed.store(true, Ordering::Relaxed);
+                    }
+                })
+            })
+            .await;
+        if result.is_err() || failed.load(Ordering::Relaxed) {
+            for identity_id in identities {
+                complete.insert(identity_id, false);
+            }
+        }
+    }
+    for (identity_id, succeeded) in complete {
+        if succeeded
+            && let Err(e) = db::postgres_db::mark_content_backfilled(pool, identity_id).await
+        {
+            tracing::warn!(
+                "Failed to mark consent content backfill complete for {}: {}",
+                identity_id,
+                e
             );
         }
     }
