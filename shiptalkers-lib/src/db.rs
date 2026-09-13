@@ -122,7 +122,8 @@ pub async fn upsert_users(
     if users.is_empty() {
         return Ok(());
     }
-    for chunk in users.chunks(INSERT_CHUNK) {
+    const USER_INSERT_CHUNK: usize = 3_000;
+    for chunk in users.chunks(USER_INSERT_CHUNK) {
         let mut sql = String::from(
             "INSERT INTO users (user_id, anonymous_id, merged_name, display_name, real_name, username, email, title, status_text, status_emoji, tz, tz_label, locale, pfp, updated, is_bot, is_deleted, is_admin, is_owner, is_restricted, is_app_user) VALUES ",
         );

@@ -10,7 +10,9 @@ fn now_secs() -> u64 {
 
 const WORD_FULL_REBUILD_SECS: u64 = 24 * 3600;
 
-const EXCLUDE_BOTS_DELETED: &str = "NOT EXISTS (SELECT 1 FROM slack_identities bi JOIN users bu ON bu.anonymous_id = bi.anonymous_id WHERE bi.internal_id = m.identity_id AND (bu.is_bot = 1 OR bu.is_deleted = 1))";
+const EXCLUDE_WORD_BOTS_DELETED: &str =
+    "user_id NOT IN (SELECT user_id FROM users WHERE is_bot = 1 OR is_deleted = 1)";
+const EXCLUDE_MESSAGE_BOTS_DELETED: &str = "NOT EXISTS (SELECT 1 FROM slack_identities bi JOIN users bu ON bu.anonymous_id = bi.anonymous_id WHERE bi.internal_id = m.identity_id AND (bu.is_bot = 1 OR bu.is_deleted = 1))";
 
 pub async fn refresh_word_totals(pool: &PgPool) -> Result<(), Box<dyn std::error::Error>> {
     let now = now_secs();
@@ -91,7 +93,7 @@ async fn refresh_word_totals_upsert(
                      SELECT word, sum(count) AS cnt
                      FROM word_counts
                      WHERE word = ANY($2)
-                       AND {EXCLUDE_BOTS_DELETED}
+                       AND {EXCLUDE_WORD_BOTS_DELETED}
                      GROUP BY word
                  )
                  INSERT INTO word_totals (word, cnt, updated)
@@ -108,7 +110,7 @@ async fn refresh_word_totals_upsert(
                 "WITH agg AS (
                      SELECT word, sum(count) AS cnt
                      FROM word_counts
-                     WHERE {EXCLUDE_BOTS_DELETED}
+                      WHERE {EXCLUDE_WORD_BOTS_DELETED}
                      GROUP BY word
                  )
                  INSERT INTO word_totals (word, cnt, updated)
@@ -156,7 +158,7 @@ pub async fn refresh_daily_stats(pool: &PgPool) -> Result<(), Box<dyn std::error
                     sum(m.char_count) AS chars,
                     count(*) AS msgs
              FROM slack_messages m
-             WHERE {EXCLUDE_BOTS_DELETED}
+             WHERE {EXCLUDE_MESSAGE_BOTS_DELETED}
              GROUP BY user_id, ts
          ),
          flagged AS (
@@ -231,7 +233,7 @@ pub async fn refresh_page_stats(pool: &PgPool) -> Result<(), Box<dyn std::error:
             .flatten()
             .unwrap_or(0);
     let slack_time_secs: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
-        "SELECT sum(total_time)::bigint FROM user_scores WHERE {EXCLUDE_BOTS_DELETED}"
+        "SELECT sum(total_time)::bigint FROM user_scores WHERE {EXCLUDE_WORD_BOTS_DELETED}"
     )))
     .fetch_one(pool)
     .await
