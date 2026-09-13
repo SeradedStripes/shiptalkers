@@ -5,4 +5,4 @@ the scraper or application starts using PostgreSQL.
 
 `0001_initial.sql` is a baseline for the compact locator schema.
 Existing databases created by the previous runtime bootstrap must be backed up before the first migration run.
-The old runtime initializer remains available only for legacy conversion and is no longer called at startup.
+The application now expects a fresh database and a full rescrape under the opt-in policy.
