@@ -29,7 +29,7 @@
             <table>
                 <thead>
                     <tr>
-                        <th>#</th>
+                        <th>{% if numbered %}#{% else %}ShipTalkers ID{% endif %}</th>
                         <th>{{ entity }}</th>
                         <th>{{ unit }}</th>
                         {% if extra_unit.is_some() %}
@@ -43,7 +43,7 @@
                     {% else %}
                     {% for e in rows %}
                     <tr{% if e.highlight %} class="highlighted"{% endif %}>
-                        <td>{{ e.rank }}</td>
+                        <td>{{ e.label }}</td>
                         <td><span class="user-cell">{% if !e.pfp.is_empty() %}<img class="avatar" src="{{ e.pfp }}" alt="">{% endif %}{% if e.linked %}<a href="/stats/{{ e.user_id }}">{{ e.merged_name }}</a>{% else %}{{ e.merged_name }}{% endif %}</span></td>
                         <td>{{ e.value }}</td>
                         {% if extra_unit.is_some() %}

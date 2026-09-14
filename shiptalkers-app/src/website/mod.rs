@@ -277,6 +277,7 @@ pub struct BoardCategoryTemplate {
     pub category: String,
     pub query: String,
     pub notice: Option<String>,
+    pub numbered: bool,
     pub signed_in: bool,
     pub page_load_ms: String,
 }
@@ -289,6 +290,7 @@ pub struct BoardEntry {
     pub extra: String,
     pub linked: bool,
     pub rank: u64,
+    pub label: String,
     pub highlight: bool,
 }
 
@@ -327,6 +329,7 @@ pub fn router(
         .route("/stats", get(get_stats_page))
         .route("/stats/{id}", get(get_stats_for_id))
         .route("/boards", get(get_boards))
+        .route("/boards/users/", get(get_users_board))
         .route("/boards/{category}", get(get_board_category))
         .route("/api/docs", get(get_api_docs))
         .route("/api/docs/{topic}", get(get_api_docs))
@@ -956,6 +959,7 @@ async fn get_board_category(
                     extra: String::new(),
                     linked: false,
                     rank: r.rank,
+                    label: r.rank.to_string(),
                     highlight: r.highlight,
                 })
                 .collect();
@@ -996,7 +1000,61 @@ async fn get_board_category(
         category,
         query,
         notice,
+        numbered: true,
         signed_in,
+        page_load_ms: format!("{}ms", started.elapsed().as_millis()),
+    };
+    let html = template
+        .render()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Html(html))
+}
+
+async fn get_users_board(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Html<String>, StatusCode> {
+    let started = Instant::now();
+    let ch = state.pool()?;
+    let rows: Vec<BoardEntry> = sqlx::query_as::<_, (String, String, String, String)>(
+        "SELECT user_id, COALESCE(ship_talkers_id, user_id), merged_name, pfp \
+         FROM users ORDER BY COALESCE(ship_talkers_id, user_id), user_id",
+    )
+    .fetch_all(ch)
+    .await
+    .unwrap_or_default()
+    .into_iter()
+    .map(|(user_id, ship_talkers_id, merged_name, pfp)| {
+        let pfp = local_pfp(&user_id, &pfp);
+        BoardEntry {
+            user_id,
+            merged_name: if merged_name.is_empty() {
+                ship_talkers_id.clone()
+            } else {
+                merged_name
+            },
+            pfp,
+            value: String::new(),
+            extra: String::new(),
+            linked: true,
+            rank: 0,
+            label: ship_talkers_id,
+            highlight: false,
+        }
+    })
+    .collect();
+    let template = BoardCategoryTemplate {
+        title: "All Users".into(),
+        entity: "User".into(),
+        unit: String::new(),
+        extra_unit: None,
+        rows,
+        coming_soon: false,
+        category: "users".into(),
+        query: String::new(),
+        notice: None,
+        numbered: false,
+        signed_in: signed_in(&state, &headers),
         page_load_ms: format!("{}ms", started.elapsed().as_millis()),
     };
     let html = template
@@ -1068,6 +1126,7 @@ async fn board_entries(
                     .unwrap_or_default(),
                 linked: true,
                 rank: r.rank,
+                label: r.rank.to_string(),
                 highlight: r.highlight,
             }
         })

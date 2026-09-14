@@ -62,6 +62,7 @@ async fn stats_routes_match() {
         "/boards/words",
         "/boards/talkers?q=1234",
         "/boards/talkers?q=ZachLatta",
+        "/boards/users/",
     ] {
         let res = app
             .clone()
