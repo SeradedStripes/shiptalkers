@@ -9,7 +9,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 pub fn insert_page(
     pool: sqlx::PgPool,
@@ -399,7 +399,22 @@ async fn backfill_consented_content(settings: &settings::RuntimeSettings, pool: 
     }
 }
 
+pub async fn scrape_incremental_messages(
+    settings: &settings::RuntimeSettings,
+    pool: &sqlx::PgPool,
+) {
+    scrape_messages(settings, pool, true).await;
+}
+
 async fn scrape_all_messages(settings: &settings::RuntimeSettings, pool: &sqlx::PgPool) {
+    scrape_messages(settings, pool, false).await;
+}
+
+async fn scrape_messages(
+    settings: &settings::RuntimeSettings,
+    pool: &sqlx::PgPool,
+    incremental_only: bool,
+) {
     let channels = match db::postgres_db::get_known_channel_ids(pool).await {
         Ok(c) => c,
         Err(e) => {
@@ -450,6 +465,12 @@ async fn scrape_all_messages(settings: &settings::RuntimeSettings, pool: &sqlx::
         skip_archived.len()
     );
 
+    let check_channels = if incremental_only {
+        check_channels
+    } else {
+        Vec::new()
+    };
+
     let touched_users = Arc::new(Mutex::new(std::collections::HashSet::new()));
     let touched_channels = Arc::new(Mutex::new(std::collections::HashSet::new()));
 
@@ -480,9 +501,17 @@ async fn scrape_all_messages(settings: &settings::RuntimeSettings, pool: &sqlx::
             touched_channels.clone(),
             start,
             Some(sweep.clone()),
+            Some(Duration::from_secs(
+                settings.get_u64("SLACK_INCREMENTAL_BUDGET_SECS"),
+            )),
         )
         .await;
         sweep.finish().await;
+    }
+
+    if incremental_only {
+        tracing::info!("Incremental message check budget complete");
+        return;
     }
 
     if !new_channels.is_empty() {
@@ -494,6 +523,7 @@ async fn scrape_all_messages(settings: &settings::RuntimeSettings, pool: &sqlx::
             touched_users.clone(),
             touched_channels.clone(),
             0,
+            None,
             None,
         )
         .await;
@@ -532,6 +562,7 @@ async fn scrape_channel_list(
     touched_channels: Arc<Mutex<std::collections::HashSet<String>>>,
     resume_from: usize,
     sweep: Option<ScrapeSweep>,
+    budget: Option<Duration>,
 ) {
     let request_delay = Duration::from_millis(settings.get_u64("SLACK_REQUEST_DELAY_MS"));
     let max_inflight = settings.get_u64("SLACK_MAX_INFLIGHT") as usize;
@@ -548,6 +579,7 @@ async fn scrape_channel_list(
     let processed = Arc::new(AtomicU64::new(0));
     let done = Arc::new(AtomicBool::new(false));
     let num_channels = channels.len();
+    let deadline = budget.map(|duration| Instant::now() + duration);
 
     {
         let total = total.clone();
@@ -599,6 +631,7 @@ async fn scrape_channel_list(
             processed: processed.clone(),
             sweep: sweep.clone(),
             tx,
+            deadline,
             touched_users: touched_users.clone(),
             touched_channels: touched_channels.clone(),
         };
@@ -632,6 +665,7 @@ struct ShardCtx {
     total: Arc<AtomicU64>,
     processed: Arc<AtomicU64>,
     sweep: Option<ScrapeSweep>,
+    deadline: Option<Instant>,
     tx: tokio::sync::mpsc::Sender<usize>,
     touched_users: Arc<Mutex<std::collections::HashSet<String>>>,
     touched_channels: Arc<Mutex<std::collections::HashSet<String>>>,
@@ -765,6 +799,12 @@ async fn scrape_shard(
         let ctx = ctx.clone();
         handles.push(tokio::spawn(async move {
             loop {
+                if ctx
+                    .deadline
+                    .is_some_and(|deadline| Instant::now() >= deadline)
+                {
+                    break;
+                }
                 let idx = next.fetch_add(1, Ordering::Relaxed);
                 if idx >= channels.len() {
                     break;

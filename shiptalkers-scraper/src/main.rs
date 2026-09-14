@@ -51,6 +51,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         });
 
+        let pool_for_incremental = pool.clone();
+        let settings_for_incremental = settings.clone();
+        tokio::spawn(async move {
+            loop {
+                scraper::scrape_incremental_messages(
+                    &settings_for_incremental,
+                    &pool_for_incremental,
+                )
+                .await;
+                tokio::time::sleep(Duration::from_secs(60)).await;
+            }
+        });
+
         if has_bot_tokens {
             let pool_for_users = pool.clone();
             let settings_for_users = settings.clone();
