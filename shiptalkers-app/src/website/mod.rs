@@ -904,7 +904,7 @@ async fn get_leaderboard_category(
                          ) \
                          GROUP BY user_id \
                      ) \
-                     WHERE {EXCLUDE_BOTS_DELETED} \
+                      WHERE {EXCLUDE_BOTS_DELETED_SCORE} \
                  )"
             );
             let (ranked, notice) = ranked_window(

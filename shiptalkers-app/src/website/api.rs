@@ -689,7 +689,7 @@ pub async fn get_leaderboard(
                      ) \
                      WHERE {sup} \
                  )",
-                sup = super::EXCLUDE_BOTS_DELETED
+                sup = super::EXCLUDE_BOTS_DELETED_SCORE
             ),
             LeaderboardKind::Users,
         ),
