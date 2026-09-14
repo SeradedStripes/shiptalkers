@@ -290,32 +290,35 @@ async fn recompute_user_scores_chunk(
         return Ok(0);
     }
 
+    let mut sql = String::from(
+        "INSERT INTO user_scores (user_id, score, total_time, messages, sessions, longest, days, channels, first_ts, last_ts, active_hour, updated) VALUES ",
+    );
+    sql.push_str(&crate::db::postgres_db::placeholders(rows.len(), 12));
+    sql.push_str(
+        " ON CONFLICT (user_id) DO UPDATE SET score = EXCLUDED.score, total_time = EXCLUDED.total_time,
+          messages = EXCLUDED.messages, sessions = EXCLUDED.sessions, longest = EXCLUDED.longest,
+          days = EXCLUDED.days, channels = EXCLUDED.channels, first_ts = EXCLUDED.first_ts,
+          last_ts = EXCLUDED.last_ts, active_hour = EXCLUDED.active_hour, updated = EXCLUDED.updated",
+    );
+    let mut query = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()));
     for row in &rows {
         let count = count_map.get(&row.user_id);
         let active_hour = hour_map.get(&row.user_id).copied().unwrap_or(0);
-        sqlx::query(
-            "INSERT INTO user_scores (user_id, score, total_time, messages, sessions, longest, days, channels, first_ts, last_ts, active_hour, updated)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-             ON CONFLICT (user_id) DO UPDATE SET score = EXCLUDED.score, total_time = EXCLUDED.total_time,
-               messages = EXCLUDED.messages, sessions = EXCLUDED.sessions, longest = EXCLUDED.longest,
-               days = EXCLUDED.days, channels = EXCLUDED.channels, first_ts = EXCLUDED.first_ts,
-               last_ts = EXCLUDED.last_ts, active_hour = EXCLUDED.active_hour, updated = EXCLUDED.updated",
-        )
-        .bind(&row.user_id)
-        .bind(row.score)
-        .bind(row.total_time as i64)
-        .bind(count.map(|c| c.messages as i64).unwrap_or(0))
-        .bind(row.sessions as i64)
-        .bind(row.longest as i64)
-        .bind(row.days as i64)
-        .bind(count.map(|c| c.channels as i64).unwrap_or(0))
-        .bind(count.map(|c| c.first_ts as i64).unwrap_or(0))
-        .bind(count.map(|c| c.last_ts as i64).unwrap_or(0))
-        .bind(active_hour)
-        .bind(updated as i64)
-        .execute(pool)
-        .await?;
+        query = query
+            .bind(&row.user_id)
+            .bind(row.score)
+            .bind(row.total_time as i64)
+            .bind(count.map(|c| c.messages as i64).unwrap_or(0))
+            .bind(row.sessions as i64)
+            .bind(row.longest as i64)
+            .bind(row.days as i64)
+            .bind(count.map(|c| c.channels as i64).unwrap_or(0))
+            .bind(count.map(|c| c.first_ts as i64).unwrap_or(0))
+            .bind(count.map(|c| c.last_ts as i64).unwrap_or(0))
+            .bind(active_hour)
+            .bind(updated as i64);
     }
+    query.execute(pool).await?;
     Ok(rows.len())
 }
 
@@ -431,20 +434,25 @@ async fn recompute_channel_scores_chunk(
         .unwrap_or(0);
 
     let recomputed = sessions.len();
+    let mut sql = String::from(
+        "INSERT INTO channel_scores (channel_id, total_time, messages, updated) VALUES ",
+    );
+    sql.push_str(&crate::db::postgres_db::placeholders(sessions.len(), 4));
+    sql.push_str(
+        " ON CONFLICT (channel_id) DO UPDATE SET total_time = EXCLUDED.total_time,
+          messages = EXCLUDED.messages, updated = EXCLUDED.updated",
+    );
+    let mut query = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()));
     for (channel_id, total_time) in &sessions {
         let messages = count_map.get(channel_id).copied().unwrap_or(0);
-        sqlx::query(
-            "INSERT INTO channel_scores (channel_id, total_time, messages, updated)
-             VALUES ($1, $2, $3, $4)
-             ON CONFLICT (channel_id) DO UPDATE SET total_time = EXCLUDED.total_time,
-               messages = EXCLUDED.messages, updated = EXCLUDED.updated",
-        )
-        .bind(channel_id)
-        .bind(*total_time)
-        .bind(messages as i64)
-        .bind(updated as i64)
-        .execute(pool)
-        .await?;
+        query = query
+            .bind(channel_id)
+            .bind(*total_time)
+            .bind(messages as i64)
+            .bind(updated as i64);
+    }
+    if recomputed > 0 {
+        query.execute(pool).await?;
     }
     Ok(recomputed)
 }

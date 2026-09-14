@@ -11,6 +11,35 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
+const SCORE_RECOMPUTE_INTERVAL: Duration = Duration::from_secs(60 * 60);
+
+async fn recompute_stale_scores(pool: &sqlx::PgPool, force_full: bool, reason: &str) {
+    let (channels, users) = tokio::join!(
+        async {
+            db::scores::backfill_stale_channel_scores(pool, force_full)
+                .await
+                .map_err(|e| e.to_string())
+        },
+        async {
+            db::scores::backfill_stale_user_scores(pool, force_full)
+                .await
+                .map_err(|e| e.to_string())
+        },
+    );
+    match channels {
+        Ok(n) => tracing::info!(
+            "{} channel score recomputation done ({} channels)",
+            reason,
+            n
+        ),
+        Err(e) => tracing::warn!("{} channel score recomputation failed: {}", reason, e),
+    }
+    match users {
+        Ok(n) => tracing::info!("{} user score recomputation done ({} users)", reason, n),
+        Err(e) => tracing::warn!("{} user score recomputation failed: {}", reason, e),
+    }
+}
+
 pub fn insert_page(
     pool: sqlx::PgPool,
     page: Vec<slack::SlackChannel>,
@@ -208,26 +237,15 @@ pub async fn run_scraper(
     let sessionizer_changed = db::scores::sessionizer_changed(&pool)
         .await
         .unwrap_or(false);
-    let (channels, users) = tokio::join!(
-        async {
-            db::scores::backfill_stale_channel_scores(&pool, sessionizer_changed)
-                .await
-                .map_err(|e| e.to_string())
-        },
-        async {
-            db::scores::backfill_stale_user_scores(&pool, sessionizer_changed)
-                .await
-                .map_err(|e| e.to_string())
-        },
-    );
-    match channels {
-        Ok(n) => tracing::info!("Startup channel score backfill done ({} channels)", n),
-        Err(e) => tracing::warn!("Failed to backfill channel scores: {}", e),
-    }
-    match users {
-        Ok(n) => tracing::info!("Startup Slack Time score backfill done ({} users)", n),
-        Err(e) => tracing::warn!("Failed to backfill user scores: {}", e),
-    }
+    recompute_stale_scores(&pool, sessionizer_changed, "Startup").await;
+
+    let pool_for_scores = pool.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(SCORE_RECOMPUTE_INTERVAL).await;
+            recompute_stale_scores(&pool_for_scores, false, "Hourly").await;
+        }
+    });
 
     let cycle = Duration::from_secs(30 * 60);
 
@@ -527,28 +545,6 @@ async fn scrape_messages(
             None,
         )
         .await;
-    }
-
-    let users: Vec<String> = touched_users.lock().unwrap().iter().cloned().collect();
-    if !users.is_empty()
-        && let Err(e) = db::scores::recompute_user_scores(pool, &users).await
-    {
-        tracing::warn!(
-            "Failed to recompute scores for {} users this pass: {}",
-            users.len(),
-            e
-        );
-    }
-
-    let channels: Vec<String> = touched_channels.lock().unwrap().iter().cloned().collect();
-    if !channels.is_empty()
-        && let Err(e) = db::scores::recompute_channel_scores(pool, &channels).await
-    {
-        tracing::warn!(
-            "Failed to recompute scores for {} channels this pass: {}",
-            channels.len(),
-            e
-        );
     }
 
     tracing::info!("Message scrape pass complete");
