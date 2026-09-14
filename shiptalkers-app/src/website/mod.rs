@@ -149,6 +149,7 @@ pub struct UserTemplate {
     pub email: String,
     pub pfp: String,
     pub slack_id: String,
+    pub shiptalkers_id: String,
     pub deactivated: bool,
     pub total_messages: String,
     pub coding_hours: String,
@@ -1146,6 +1147,7 @@ async fn get_user_stats(
 
     #[derive(Debug)]
     struct UserInfo {
+        anonymous_id: Option<String>,
         merged_name: String,
         display_name: String,
         real_name: String,
@@ -1156,16 +1158,27 @@ async fn get_user_stats(
         is_deleted: bool,
     }
     let info: Option<UserInfo> =
-        sqlx::query_as::<_, (String, String, String, String, String, String, i16, i16)>(
-            "SELECT merged_name, display_name, real_name, username, email, pfp, is_bot, is_deleted FROM users WHERE user_id = $1",
+        sqlx::query_as::<_, (Option<String>, String, String, String, String, String, String, i16, i16)>(
+            "SELECT anonymous_id, merged_name, display_name, real_name, username, email, pfp, is_bot, is_deleted FROM users WHERE user_id = $1",
         )
         .bind(slack_id)
         .fetch_optional(ch)
         .await
         .unwrap_or(None)
         .map(
-            |(merged_name, display_name, real_name, username, email, pfp, is_bot, is_deleted)| {
+            |(
+                anonymous_id,
+                merged_name,
+                display_name,
+                real_name,
+                username,
+                email,
+                pfp,
+                is_bot,
+                is_deleted,
+            )| {
                 UserInfo {
+                    anonymous_id,
                     merged_name,
                     display_name,
                     real_name,
@@ -1198,6 +1211,10 @@ async fn get_user_stats(
     let email = info.as_ref().map(|i| i.email.clone()).unwrap_or_default();
     let pfp_url = info.as_ref().map(|i| i.pfp.clone()).unwrap_or_default();
     let pfp = local_pfp(slack_id, &pfp_url);
+    let shiptalkers_id = info
+        .as_ref()
+        .and_then(|i| i.anonymous_id.clone())
+        .unwrap_or_default();
 
     #[derive(Debug)]
     struct ScoreRow {
@@ -1292,6 +1309,7 @@ async fn get_user_stats(
         email,
         pfp,
         slack_id: slack_id.to_string(),
+        shiptalkers_id,
         deactivated: is_deleted,
         total_messages: fmt_thousands(total_messages),
         coding_hours: fmt_minutes(coding_minutes),

@@ -30,6 +30,9 @@
                 <div class="member-row"><span class="member-label">Display name</span>{{ display_name }}</div>
                 {% endif %}
                 <div class="member-row"><span class="member-label">Slack ID</span>{{ slack_id }}</div>
+                {% if !shiptalkers_id.is_empty() %}
+                <div class="member-row"><span class="member-label">Ship Talkers ID</span>{{ shiptalkers_id }}</div>
+                {% endif %}
             </div>
         </div>
 
