@@ -17,11 +17,11 @@ pub use ship_talkers_lib::db::{
 };
 
 pub async fn grant_slack_consent(pool: &PgPool, slack_id: &str) -> Result<(), String> {
-    let anonymous_id = ship_talkers_lib::base36::encode(slack_id.as_bytes());
+    let ship_talkers_id = ship_talkers_lib::base36::encode(slack_id.as_bytes());
     sqlx::query(
         "WITH identity AS (
-             INSERT INTO slack_identities (anonymous_id) VALUES ($1)
-             ON CONFLICT (anonymous_id) DO UPDATE SET anonymous_id = EXCLUDED.anonymous_id
+             INSERT INTO slack_identities (ship_talkers_id) VALUES ($1)
+             ON CONFLICT (ship_talkers_id) DO UPDATE SET ship_talkers_id = EXCLUDED.ship_talkers_id
              RETURNING internal_id
          )
          INSERT INTO slack_consents (identity_id, consent_source)
@@ -29,7 +29,7 @@ pub async fn grant_slack_consent(pool: &PgPool, slack_id: &str) -> Result<(), St
           ON CONFLICT (identity_id) DO UPDATE SET consented_at = NOW(), revoked_at = NULL, content_backfilled_at = NULL,
              consent_source = EXCLUDED.consent_source",
     )
-    .bind(anonymous_id)
+    .bind(ship_talkers_id)
     .execute(pool)
     .await
     .map(|_| ())
@@ -37,13 +37,13 @@ pub async fn grant_slack_consent(pool: &PgPool, slack_id: &str) -> Result<(), St
 }
 
 pub async fn slack_user_has_consent(pool: &PgPool, slack_id: &str) -> Result<bool, String> {
-    let anonymous_id = ship_talkers_lib::base36::encode(slack_id.as_bytes());
+    let ship_talkers_id = ship_talkers_lib::base36::encode(slack_id.as_bytes());
     sqlx::query_scalar::<_, i32>(
         "SELECT 1 FROM slack_consents c
          JOIN slack_identities i ON i.internal_id = c.identity_id
-         WHERE i.anonymous_id = $1 AND c.consented_at IS NOT NULL AND c.revoked_at IS NULL",
+         WHERE i.ship_talkers_id = $1 AND c.consented_at IS NOT NULL AND c.revoked_at IS NULL",
     )
-    .bind(anonymous_id)
+    .bind(ship_talkers_id)
     .fetch_optional(pool)
     .await
     .map(|row| row.is_some())
@@ -99,9 +99,9 @@ impl AuthDb {
     }
 
     async fn identity_id(&self, slack_id: &str) -> Result<Option<i32>, String> {
-        let anonymous_id = ship_talkers_lib::base36::encode(slack_id.as_bytes());
-        sqlx::query_scalar("SELECT internal_id FROM slack_identities WHERE anonymous_id = $1")
-            .bind(anonymous_id)
+        let ship_talkers_id = ship_talkers_lib::base36::encode(slack_id.as_bytes());
+        sqlx::query_scalar("SELECT internal_id FROM slack_identities WHERE ship_talkers_id = $1")
+            .bind(ship_talkers_id)
             .fetch_optional(&self.pool)
             .await
             .map_err(|e| e.to_string())
@@ -143,7 +143,7 @@ impl AuthDb {
         .map_err(|e| e.to_string())?;
         sqlx::query(
             "DELETE FROM word_counts w USING users u, slack_identities i
-             WHERE w.user_id = u.user_id AND u.anonymous_id = i.anonymous_id AND i.internal_id = $1",
+             WHERE w.user_id = u.user_id AND u.ship_talkers_id = i.ship_talkers_id AND i.internal_id = $1",
         )
         .bind(identity_id)
         .execute(&mut *tx)

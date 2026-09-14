@@ -141,11 +141,11 @@ fn stores_content(consented: bool) -> bool {
 
 pub async fn load_locator_caches(pool: &PgPool) -> Result<(), Box<dyn std::error::Error>> {
     let identities: Vec<(String, i32)> =
-        sqlx::query_as("SELECT anonymous_id, internal_id FROM slack_identities")
+        sqlx::query_as("SELECT ship_talkers_id, internal_id FROM slack_identities")
             .fetch_all(pool)
             .await?;
     let channels: Vec<(String, i32)> =
-        sqlx::query_as("SELECT anonymous_id, internal_id FROM slack_channels")
+        sqlx::query_as("SELECT ship_talkers_id, internal_id FROM slack_channels")
             .fetch_all(pool)
             .await?;
     IDENTITY_CACHE
@@ -181,10 +181,10 @@ async fn locator_id(
         return Ok(id);
     }
     let id = if channel {
-        sqlx::query_scalar::<_, i32>("INSERT INTO slack_channels (anonymous_id, channel_id) VALUES ($1, $2) ON CONFLICT (anonymous_id) DO UPDATE SET anonymous_id = EXCLUDED.anonymous_id RETURNING internal_id")
+        sqlx::query_scalar::<_, i32>("INSERT INTO slack_channels (ship_talkers_id, channel_id) VALUES ($1, $2) ON CONFLICT (ship_talkers_id) DO UPDATE SET ship_talkers_id = EXCLUDED.ship_talkers_id RETURNING internal_id")
             .bind(&anonymous).bind(raw).fetch_one(pool).await?
     } else {
-        sqlx::query_scalar::<_, i32>("INSERT INTO slack_identities (anonymous_id) VALUES ($1) ON CONFLICT (anonymous_id) DO UPDATE SET anonymous_id = EXCLUDED.anonymous_id RETURNING internal_id")
+        sqlx::query_scalar::<_, i32>("INSERT INTO slack_identities (ship_talkers_id) VALUES ($1) ON CONFLICT (ship_talkers_id) DO UPDATE SET ship_talkers_id = EXCLUDED.ship_talkers_id RETURNING internal_id")
             .bind(&anonymous).fetch_one(pool).await?
     };
     cache
@@ -246,7 +246,7 @@ pub async fn backfill_word_counts(pool: &PgPool) -> Result<(), Box<dyn std::erro
                      (regexp_matches(lower(content.text), '[a-z]+', 'g'))[1] AS word
               FROM slack_messages m
               JOIN slack_identities i ON i.internal_id = m.identity_id
-              JOIN users u ON u.anonymous_id = i.anonymous_id
+              JOIN users u ON u.ship_talkers_id = i.ship_talkers_id
               JOIN slack_channels c ON c.internal_id = m.channel_id
               JOIN slack_message_contents content
                 ON content.channel_id = m.channel_id AND content.message_ts = m.message_ts
@@ -408,7 +408,7 @@ pub async fn insert_word_counts(
             ") AS v(word, user_id, channel_id, message_ts, count, inserted_at)
              WHERE EXISTS (
                  SELECT 1 FROM users u
-                 JOIN slack_identities i ON i.anonymous_id = u.anonymous_id
+                  JOIN slack_identities i ON i.ship_talkers_id = u.ship_talkers_id
                  JOIN slack_consents consent ON consent.identity_id = i.internal_id
                  WHERE u.user_id = v.user_id AND consent.revoked_at IS NULL
              )",

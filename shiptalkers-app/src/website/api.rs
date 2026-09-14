@@ -451,19 +451,19 @@ async fn load_user_stats(
     .map_err(|e| e.to_string())?
     .unwrap_or(0)
     .max(0) as u64;
-    let anonymous_id = ship_talkers_lib::base36::encode(slack_id.as_bytes());
+    let ship_talkers_id = ship_talkers_lib::base36::encode(slack_id.as_bytes());
 
     let counts: Vec<(String, i64)> = sqlx::query_as(
         "SELECT channel_id, count(*) as messages
          FROM slack_messages m
          JOIN slack_identities i ON i.internal_id = m.identity_id
          JOIN slack_channels c ON c.internal_id = m.channel_id
-         WHERE i.anonymous_id = $1
+          WHERE i.ship_talkers_id = $1
          GROUP BY c.channel_id
          ORDER BY messages DESC
          LIMIT 10",
     )
-    .bind(anonymous_id)
+    .bind(ship_talkers_id)
     .fetch_all(pool)
     .await
     .map_err(|e| e.to_string())?;
@@ -921,7 +921,7 @@ async fn load_channel_stats(
         "SELECT u.user_id, count(*) AS messages \
          FROM slack_messages m \
          JOIN slack_identities i ON i.internal_id = m.identity_id \
-         JOIN users u ON u.anonymous_id = i.anonymous_id \
+          JOIN users u ON u.ship_talkers_id = i.ship_talkers_id \
          WHERE m.channel_id = (SELECT internal_id FROM slack_channels WHERE channel_id = $1) AND {sup} \
          GROUP BY u.user_id \
          ORDER BY messages DESC \

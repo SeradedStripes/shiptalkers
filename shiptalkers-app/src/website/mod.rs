@@ -14,7 +14,7 @@ use tokio::sync::Mutex;
 
 use crate::settings::RuntimeSettings;
 
-const EXCLUDE_BOTS_DELETED: &str = "NOT EXISTS (SELECT 1 FROM slack_identities bi JOIN users bu ON bu.anonymous_id = bi.anonymous_id WHERE bi.internal_id = m.identity_id AND (bu.is_bot = 1 OR bu.is_deleted = 1))";
+const EXCLUDE_BOTS_DELETED: &str = "NOT EXISTS (SELECT 1 FROM slack_identities bi JOIN users bu ON bu.ship_talkers_id = bi.ship_talkers_id WHERE bi.internal_id = m.identity_id AND (bu.is_bot = 1 OR bu.is_deleted = 1))";
 const EXCLUDE_BOTS_DELETED_SLACK_ID: &str =
     "slack_id NOT IN (SELECT user_id FROM users WHERE is_bot = 1 OR is_deleted = 1)";
 
@@ -619,7 +619,7 @@ async fn get_stats_for_id(
 
     let channel_id: Option<String> = sqlx::query_scalar(
         "SELECT channel_id FROM slack_channels
-         WHERE channel_id = $1 OR anonymous_id = $1
+         WHERE channel_id = $1 OR ship_talkers_id = $1
          LIMIT 1",
     )
     .bind(&id)
@@ -632,7 +632,7 @@ async fn get_stats_for_id(
 
     let user_id: Option<String> = sqlx::query_scalar(
         "SELECT user_id FROM users
-         WHERE user_id = $1 OR anonymous_id = $1
+         WHERE user_id = $1 OR ship_talkers_id = $1
          LIMIT 1",
     )
     .bind(&id)
@@ -1143,11 +1143,11 @@ async fn get_user_stats(
     let started = Instant::now();
     let ch = state.pool()?;
     let signed_in = signed_in(state, headers);
-    let anonymous_id = ship_talkers_lib::base36::encode(slack_id.as_bytes());
+    let ship_talkers_id = ship_talkers_lib::base36::encode(slack_id.as_bytes());
 
     #[derive(Debug)]
     struct UserInfo {
-        anonymous_id: Option<String>,
+        ship_talkers_id: Option<String>,
         merged_name: String,
         display_name: String,
         real_name: String,
@@ -1159,7 +1159,7 @@ async fn get_user_stats(
     }
     let info: Option<UserInfo> =
         sqlx::query_as::<_, (Option<String>, String, String, String, String, String, String, i16, i16)>(
-            "SELECT anonymous_id, merged_name, display_name, real_name, username, email, pfp, is_bot, is_deleted FROM users WHERE user_id = $1",
+            "SELECT ship_talkers_id, merged_name, display_name, real_name, username, email, pfp, is_bot, is_deleted FROM users WHERE user_id = $1",
         )
         .bind(slack_id)
         .fetch_optional(ch)
@@ -1167,7 +1167,7 @@ async fn get_user_stats(
         .unwrap_or(None)
         .map(
             |(
-                anonymous_id,
+                ship_talkers_id,
                 merged_name,
                 display_name,
                 real_name,
@@ -1178,7 +1178,7 @@ async fn get_user_stats(
                 is_deleted,
             )| {
                 UserInfo {
-                    anonymous_id,
+                    ship_talkers_id,
                     merged_name,
                     display_name,
                     real_name,
@@ -1213,7 +1213,7 @@ async fn get_user_stats(
     let pfp = local_pfp(slack_id, &pfp_url);
     let shiptalkers_id = info
         .as_ref()
-        .and_then(|i| i.anonymous_id.clone())
+        .and_then(|i| i.ship_talkers_id.clone())
         .unwrap_or_default();
 
     #[derive(Debug)]
@@ -1252,12 +1252,12 @@ async fn get_user_stats(
          FROM slack_messages m
          JOIN slack_identities i ON i.internal_id = m.identity_id
          JOIN slack_channels c ON c.internal_id = m.channel_id
-         WHERE i.anonymous_id = $1
+         WHERE i.ship_talkers_id = $1
          GROUP BY c.channel_id
          ORDER BY messages DESC
          LIMIT 5",
     )
-    .bind(anonymous_id)
+    .bind(ship_talkers_id)
     .fetch_all(ch)
     .await
     .unwrap_or_default();
@@ -1390,7 +1390,7 @@ async fn get_channel_stats(
         "SELECT u.user_id, count(*) as messages
          FROM slack_messages m
          JOIN slack_identities i ON i.internal_id = m.identity_id
-         JOIN users u ON u.anonymous_id = i.anonymous_id
+          JOIN users u ON u.ship_talkers_id = i.ship_talkers_id
          WHERE m.channel_id = (SELECT internal_id FROM slack_channels WHERE channel_id = $1) AND {EXCLUDE_BOTS_DELETED}
          GROUP BY u.user_id
          ORDER BY messages DESC

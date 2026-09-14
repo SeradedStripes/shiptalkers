@@ -12,7 +12,7 @@ const WORD_FULL_REBUILD_SECS: u64 = 24 * 3600;
 
 const EXCLUDE_WORD_BOTS_DELETED: &str =
     "user_id NOT IN (SELECT user_id FROM users WHERE is_bot = 1 OR is_deleted = 1)";
-const EXCLUDE_MESSAGE_BOTS_DELETED: &str = "NOT EXISTS (SELECT 1 FROM slack_identities bi JOIN users bu ON bu.anonymous_id = bi.anonymous_id WHERE bi.internal_id = m.identity_id AND (bu.is_bot = 1 OR bu.is_deleted = 1))";
+const EXCLUDE_MESSAGE_BOTS_DELETED: &str = "NOT EXISTS (SELECT 1 FROM slack_identities bi JOIN users bu ON bu.ship_talkers_id = bi.ship_talkers_id WHERE bi.internal_id = m.identity_id AND (bu.is_bot = 1 OR bu.is_deleted = 1))";
 
 pub async fn refresh_word_totals(pool: &PgPool) -> Result<(), Box<dyn std::error::Error>> {
     let now = now_secs();

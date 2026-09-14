@@ -71,15 +71,15 @@ pub async fn locators_for_slack_user(
     pool: &PgPool,
     slack_user_id: &str,
 ) -> Result<Vec<(i32, i64)>, Box<dyn std::error::Error>> {
-    let anonymous_id = crate::base36::encode(slack_user_id.as_bytes());
+    let ship_talkers_id = crate::base36::encode(slack_user_id.as_bytes());
     Ok(sqlx::query_as(
         "SELECT m.channel_id, m.message_ts
          FROM slack_messages m
          JOIN slack_identities i ON i.internal_id = m.identity_id
-         WHERE i.anonymous_id = $1
+         WHERE i.ship_talkers_id = $1
          ORDER BY m.message_ts",
     )
-    .bind(anonymous_id)
+    .bind(ship_talkers_id)
     .fetch_all(pool)
     .await?)
 }
@@ -94,7 +94,7 @@ pub async fn insert_new_channels_rows(
     let count = channels.len() as u64;
     for chunk in channels.chunks(INSERT_CHUNK) {
         let mut sql = String::from(
-            "INSERT INTO slack_channels (anonymous_id, channel_id, name, is_archived, num_members) VALUES ",
+            "INSERT INTO slack_channels (ship_talkers_id, channel_id, name, is_archived, num_members) VALUES ",
         );
         sql.push_str(&placeholders(chunk.len(), 5));
         sql.push_str(
@@ -125,11 +125,11 @@ pub async fn upsert_users(
     const USER_INSERT_CHUNK: usize = 3_000;
     for chunk in users.chunks(USER_INSERT_CHUNK) {
         let mut sql = String::from(
-            "INSERT INTO users (user_id, anonymous_id, merged_name, display_name, real_name, username, email, title, status_text, status_emoji, tz, tz_label, locale, pfp, updated, is_bot, is_deleted, is_admin, is_owner, is_restricted, is_app_user) VALUES ",
+            "INSERT INTO users (user_id, ship_talkers_id, merged_name, display_name, real_name, username, email, title, status_text, status_emoji, tz, tz_label, locale, pfp, updated, is_bot, is_deleted, is_admin, is_owner, is_restricted, is_app_user) VALUES ",
         );
         sql.push_str(&placeholders(chunk.len(), 21));
         sql.push_str(
-            " ON CONFLICT (user_id) DO UPDATE SET anonymous_id = EXCLUDED.anonymous_id, merged_name = EXCLUDED.merged_name, display_name = EXCLUDED.display_name, real_name = EXCLUDED.real_name, username = EXCLUDED.username, email = EXCLUDED.email, title = EXCLUDED.title, status_text = EXCLUDED.status_text, status_emoji = EXCLUDED.status_emoji, tz = EXCLUDED.tz, tz_label = EXCLUDED.tz_label, locale = EXCLUDED.locale, pfp = EXCLUDED.pfp, updated = EXCLUDED.updated, is_bot = EXCLUDED.is_bot, is_deleted = EXCLUDED.is_deleted, is_admin = EXCLUDED.is_admin, is_owner = EXCLUDED.is_owner, is_restricted = EXCLUDED.is_restricted, is_app_user = EXCLUDED.is_app_user",
+            " ON CONFLICT (user_id) DO UPDATE SET ship_talkers_id = EXCLUDED.ship_talkers_id, merged_name = EXCLUDED.merged_name, display_name = EXCLUDED.display_name, real_name = EXCLUDED.real_name, username = EXCLUDED.username, email = EXCLUDED.email, title = EXCLUDED.title, status_text = EXCLUDED.status_text, status_emoji = EXCLUDED.status_emoji, tz = EXCLUDED.tz, tz_label = EXCLUDED.tz_label, locale = EXCLUDED.locale, pfp = EXCLUDED.pfp, updated = EXCLUDED.updated, is_bot = EXCLUDED.is_bot, is_deleted = EXCLUDED.is_deleted, is_admin = EXCLUDED.is_admin, is_owner = EXCLUDED.is_owner, is_restricted = EXCLUDED.is_restricted, is_app_user = EXCLUDED.is_app_user",
         );
         let mut q = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()));
         for u in chunk {

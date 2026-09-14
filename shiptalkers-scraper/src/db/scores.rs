@@ -35,7 +35,7 @@ pub async fn backfill_stale_user_scores(
         "SELECT msg.user_id FROM (
              SELECT u.user_id, max(m.message_ts) AS last_ts
              FROM slack_messages m JOIN slack_identities i ON i.internal_id = m.identity_id
-             JOIN users u ON u.anonymous_id = i.anonymous_id
+             JOIN users u ON u.ship_talkers_id = i.ship_talkers_id
              GROUP BY u.user_id
          ) msg
          LEFT JOIN (SELECT user_id, updated, longest FROM user_scores) sc
@@ -101,7 +101,7 @@ async fn mark_sessionizer_current(pool: &PgPool) -> Result<(), Box<dyn std::erro
 }
 
 async fn distinct_user_ids(pool: &PgPool) -> Result<Vec<String>, Box<dyn std::error::Error>> {
-    let rows: Vec<String> = sqlx::query_scalar("SELECT DISTINCT u.user_id FROM slack_messages m JOIN slack_identities i ON i.internal_id = m.identity_id JOIN users u ON u.anonymous_id = i.anonymous_id")
+    let rows: Vec<String> = sqlx::query_scalar("SELECT DISTINCT u.user_id FROM slack_messages m JOIN slack_identities i ON i.internal_id = m.identity_id JOIN users u ON u.ship_talkers_id = i.ship_talkers_id")
         .fetch_all(pool)
         .await?;
     Ok(rows)
@@ -168,7 +168,7 @@ async fn recompute_user_scores_chunk(
                     count(*) AS msgs
              FROM slack_messages m
              JOIN slack_identities i ON i.internal_id = m.identity_id
-             JOIN users u ON u.anonymous_id = i.anonymous_id
+             JOIN users u ON u.ship_talkers_id = i.ship_talkers_id
              WHERE u.user_id = ANY($1)
              GROUP BY u.user_id, ts
          ),
@@ -208,7 +208,7 @@ async fn recompute_user_scores_chunk(
                  max(m.message_ts) AS last_ts
           FROM slack_messages m
           JOIN slack_identities i ON i.internal_id = m.identity_id
-          JOIN users u ON u.anonymous_id = i.anonymous_id
+             JOIN users u ON u.ship_talkers_id = i.ship_talkers_id
           WHERE u.user_id = ANY($1)
           GROUP BY u.user_id",
     )
@@ -244,7 +244,7 @@ async fn recompute_user_scores_chunk(
                      count(*) AS cnt
               FROM slack_messages m
               JOIN slack_identities i ON i.internal_id = m.identity_id
-              JOIN users u ON u.anonymous_id = i.anonymous_id
+             JOIN users u ON u.ship_talkers_id = i.ship_talkers_id
               WHERE u.user_id = ANY($1)
               GROUP BY u.user_id, hour
          ) h
@@ -367,7 +367,7 @@ async fn recompute_channel_scores_chunk(
     if ids.is_empty() {
         return Ok(0);
     }
-    let exclude_bots_deleted = "NOT EXISTS (SELECT 1 FROM slack_identities bi JOIN users bu ON bu.anonymous_id = bi.anonymous_id WHERE bi.internal_id = m.identity_id AND (bu.is_bot = 1 OR bu.is_deleted = 1))";
+    let exclude_bots_deleted = "NOT EXISTS (SELECT 1 FROM slack_identities bi JOIN users bu ON bu.ship_talkers_id = bi.ship_talkers_id WHERE bi.internal_id = m.identity_id AND (bu.is_bot = 1 OR bu.is_deleted = 1))";
     let boundary = crate::sessionize::SESSION_GAP_BOUNDARY_SECS;
     let rate = crate::sessionize::MESSAGE_TYPING_CHARS_PER_SEC;
     let overhead = crate::sessionize::MESSAGE_READ_OVERHEAD_SECS;

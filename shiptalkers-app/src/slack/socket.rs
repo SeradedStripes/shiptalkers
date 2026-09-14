@@ -677,7 +677,7 @@ async fn query_slack_seconds(pool: &sqlx::PgPool, user: &str, range: &TimeRange)
                     count(*) AS msgs
              FROM slack_messages m
              JOIN slack_identities i ON i.internal_id = m.identity_id
-             WHERE i.anonymous_id = $1",
+             WHERE i.ship_talkers_id = $1",
     );
     if range.start_ts().is_some() {
         session_sql.push_str(" AND message_ts / 1000000 >= $2");
