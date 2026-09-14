@@ -18,7 +18,7 @@
             <p class="empty">Coming soon</p>
         </div>
         {% else %}
-        {% if !numbered %}{% include "directory_pagination.html" %}{% endif %}
+        {% if !numbered && query.is_empty() %}{% include "directory_pagination.html" %}{% endif %}
         <form class="search" method="get" action="{% if numbered %}/boards/{{ category }}{% else %}{{ directory_path }}{% endif %}">
             <input type="text" name="q" placeholder="{% if numbered %}Rank (e.g. 1234) or name...{% else %}Name or ShipTalkers ID...{% endif %}" value="{{ query }}">
             <button type="submit">Search</button>
@@ -72,7 +72,7 @@
                 </tbody>
             </table>
         </div>
-        {% if !numbered %}{% include "directory_pagination.html" %}{% endif %}
+        {% if !numbered && query.is_empty() %}{% include "directory_pagination.html" %}{% endif %}
         {% endif %}
     </div>
     {% include "footer.html" %}

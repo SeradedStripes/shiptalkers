@@ -1093,10 +1093,12 @@ async fn get_users_board(
         .as_ref()
         .map(|(rank, _)| rank.saturating_sub(1) / DIRECTORY_PAGE_SIZE as u64 + 1)
         .unwrap_or(requested_page);
-    let offset = page
-        .saturating_sub(1)
-        .saturating_mul(DIRECTORY_PAGE_SIZE as u64)
-        .min(i64::MAX as u64) as i64;
+    let search_mode = !query.trim().is_empty() && target.is_some();
+    let row_offset = target
+        .as_ref()
+        .filter(|_| search_mode)
+        .map(|(rank, _)| rank.saturating_sub(4))
+        .unwrap_or(page.saturating_sub(1) * DIRECTORY_PAGE_SIZE as u64);
     let total: i64 = sqlx::query_scalar("SELECT count(*) FROM users")
         .fetch_one(ch)
         .await
@@ -1110,16 +1112,24 @@ async fn get_users_board(
          ORDER BY COALESCE(ship_talkers_id, user_id), user_id \
          LIMIT $1 OFFSET $2",
     )
-    .bind(DIRECTORY_PAGE_SIZE + 1)
-    .bind(offset)
+    .bind(if search_mode {
+        6
+    } else {
+        DIRECTORY_PAGE_SIZE + 1
+    })
+    .bind(row_offset.min(i64::MAX as u64) as i64)
     .fetch_all(ch)
     .await
     .unwrap_or_default();
     if !query.trim().is_empty() && target.is_none() {
         records.clear();
     }
-    let has_next = records.len() > DIRECTORY_PAGE_SIZE as usize;
-    records.truncate(DIRECTORY_PAGE_SIZE as usize);
+    let has_next = !search_mode && records.len() > DIRECTORY_PAGE_SIZE as usize;
+    records.truncate(if search_mode {
+        6
+    } else {
+        DIRECTORY_PAGE_SIZE as usize
+    });
     let rows: Vec<BoardEntry> = records
         .into_iter()
         .enumerate()
@@ -1138,7 +1148,7 @@ async fn get_users_board(
                 value: String::new(),
                 extra: String::new(),
                 linked: true,
-                rank: offset as u64 + index as u64 + 1,
+                rank: row_offset + index as u64 + 1,
                 label: ship_talkers_id,
                 highlight,
             }
@@ -1188,10 +1198,12 @@ async fn get_channels_board(
         .as_ref()
         .map(|(rank, _)| rank.saturating_sub(1) / DIRECTORY_PAGE_SIZE as u64 + 1)
         .unwrap_or(requested_page);
-    let offset = page
-        .saturating_sub(1)
-        .saturating_mul(DIRECTORY_PAGE_SIZE as u64)
-        .min(i64::MAX as u64) as i64;
+    let search_mode = !query.trim().is_empty() && target.is_some();
+    let row_offset = target
+        .as_ref()
+        .filter(|_| search_mode)
+        .map(|(rank, _)| rank.saturating_sub(4))
+        .unwrap_or(page.saturating_sub(1) * DIRECTORY_PAGE_SIZE as u64);
     let total: i64 = sqlx::query_scalar("SELECT count(*) FROM slack_channels")
         .fetch_one(ch)
         .await
@@ -1205,16 +1217,24 @@ async fn get_channels_board(
           ORDER BY COALESCE(ship_talkers_id, channel_id), channel_id \
          LIMIT $1 OFFSET $2",
     )
-    .bind(DIRECTORY_PAGE_SIZE + 1)
-    .bind(offset)
+    .bind(if search_mode {
+        6
+    } else {
+        DIRECTORY_PAGE_SIZE + 1
+    })
+    .bind(row_offset.min(i64::MAX as u64) as i64)
     .fetch_all(ch)
     .await
     .unwrap_or_default();
     if !query.trim().is_empty() && target.is_none() {
         records.clear();
     }
-    let has_next = records.len() > DIRECTORY_PAGE_SIZE as usize;
-    records.truncate(DIRECTORY_PAGE_SIZE as usize);
+    let has_next = !search_mode && records.len() > DIRECTORY_PAGE_SIZE as usize;
+    records.truncate(if search_mode {
+        6
+    } else {
+        DIRECTORY_PAGE_SIZE as usize
+    });
     let rows: Vec<BoardEntry> = records
         .into_iter()
         .enumerate()
@@ -1232,7 +1252,7 @@ async fn get_channels_board(
                 value: String::new(),
                 extra: String::new(),
                 linked: true,
-                rank: offset as u64 + index as u64 + 1,
+                rank: row_offset + index as u64 + 1,
                 label: ship_talkers_id,
                 highlight,
             }
