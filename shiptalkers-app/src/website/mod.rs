@@ -330,6 +330,7 @@ pub fn router(
         .route("/stats/{id}", get(get_stats_for_id))
         .route("/boards", get(get_boards))
         .route("/boards/users/", get(get_users_board))
+        .route("/boards/channels/", get(get_channels_board))
         .route("/boards/{category}", get(get_board_category))
         .route("/api/docs", get(get_api_docs))
         .route("/api/docs/{topic}", get(get_api_docs))
@@ -1051,6 +1052,57 @@ async fn get_users_board(
         rows,
         coming_soon: false,
         category: "users".into(),
+        query: String::new(),
+        notice: None,
+        numbered: false,
+        signed_in: signed_in(&state, &headers),
+        page_load_ms: format!("{}ms", started.elapsed().as_millis()),
+    };
+    let html = template
+        .render()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Html(html))
+}
+
+async fn get_channels_board(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Html<String>, StatusCode> {
+    let started = Instant::now();
+    let ch = state.pool()?;
+    let rows: Vec<BoardEntry> = sqlx::query_as::<_, (String, String, String)>(
+        "SELECT channel_id, COALESCE(ship_talkers_id, channel_id), name \
+         FROM slack_channels \
+         ORDER BY COALESCE(ship_talkers_id, channel_id), channel_id",
+    )
+    .fetch_all(ch)
+    .await
+    .unwrap_or_default()
+    .into_iter()
+    .map(|(channel_id, ship_talkers_id, name)| BoardEntry {
+        user_id: channel_id,
+        merged_name: if name.is_empty() {
+            ship_talkers_id.clone()
+        } else {
+            name
+        },
+        pfp: String::new(),
+        value: String::new(),
+        extra: String::new(),
+        linked: true,
+        rank: 0,
+        label: ship_talkers_id,
+        highlight: false,
+    })
+    .collect();
+    let template = BoardCategoryTemplate {
+        title: "All Channels".into(),
+        entity: "Channel".into(),
+        unit: String::new(),
+        extra_unit: None,
+        rows,
+        coming_soon: false,
+        category: "channels".into(),
         query: String::new(),
         notice: None,
         numbered: false,
