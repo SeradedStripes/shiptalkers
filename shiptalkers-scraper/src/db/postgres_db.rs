@@ -10,6 +10,14 @@ pub use ship_talkers_lib::db::{
 
 /// Reconciles the maintained `message_count` with the real row count.
 pub async fn seed_message_count(pool: &PgPool) -> Result<(), Box<dyn std::error::Error>> {
+    if let Some(total) =
+        sqlx::query_scalar::<_, i64>("SELECT total FROM message_count WHERE id = 1")
+            .fetch_optional(pool)
+            .await?
+    {
+        tracing::debug!("Using maintained message count of {}", total.max(0));
+        return Ok(());
+    }
     let count: i64 = sqlx::query_scalar("SELECT count(*) FROM slack_messages")
         .fetch_one(pool)
         .await?;
@@ -596,6 +604,13 @@ pub async fn mark_channel_scraped(
 }
 
 pub async fn backfill_scraped_channels(pool: &PgPool) -> Result<(), Box<dyn std::error::Error>> {
+    let initialized: Option<i16> =
+        sqlx::query_scalar("SELECT done FROM backfill_meta WHERE name = 'scraped_channels'")
+            .fetch_optional(pool)
+            .await?;
+    if initialized == Some(1) {
+        return Ok(());
+    }
     let ids: Vec<String> = sqlx::query_scalar(
         "SELECT channel_id FROM (
             SELECT channel_id FROM scrape_checkpoints WHERE fully_scraped = 1
@@ -608,6 +623,12 @@ pub async fn backfill_scraped_channels(pool: &PgPool) -> Result<(), Box<dyn std:
     .await?;
 
     if ids.is_empty() {
+        sqlx::query(
+            "INSERT INTO backfill_meta (name, done) VALUES ('scraped_channels', 1)
+             ON CONFLICT (name) DO UPDATE SET done = EXCLUDED.done",
+        )
+        .execute(pool)
+        .await?;
         return Ok(());
     }
 
@@ -616,6 +637,12 @@ pub async fn backfill_scraped_channels(pool: &PgPool) -> Result<(), Box<dyn std:
         ids.len()
     );
     mark_channels_scraped(pool, &ids).await?;
+    sqlx::query(
+        "INSERT INTO backfill_meta (name, done) VALUES ('scraped_channels', 1)
+         ON CONFLICT (name) DO UPDATE SET done = EXCLUDED.done",
+    )
+    .execute(pool)
+    .await?;
     Ok(())
 }
 
