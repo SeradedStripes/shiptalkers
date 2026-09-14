@@ -120,6 +120,13 @@ p { color: #888; line-height: 1.6; margin-bottom: 1.5rem; }
 }
 .pagination select:focus { outline: 2px solid #f472b6; outline-offset: 1px; }
 
+.board-directory table { table-layout: fixed; }
+.board-directory th:nth-child(1), .board-directory td:nth-child(1) { width: 4.5rem; }
+.board-directory th:nth-child(2), .board-directory td:nth-child(2) { width: 13rem; }
+.board-directory th:nth-child(3), .board-directory td:nth-child(3) { width: 5rem; }
+.board-directory .search { width: 100%; max-width: 38rem; }
+.board-directory .search input { min-width: 0; }
+
 .card { background: #1a1a1a; border-radius: 12px; padding: 1.5rem; margin-bottom: 1rem; }
 .card h2 { font-size: 1.25rem; margin-bottom: 0.5rem; }
 .connected { color: #22c55e; }

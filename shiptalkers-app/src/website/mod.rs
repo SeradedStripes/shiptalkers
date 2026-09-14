@@ -279,6 +279,7 @@ pub struct BoardCategoryTemplate {
     pub query: String,
     pub notice: Option<String>,
     pub numbered: bool,
+    pub show_pfp: bool,
     pub has_previous: bool,
     pub has_next: bool,
     pub page: u64,
@@ -679,6 +680,49 @@ async fn get_boards(
 const RANK_WINDOW: u64 = 3;
 const DIRECTORY_PAGE_SIZE: i64 = 100;
 
+async fn directory_target(
+    ch: &PgPool,
+    table: &str,
+    name_column: &str,
+    id_column: &str,
+    q: &str,
+) -> Option<(u64, String)> {
+    let numeric_rank = q.parse::<u64>().ok().filter(|rank| *rank > 0);
+    if let Some(rank) = numeric_rank {
+        return Some((rank, String::new()));
+    }
+    if q.is_empty() {
+        return None;
+    }
+    let pattern = format!("%{}%", q);
+    let target_sql = format!(
+        "SELECT {id_column}, COALESCE(ship_talkers_id, {id_column}) \
+         FROM {table} \
+         WHERE {name_column} ILIKE $1 OR {id_column} ILIKE $1 OR COALESCE(ship_talkers_id, {id_column}) ILIKE $1 \
+         ORDER BY ({name_column} ILIKE $1) DESC, COALESCE(ship_talkers_id, {id_column}), {id_column} \
+         LIMIT 1"
+    );
+    let target: Option<(String, String)> = sqlx::query_as(sqlx::AssertSqlSafe(target_sql))
+        .bind(&pattern)
+        .fetch_optional(ch)
+        .await
+        .ok()
+        .flatten();
+    let (id, ship_talkers_id) = target?;
+    let rank_sql = format!(
+        "SELECT count(*) + 1 FROM {table} \
+         WHERE COALESCE(ship_talkers_id, {id_column}) < $1 \
+            OR (COALESCE(ship_talkers_id, {id_column}) = $1 AND {id_column} < $2)"
+    );
+    let rank: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(rank_sql))
+        .bind(&ship_talkers_id)
+        .bind(&id)
+        .fetch_one(ch)
+        .await
+        .ok()?;
+    Some((rank.max(1) as u64, id))
+}
+
 fn sql_escape(s: &str) -> String {
     s.replace('\'', "''")
 }
@@ -1016,6 +1060,7 @@ async fn get_board_category(
         query,
         notice,
         numbered: true,
+        show_pfp: true,
         has_previous: false,
         has_next: false,
         page: 1,
@@ -1037,22 +1082,22 @@ async fn get_users_board(
 ) -> Result<Html<String>, StatusCode> {
     let started = Instant::now();
     let ch = state.pool()?;
-    let page = params
+    let requested_page = params
         .get("page")
         .and_then(|page| page.parse::<u64>().ok())
         .filter(|page| *page > 0)
         .unwrap_or(1);
     let query = params.get("q").cloned().unwrap_or_default();
-    let search_pattern = format!("%{}%", query.trim());
+    let target = directory_target(ch, "users", "merged_name", "user_id", query.trim()).await;
+    let page = target
+        .as_ref()
+        .map(|(rank, _)| rank.saturating_sub(1) / DIRECTORY_PAGE_SIZE as u64 + 1)
+        .unwrap_or(requested_page);
     let offset = page
         .saturating_sub(1)
         .saturating_mul(DIRECTORY_PAGE_SIZE as u64)
         .min(i64::MAX as u64) as i64;
-    let total: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM users \
-         WHERE merged_name ILIKE $1 OR user_id ILIKE $1 OR COALESCE(ship_talkers_id, user_id) ILIKE $1",
-    )
-        .bind(&search_pattern)
+    let total: i64 = sqlx::query_scalar("SELECT count(*) FROM users")
         .fetch_one(ch)
         .await
         .unwrap_or(0);
@@ -1062,16 +1107,17 @@ async fn get_users_board(
     let mut records: Vec<(String, String, String, String)> = sqlx::query_as(
         "SELECT user_id, COALESCE(ship_talkers_id, user_id), merged_name, pfp \
          FROM users \
-         WHERE merged_name ILIKE $1 OR user_id ILIKE $1 OR COALESCE(ship_talkers_id, user_id) ILIKE $1 \
          ORDER BY COALESCE(ship_talkers_id, user_id), user_id \
-         LIMIT $2 OFFSET $3",
+         LIMIT $1 OFFSET $2",
     )
-    .bind(&search_pattern)
     .bind(DIRECTORY_PAGE_SIZE + 1)
     .bind(offset)
     .fetch_all(ch)
     .await
     .unwrap_or_default();
+    if !query.trim().is_empty() && target.is_none() {
+        records.clear();
+    }
     let has_next = records.len() > DIRECTORY_PAGE_SIZE as usize;
     records.truncate(DIRECTORY_PAGE_SIZE as usize);
     let rows: Vec<BoardEntry> = records
@@ -1079,6 +1125,7 @@ async fn get_users_board(
         .enumerate()
         .map(|(index, (user_id, ship_talkers_id, merged_name, pfp))| {
             let pfp = local_pfp(&ship_talkers_id, &pfp);
+            let highlight = target.as_ref().is_some_and(|(_, id)| id == &user_id);
             BoardEntry {
                 user_id,
                 url_id: ship_talkers_id.clone(),
@@ -1093,7 +1140,7 @@ async fn get_users_board(
                 linked: true,
                 rank: offset as u64 + index as u64 + 1,
                 label: ship_talkers_id,
-                highlight: false,
+                highlight,
             }
         })
         .collect();
@@ -1108,6 +1155,7 @@ async fn get_users_board(
         query,
         notice: None,
         numbered: false,
+        show_pfp: true,
         has_previous: page > 1,
         has_next,
         page,
@@ -1129,22 +1177,22 @@ async fn get_channels_board(
 ) -> Result<Html<String>, StatusCode> {
     let started = Instant::now();
     let ch = state.pool()?;
-    let page = params
+    let requested_page = params
         .get("page")
         .and_then(|page| page.parse::<u64>().ok())
         .filter(|page| *page > 0)
         .unwrap_or(1);
     let query = params.get("q").cloned().unwrap_or_default();
-    let search_pattern = format!("%{}%", query.trim());
+    let target = directory_target(ch, "slack_channels", "name", "channel_id", query.trim()).await;
+    let page = target
+        .as_ref()
+        .map(|(rank, _)| rank.saturating_sub(1) / DIRECTORY_PAGE_SIZE as u64 + 1)
+        .unwrap_or(requested_page);
     let offset = page
         .saturating_sub(1)
         .saturating_mul(DIRECTORY_PAGE_SIZE as u64)
         .min(i64::MAX as u64) as i64;
-    let total: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM slack_channels \
-         WHERE name ILIKE $1 OR channel_id ILIKE $1 OR COALESCE(ship_talkers_id, channel_id) ILIKE $1",
-    )
-        .bind(&search_pattern)
+    let total: i64 = sqlx::query_scalar("SELECT count(*) FROM slack_channels")
         .fetch_one(ch)
         .await
         .unwrap_or(0);
@@ -1154,36 +1202,40 @@ async fn get_channels_board(
     let mut records: Vec<(String, String, String)> = sqlx::query_as(
         "SELECT channel_id, COALESCE(ship_talkers_id, channel_id), name \
          FROM slack_channels \
-         WHERE name ILIKE $1 OR channel_id ILIKE $1 OR COALESCE(ship_talkers_id, channel_id) ILIKE $1 \
-         ORDER BY COALESCE(ship_talkers_id, channel_id), channel_id \
-         LIMIT $2 OFFSET $3",
+          ORDER BY COALESCE(ship_talkers_id, channel_id), channel_id \
+         LIMIT $1 OFFSET $2",
     )
-    .bind(&search_pattern)
     .bind(DIRECTORY_PAGE_SIZE + 1)
     .bind(offset)
     .fetch_all(ch)
     .await
     .unwrap_or_default();
+    if !query.trim().is_empty() && target.is_none() {
+        records.clear();
+    }
     let has_next = records.len() > DIRECTORY_PAGE_SIZE as usize;
     records.truncate(DIRECTORY_PAGE_SIZE as usize);
     let rows: Vec<BoardEntry> = records
         .into_iter()
         .enumerate()
-        .map(|(index, (channel_id, ship_talkers_id, name))| BoardEntry {
-            user_id: channel_id,
-            url_id: ship_talkers_id.clone(),
-            merged_name: if name.is_empty() {
-                ship_talkers_id.clone()
-            } else {
-                name
-            },
-            pfp: String::new(),
-            value: String::new(),
-            extra: String::new(),
-            linked: true,
-            rank: offset as u64 + index as u64 + 1,
-            label: ship_talkers_id,
-            highlight: false,
+        .map(|(index, (channel_id, ship_talkers_id, name))| {
+            let highlight = target.as_ref().is_some_and(|(_, id)| id == &channel_id);
+            BoardEntry {
+                user_id: channel_id,
+                url_id: ship_talkers_id.clone(),
+                merged_name: if name.is_empty() {
+                    ship_talkers_id.clone()
+                } else {
+                    name
+                },
+                pfp: String::new(),
+                value: String::new(),
+                extra: String::new(),
+                linked: true,
+                rank: offset as u64 + index as u64 + 1,
+                label: ship_talkers_id,
+                highlight,
+            }
         })
         .collect();
     let template = BoardCategoryTemplate {
@@ -1197,6 +1249,7 @@ async fn get_channels_board(
         query,
         notice: None,
         numbered: false,
+        show_pfp: false,
         has_previous: page > 1,
         has_next,
         page,
