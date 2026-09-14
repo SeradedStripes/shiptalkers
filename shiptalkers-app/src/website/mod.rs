@@ -17,6 +17,8 @@ use crate::settings::RuntimeSettings;
 const EXCLUDE_BOTS_DELETED: &str = "NOT EXISTS (SELECT 1 FROM slack_identities bi JOIN users bu ON bu.ship_talkers_id = bi.ship_talkers_id WHERE bi.internal_id = m.identity_id AND (bu.is_bot = 1 OR bu.is_deleted = 1))";
 const EXCLUDE_BOTS_DELETED_SLACK_ID: &str =
     "slack_id NOT IN (SELECT user_id FROM users WHERE is_bot = 1 OR is_deleted = 1)";
+const EXCLUDE_BOTS_DELETED_SCORE: &str =
+    "user_id NOT IN (SELECT user_id FROM users WHERE is_bot = 1 OR is_deleted = 1)";
 
 pub mod api;
 pub mod auth;
@@ -795,7 +797,7 @@ async fn get_leaderboard_category(
                 "SELECT user_id AS id, score AS value, messages::bigint AS extra, \
                  row_number() OVER (ORDER BY score DESC) AS rank \
                  FROM user_scores \
-                 WHERE {EXCLUDE_BOTS_DELETED}"
+                 WHERE {EXCLUDE_BOTS_DELETED_SCORE}"
             );
             let (ranked, notice) = ranked_window(
                 ch,

@@ -508,7 +508,7 @@ async fn load_user_stats(
                      SELECT user_id FROM user_scores
                       WHERE {sup} AND score > $1
                  )",
-                sup = super::EXCLUDE_BOTS_DELETED
+                sup = super::EXCLUDE_BOTS_DELETED_SCORE
             )))
             .bind(s.score)
             .fetch_one(pool)
@@ -646,7 +646,7 @@ pub async fn get_leaderboard(
                  row_number() OVER (ORDER BY score DESC) AS rank \
                  FROM user_scores \
                  WHERE {sup}",
-                sup = super::EXCLUDE_BOTS_DELETED
+                sup = super::EXCLUDE_BOTS_DELETED_SCORE
             ),
             LeaderboardKind::Users,
         ),
