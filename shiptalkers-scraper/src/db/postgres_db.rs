@@ -772,6 +772,65 @@ pub async fn get_thread_high_water_mark(
     get_max_thread_reply_ts(pool, channel_id, thread_ts).await
 }
 
+pub async fn get_thread_activities(
+    pool: &PgPool,
+    channel_id: &str,
+    thread_ts: &[String],
+) -> Result<HashMap<String, (bool, i64, u64)>, Box<dyn std::error::Error>> {
+    if thread_ts.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let rows: Vec<(String, i16, i64, i64)> = sqlx::query_as(
+        "SELECT thread_ts, fully_scraped, slack_reply_count, slack_latest_reply_ts
+         FROM thread_checkpoints
+         WHERE channel_id = $1 AND thread_ts = ANY($2)",
+    )
+    .bind(channel_id)
+    .bind(thread_ts)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(ts, fully_scraped, reply_count, latest_reply)| {
+            (
+                ts,
+                (fully_scraped == 1, reply_count, latest_reply.max(0) as u64),
+            )
+        })
+        .collect())
+}
+
+pub async fn upsert_thread_activities(
+    pool: &PgPool,
+    channel_id: &str,
+    activities: &[(String, i64, u64)],
+) -> Result<(), Box<dyn std::error::Error>> {
+    if activities.is_empty() {
+        return Ok(());
+    }
+    let timestamps: Vec<String> = activities.iter().map(|(ts, _, _)| ts.clone()).collect();
+    let reply_counts: Vec<i64> = activities.iter().map(|(_, count, _)| *count).collect();
+    let latest_replies: Vec<i64> = activities.iter().map(|(_, _, ts)| *ts as i64).collect();
+    sqlx::query(
+        "INSERT INTO thread_checkpoints
+             (channel_id, thread_ts, fully_scraped, latest_reply_ts,
+              slack_reply_count, slack_latest_reply_ts)
+         SELECT $1, thread_ts, 0, 0, reply_count, latest_reply_ts
+         FROM unnest($2::text[], $3::bigint[], $4::bigint[])
+              AS activity(thread_ts, reply_count, latest_reply_ts)
+         ON CONFLICT (channel_id, thread_ts) DO UPDATE SET
+             slack_reply_count = EXCLUDED.slack_reply_count,
+             slack_latest_reply_ts = EXCLUDED.slack_latest_reply_ts",
+    )
+    .bind(channel_id)
+    .bind(&timestamps)
+    .bind(&reply_counts)
+    .bind(&latest_replies)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 pub async fn get_max_thread_reply_ts(
     pool: &PgPool,
     channel_id: &str,

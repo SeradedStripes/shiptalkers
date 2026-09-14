@@ -881,6 +881,7 @@ struct ChannelPageAccum {
     inserted: u64,
     filtered_out: u64,
     thread_roots: std::collections::HashSet<String>,
+    thread_activity: HashMap<String, (i64, u64)>,
 }
 
 #[derive(Default)]
@@ -915,6 +916,18 @@ async fn process_channel_page(
                 && t == &m.ts
             {
                 a.thread_roots.insert(t.clone());
+                if m.reply_count.is_some() || m.latest_reply.is_some() {
+                    a.thread_activity.insert(
+                        t.clone(),
+                        (
+                            m.reply_count.map(|count| count as i64).unwrap_or(-1),
+                            m.latest_reply
+                                .as_deref()
+                                .map(db::postgres_db::slack_ts_to_micros)
+                                .unwrap_or(0),
+                        ),
+                    );
+                }
             }
         }
     }
@@ -1117,6 +1130,7 @@ async fn scrape_one_channel(
         inserted: 0,
         filtered_out: 0,
         thread_roots: std::collections::HashSet::new(),
+        thread_activity: HashMap::new(),
     }));
     let pool_for_stream = pool.clone();
     let channel_id_for_stream = channel_id.clone();
@@ -1190,6 +1204,7 @@ async fn scrape_one_channel(
     let inserted = acc.inserted;
     let filtered_out = acc.filtered_out;
     let thread_roots = std::sync::Arc::new(std::sync::Mutex::new(acc.thread_roots));
+    let thread_activity = std::sync::Arc::new(std::sync::Mutex::new(acc.thread_activity));
 
     tracing::info!(
         "[token {}][{}/{}] Inserted {} new messages from {} (fetched {}, dupes filtered {})",
@@ -1265,11 +1280,14 @@ async fn scrape_one_channel(
             );
         }
         let thread_roots = thread_roots.clone();
+        let thread_activity = thread_activity.clone();
+        let thread_activity_for_page = thread_activity.clone();
         let pool_for_stream = pool.clone();
         let channel_id_for_rescan = channel_id.clone();
         match user_client
             .stream_channel_history(&channel_id, Some(&window_ts), move |page| {
                 let thread_roots = thread_roots.clone();
+                let thread_activity = thread_activity_for_page.clone();
                 let pool = pool_for_stream.clone();
                 let channel_id = channel_id_for_rescan.clone();
                 Box::pin(async move {
@@ -1282,6 +1300,21 @@ async fn scrape_one_channel(
                                 && set.insert(t.clone())
                             {
                                 found += 1;
+                            }
+                            if let Some(ref t) = msg.thread_ts
+                                && t == &msg.ts
+                                && (msg.reply_count.is_some() || msg.latest_reply.is_some())
+                            {
+                                thread_activity.lock().unwrap().insert(
+                                    t.clone(),
+                                    (
+                                        msg.reply_count.map(|count| count as i64).unwrap_or(-1),
+                                        msg.latest_reply
+                                            .as_deref()
+                                            .map(db::postgres_db::slack_ts_to_micros)
+                                            .unwrap_or(0),
+                                    ),
+                                );
                             }
                         }
                     }
@@ -1321,7 +1354,35 @@ async fn scrape_one_channel(
         }
     }
 
-    let thread_parents: Vec<String> = thread_roots.lock().unwrap().iter().cloned().collect();
+    let all_thread_parents: Vec<String> = thread_roots.lock().unwrap().iter().cloned().collect();
+    let current_activity = thread_activity.lock().unwrap().clone();
+    let stored_activity =
+        db::postgres_db::get_thread_activities(pool, &channel_id, &all_thread_parents)
+            .await
+            .unwrap_or_default();
+    let mut thread_activity_rows = Vec::with_capacity(current_activity.len());
+    for (thread_ts, (reply_count, latest_reply_ts)) in &current_activity {
+        thread_activity_rows.push((thread_ts.clone(), *reply_count, *latest_reply_ts));
+    }
+    if let Err(e) =
+        db::postgres_db::upsert_thread_activities(pool, &channel_id, &thread_activity_rows).await
+    {
+        tracing::warn!("Failed to save thread activity for {}: {}", channel_id, e);
+    }
+    let thread_parents: Vec<String> = all_thread_parents
+        .into_iter()
+        .filter(|thread_ts| match stored_activity.get(thread_ts) {
+            Some((fully_scraped, reply_count, latest_reply_ts)) if *fully_scraped => {
+                match current_activity.get(thread_ts) {
+                    Some((current_count, current_latest)) => {
+                        *reply_count != *current_count || *latest_reply_ts != *current_latest
+                    }
+                    None => false,
+                }
+            }
+            _ => true,
+        })
+        .collect();
 
     let mut threads_found = 0usize;
     let mut thread_replies = 0u64;

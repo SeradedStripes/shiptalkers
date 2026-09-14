@@ -32,6 +32,8 @@ pub struct SlackMessage {
     pub channel: String,
     pub thread_ts: Option<String>,
     pub reactions: Vec<SlackReaction>,
+    pub reply_count: Option<u64>,
+    pub latest_reply: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -495,6 +497,11 @@ fn parse_message_page(resp: &serde_json::Value, channel_id: &str) -> Vec<SlackMe
             continue;
         };
         let thread = msg.get("thread_ts").and_then(|v| v.as_str());
+        let reply_count = msg.get("reply_count").and_then(|v| v.as_u64());
+        let latest_reply = msg
+            .get("latest_reply")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
         let bot_name = msg.get("username").and_then(|v| v.as_str()).or_else(|| {
             msg.get("bot_profile")
                 .and_then(|p| p.get("name"))
@@ -532,6 +539,8 @@ fn parse_message_page(resp: &serde_json::Value, channel_id: &str) -> Vec<SlackMe
             channel: channel_id.to_string(),
             thread_ts: thread.map(|t| t.to_string()),
             reactions,
+            reply_count,
+            latest_reply,
         });
     }
     messages
