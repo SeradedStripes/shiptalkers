@@ -887,6 +887,7 @@ struct ChannelPageAccum {
 struct ThreadPageAccum {
     inserted: u64,
     reply_users: Vec<String>,
+    latest_reply_ts: u64,
 }
 
 async fn process_channel_page(
@@ -1006,6 +1007,12 @@ async fn process_thread_page(
     {
         let mut a = accum.lock().unwrap();
         a.inserted += inserted;
+        a.latest_reply_ts = a.latest_reply_ts.max(
+            page.iter()
+                .map(|m| db::postgres_db::slack_ts_to_micros(&m.ts))
+                .max()
+                .unwrap_or(0),
+        );
         for m in &page {
             a.reply_users.push(m.user.clone());
         }
@@ -1438,7 +1445,7 @@ async fn scrape_thread(
         .await
         .unwrap_or(false);
     let thread_oldest = if thread_fully {
-        db::postgres_db::get_max_thread_reply_ts(pool, &channel_id, &thread_ts)
+        db::postgres_db::get_thread_high_water_mark(pool, &channel_id, &thread_ts)
             .await
             .ok()
             .flatten()
@@ -1490,6 +1497,12 @@ async fn scrape_thread(
                 .unwrap_or_default();
             let inserted = acc.inserted;
             let reply_users = acc.reply_users;
+            let latest_reply_ts = acc.latest_reply_ts.max(
+                thread_oldest
+                    .as_deref()
+                    .map(db::postgres_db::slack_ts_to_micros)
+                    .unwrap_or(0),
+            );
 
             if inserted > 0 {
                 tracing::debug!(
@@ -1503,9 +1516,13 @@ async fn scrape_thread(
                 );
             }
 
-            if thread_oldest.is_none()
-                && let Err(e) =
-                    db::postgres_db::mark_thread_fully_scraped(pool, &channel_id, &thread_ts).await
+            if let Err(e) = db::postgres_db::mark_thread_fully_scraped(
+                pool,
+                &channel_id,
+                &thread_ts,
+                latest_reply_ts,
+            )
+            .await
             {
                 tracing::warn!(
                     "[token {}][{}/{}] Failed to mark thread {} as scraped: {}",

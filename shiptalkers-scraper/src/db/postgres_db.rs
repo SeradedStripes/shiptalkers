@@ -735,16 +735,41 @@ pub async fn mark_thread_fully_scraped(
     pool: &PgPool,
     channel_id: &str,
     thread_ts: &str,
+    latest_reply_ts: u64,
 ) -> Result<(), Box<dyn std::error::Error>> {
     sqlx::query(
-        "INSERT INTO thread_checkpoints (channel_id, thread_ts, fully_scraped) VALUES ($1, $2, 1)
-         ON CONFLICT (channel_id, thread_ts) DO UPDATE SET fully_scraped = EXCLUDED.fully_scraped",
+        "INSERT INTO thread_checkpoints
+             (channel_id, thread_ts, fully_scraped, latest_reply_ts)
+         VALUES ($1, $2, 1, $3)
+         ON CONFLICT (channel_id, thread_ts) DO UPDATE SET
+             fully_scraped = EXCLUDED.fully_scraped,
+             latest_reply_ts = EXCLUDED.latest_reply_ts",
     )
     .bind(channel_id)
     .bind(thread_ts)
+    .bind(latest_reply_ts as i64)
     .execute(pool)
     .await?;
     Ok(())
+}
+
+pub async fn get_thread_high_water_mark(
+    pool: &PgPool,
+    channel_id: &str,
+    thread_ts: &str,
+) -> Result<Option<u64>, Box<dyn std::error::Error>> {
+    let stored: Option<i64> = sqlx::query_scalar(
+        "SELECT latest_reply_ts FROM thread_checkpoints
+         WHERE channel_id = $1 AND thread_ts = $2",
+    )
+    .bind(channel_id)
+    .bind(thread_ts)
+    .fetch_optional(pool)
+    .await?;
+    if let Some(timestamp) = stored.filter(|&timestamp| timestamp > 0) {
+        return Ok(Some(timestamp as u64));
+    }
+    get_max_thread_reply_ts(pool, channel_id, thread_ts).await
 }
 
 pub async fn get_max_thread_reply_ts(
