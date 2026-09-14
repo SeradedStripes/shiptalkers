@@ -8,9 +8,8 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 pub fn insert_page(
     pool: sqlx::PgPool,
@@ -1181,10 +1180,13 @@ async fn scrape_one_channel(
     }
 
     if oldest.is_some()
-        && thread_rescan_due(
-            &channel_id,
-            Duration::from_secs(ctx.thread_rescan_interval_hours * 3600),
-        )
+        && db::postgres_db::get_thread_rescan_at(pool, &channel_id)
+            .await
+            .map(|last| {
+                let now = db::postgres_db::now_secs();
+                now.saturating_sub(last) >= ctx.thread_rescan_interval_hours.saturating_mul(3600)
+            })
+            .unwrap_or(true)
     {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -1193,7 +1195,16 @@ async fn scrape_one_channel(
         let window_ts = now
             .saturating_sub(ctx.thread_rescan_window_hours * 3600)
             .to_string();
-        record_thread_rescan(&channel_id);
+        if let Err(e) =
+            db::postgres_db::mark_thread_rescan(pool, &channel_id, db::postgres_db::now_secs())
+                .await
+        {
+            tracing::warn!(
+                "Failed to persist thread rescan time for {}: {}",
+                channel_id,
+                e
+            );
+        }
         let thread_roots = thread_roots.clone();
         let pool_for_stream = pool.clone();
         let channel_id_for_rescan = channel_id.clone();
@@ -1359,23 +1370,6 @@ async fn scrape_one_channel(
             summary.join(", ")
         );
     }
-}
-
-static THREAD_RESCAN_LAST: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
-
-fn thread_rescan_due(channel_id: &str, interval: Duration) -> bool {
-    let last = THREAD_RESCAN_LAST.get_or_init(|| Mutex::new(HashMap::new()));
-    let map = last.lock().unwrap();
-    match map.get(channel_id) {
-        Some(prev) => prev.elapsed() >= interval,
-        None => true,
-    }
-}
-
-fn record_thread_rescan(channel_id: &str) {
-    let last = THREAD_RESCAN_LAST.get_or_init(|| Mutex::new(HashMap::new()));
-    let mut map = last.lock().unwrap();
-    map.insert(channel_id.to_string(), Instant::now());
 }
 
 async fn scrape_thread(

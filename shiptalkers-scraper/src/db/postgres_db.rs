@@ -601,6 +601,35 @@ pub async fn clear_fully_scraped(
     Ok(())
 }
 
+pub async fn get_thread_rescan_at(
+    pool: &PgPool,
+    channel_id: &str,
+) -> Result<u64, Box<dyn std::error::Error>> {
+    let timestamp: Option<i64> =
+        sqlx::query_scalar("SELECT thread_rescan_at FROM scrape_checkpoints WHERE channel_id = $1")
+            .bind(channel_id)
+            .fetch_optional(pool)
+            .await?;
+    Ok(timestamp.unwrap_or(0).max(0) as u64)
+}
+
+pub async fn mark_thread_rescan(
+    pool: &PgPool,
+    channel_id: &str,
+    timestamp: u64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    sqlx::query(
+        "INSERT INTO scrape_checkpoints (channel_id, fully_scraped, thread_rescan_at)
+         VALUES ($1, 0, $2)
+         ON CONFLICT (channel_id) DO UPDATE SET thread_rescan_at = EXCLUDED.thread_rescan_at",
+    )
+    .bind(channel_id)
+    .bind(timestamp as i64)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 pub async fn get_archived_channel_ids(
     pool: &PgPool,
     channel_ids: &[String],
