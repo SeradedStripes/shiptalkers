@@ -196,8 +196,8 @@ pub struct SearchTemplate {
 }
 
 #[derive(Template)]
-#[template(path = "leaderboard.html")]
-pub struct LeaderboardTemplate {
+#[template(path = "boards.html")]
+pub struct BoardsTemplate {
     pub signed_in: bool,
     pub page_load_ms: String,
 }
@@ -266,13 +266,13 @@ pub struct ApiDocsGrants {
 }
 
 #[derive(Template)]
-#[template(path = "leaderboard_category.html")]
-pub struct LeaderboardCategoryTemplate {
+#[template(path = "board_category.html")]
+pub struct BoardCategoryTemplate {
     pub title: String,
     pub entity: String,
     pub unit: String,
     pub extra_unit: Option<String>,
-    pub rows: Vec<LeaderboardEntry>,
+    pub rows: Vec<BoardEntry>,
     pub coming_soon: bool,
     pub category: String,
     pub query: String,
@@ -281,7 +281,7 @@ pub struct LeaderboardCategoryTemplate {
     pub page_load_ms: String,
 }
 
-pub struct LeaderboardEntry {
+pub struct BoardEntry {
     pub user_id: String,
     pub merged_name: String,
     pub pfp: String,
@@ -326,13 +326,13 @@ pub fn router(
         .route("/link", get(auth::get_link))
         .route("/stats", get(get_stats_page))
         .route("/stats/{id}", get(get_stats_for_id))
-        .route("/leaderboard", get(get_leaderboard))
-        .route("/leaderboard/{category}", get(get_leaderboard_category))
+        .route("/boards", get(get_boards))
+        .route("/boards/{category}", get(get_board_category))
         .route("/api/docs", get(get_api_docs))
         .route("/api/docs/{topic}", get(get_api_docs))
         .route("/api/v1/me", get(api::get_me))
         .route("/api/v1/stats", get(api::get_stats))
-        .route("/api/v1/leaderboard/{category}", get(api::get_leaderboard))
+        .route("/api/v1/boards/{category}", get(api::get_boards))
         .route("/api/v1/users/{slack_id}", get(api::get_user))
         .route("/api/v1/channels/{channel_id}", get(api::get_channel))
         .route("/api/v1/daily-stats", get(api::get_daily_stats))
@@ -644,13 +644,13 @@ async fn get_stats_for_id(
     get_user_stats(&state, &headers, user_id.as_deref().unwrap_or(&id)).await
 }
 
-async fn get_leaderboard(
+async fn get_boards(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Html<String>, StatusCode> {
     let started = Instant::now();
     let signed_in = signed_in(&state, &headers);
-    let template = LeaderboardTemplate {
+    let template = BoardsTemplate {
         signed_in,
         page_load_ms: format!("{}ms", started.elapsed().as_millis()),
     };
@@ -705,7 +705,7 @@ async fn fetch_rank_window(ch: &PgPool, inner: &str, lo: u64, hi: u64) -> Vec<Ra
         .collect()
 }
 
-/// Fetches a ranked window for a leaderboard. No query returns the top 100; a
+/// Fetches a ranked window for a board. No query returns the top 100; a
 /// numeric query jumps to that rank; anything else resolves an entity (user,
 /// channel, word) and jumps to its rank. Returns the rows plus an optional
 /// notice (e.g. no match found).
@@ -748,17 +748,14 @@ async fn ranked_window(
             }
             (rows, None)
         }
-        None => (
-            Vec::new(),
-            Some(format!("'{}' is not on this leaderboard", q)),
-        ),
+        None => (Vec::new(), Some(format!("'{}' is not on this board", q))),
     }
 }
 
 fn resolve_user_sql(inner: &str, q: &str) -> String {
     // LIKE is case-sensitive in PostgreSQL for lower() comparisons against a
     // lowercased query it still matches case-insensitively in effect. Only
-    // users already on the leaderboard are candidates, so a similarly-named
+    // users already on the board are candidates, so a similarly-named
     // user without scores can't shadow the one that's actually ranked. Ties
     // (duplicate display names) break by rank, so the highest-ranked match wins.
     let eq = sql_escape(&q.to_lowercase());
@@ -771,7 +768,7 @@ fn resolve_user_sql(inner: &str, q: &str) -> String {
     )
 }
 
-async fn get_leaderboard_category(
+async fn get_board_category(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(category): Path<String>,
@@ -789,7 +786,7 @@ async fn get_leaderboard_category(
         String,
         Option<String>,
         bool,
-        Vec<LeaderboardEntry>,
+        Vec<BoardEntry>,
         Option<String>,
     ) = match category.as_str() {
         "talkers" => {
@@ -807,10 +804,10 @@ async fn get_leaderboard_category(
                 Some(&resolve_user_sql(&inner, q)),
             )
             .await;
-            let rows = leaderboard_entries(
+            let rows = board_entries(
                 ch,
                 ranked,
-                LeaderboardSource::Users,
+                BoardSource::Users,
                 fmt_duration,
                 Some(fmt_thousands),
             )
@@ -842,8 +839,7 @@ async fn get_leaderboard_category(
                 Some(&resolve_user_sql(&inner, q)),
             )
             .await;
-            let rows =
-                leaderboard_entries(ch, ranked, LeaderboardSource::Users, fmt_minutes, None).await;
+            let rows = board_entries(ch, ranked, BoardSource::Users, fmt_minutes, None).await;
             (
                 "Top Coders".into(),
                 "Coding Time".into(),
@@ -868,10 +864,10 @@ async fn get_leaderboard_category(
                 eq, eq
             );
             let (ranked, notice) = ranked_window(ch, inner, q, parsed_rank, Some(&resolve)).await;
-            let rows = leaderboard_entries(
+            let rows = board_entries(
                 ch,
                 ranked,
-                LeaderboardSource::Channels,
+                BoardSource::Channels,
                 fmt_duration,
                 Some(fmt_thousands),
             )
@@ -915,8 +911,7 @@ async fn get_leaderboard_category(
                 Some(&resolve_user_sql(&inner, q)),
             )
             .await;
-            let rows =
-                leaderboard_entries(ch, ranked, LeaderboardSource::Users, fmt_duration, None).await;
+            let rows = board_entries(ch, ranked, BoardSource::Users, fmt_duration, None).await;
             (
                 "Top Combined".into(),
                 "Combined Time".into(),
@@ -953,7 +948,7 @@ async fn get_leaderboard_category(
             };
             let entries = ranked
                 .into_iter()
-                .map(|r| LeaderboardEntry {
+                .map(|r| BoardEntry {
                     user_id: r.id.clone(),
                     merged_name: r.id,
                     pfp: String::new(),
@@ -986,7 +981,7 @@ async fn get_leaderboard_category(
         }
     });
 
-    let template = LeaderboardCategoryTemplate {
+    let template = BoardCategoryTemplate {
         title,
         entity: match category.as_str() {
             "channels" => "Channel",
@@ -1010,18 +1005,18 @@ async fn get_leaderboard_category(
     Ok(Html(html))
 }
 
-enum LeaderboardSource {
+enum BoardSource {
     Users,
     Channels,
 }
 
-async fn leaderboard_entries(
+async fn board_entries(
     ch: &PgPool,
     rows: Vec<RankedRow>,
-    source: LeaderboardSource,
+    source: BoardSource,
     format_value: impl Fn(u64) -> String,
     format_extra: Option<fn(u64) -> String>,
-) -> Vec<LeaderboardEntry> {
+) -> Vec<BoardEntry> {
     let mut name_ids: Vec<String> = rows.iter().map(|r| r.id.clone()).collect();
     name_ids.sort();
     name_ids.dedup();
@@ -1030,7 +1025,7 @@ async fn leaderboard_entries(
         std::collections::HashMap::new()
     } else {
         match source {
-            LeaderboardSource::Users => sqlx::query_as::<_, (String, String, String)>(
+            BoardSource::Users => sqlx::query_as::<_, (String, String, String)>(
                 "SELECT user_id, merged_name, pfp FROM users WHERE user_id = ANY($1)",
             )
             .bind(&name_ids)
@@ -1040,7 +1035,7 @@ async fn leaderboard_entries(
             .into_iter()
             .map(|(user_id, merged_name, pfp)| (user_id, (merged_name, pfp)))
             .collect(),
-            LeaderboardSource::Channels => sqlx::query_as::<_, (String, String)>(
+            BoardSource::Channels => sqlx::query_as::<_, (String, String)>(
                 "SELECT channel_id, name FROM slack_channels WHERE channel_id = ANY($1)",
             )
             .bind(&name_ids)
@@ -1057,7 +1052,7 @@ async fn leaderboard_entries(
         .map(|r| {
             let value = r.value.max(0) as u64;
             let (merged_name, pfp) = names.get(&r.id).cloned().unwrap_or_default();
-            LeaderboardEntry {
+            BoardEntry {
                 user_id: r.id.clone(),
                 merged_name: if merged_name.is_empty() {
                     r.id.clone()

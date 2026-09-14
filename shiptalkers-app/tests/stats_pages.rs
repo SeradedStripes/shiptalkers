@@ -58,10 +58,10 @@ async fn stats_routes_match() {
         "/stats/anonymous-user-id",
         "/stats/anonymous-channel-id",
         "/search",
-        "/leaderboard/channels",
-        "/leaderboard/words",
-        "/leaderboard/talkers?q=1234",
-        "/leaderboard/talkers?q=ZachLatta",
+        "/boards/channels",
+        "/boards/words",
+        "/boards/talkers?q=1234",
+        "/boards/talkers?q=ZachLatta",
     ] {
         let res = app
             .clone()

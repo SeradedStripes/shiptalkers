@@ -7,10 +7,10 @@
     <title>{{ title }} - Ship Talkers</title>
     <link rel="stylesheet" href="/style.css">
 </head>
-<body class="leaderboard">
+<body class="boards">
     {% include "header.html" %}
     <div class="container">
-        <a href="/leaderboard" class="back-link">Back to all leaderboards</a>
+        <a href="/boards" class="back-link">Back to all boards</a>
         <h1><span class="live"></span>{{ title }}</h1>
 
         {% if coming_soon %}
@@ -18,7 +18,7 @@
             <p class="empty">Coming soon</p>
         </div>
         {% else %}
-        <form class="search" method="get" action="/leaderboard/{{ category }}">
+        <form class="search" method="get" action="/boards/{{ category }}">
             <input type="text" name="q" placeholder="Rank (e.g. 1234) or name..." value="{{ query }}">
             <button type="submit">Search</button>
         </form>

@@ -285,7 +285,7 @@ pub fn now_secs() -> u64 {
 }
 
 /// Builds word_counts for every existing slack_messages row once, so the Top
-/// Words leaderboard is all-time on first deploy. New inserts keep it in sync
+/// Words board is all-time on first deploy. New inserts keep it in sync
 /// from then on. Completion is recorded in `backfill_meta`, so the full-table
 /// scan runs exactly once and never again on later restarts; a non-empty
 /// `word_counts` counts as done too.

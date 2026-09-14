@@ -32,7 +32,7 @@ body.link .container { max-width: 600px; }
 body.stats .container { max-width: 1000px; }
 body.user .container { max-width: 1000px; }
 body.channel .container { max-width: 1000px; }
-body.leaderboard .container { max-width: 1000px; }
+body.boards .container { max-width: 1000px; }
 body.search .container { max-width: 700px; }
 
 .deactivated { color: #ff4d4f; font-weight: 700; }
@@ -316,4 +316,3 @@ dialog[open] .btn { display: inline-block; }
     .member-avatar { width: 72px; height: 72px; }
     .table-card { overflow-x: auto; }
 }
-

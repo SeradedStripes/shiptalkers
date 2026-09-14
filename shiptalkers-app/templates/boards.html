@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Boards - Ship Talkers</title>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body class="boards">
+    {% include "header.html" %}
+    <div class="container">
+        <h1><span class="live"></span>Boards</h1>
+        <p>Choose a board:</p>
+        <div class="links">
+            <a href="/boards/talkers" class="btn">Top Talkers</a>
+            <a href="/boards/coders" class="btn">Top Coders</a>
+            <a href="/boards/channels" class="btn">Top Channels</a>
+            <a href="/boards/words" class="btn">Top Words</a>
+            <a href="/boards/combined" class="btn">Top Combined</a>
+        </div>
+    </div>
+    {% include "footer.html" %}
+</body>
+</html>

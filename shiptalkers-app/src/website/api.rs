@@ -605,22 +605,22 @@ pub async fn get_stats(
 }
 
 #[derive(Deserialize)]
-pub struct LeaderboardParams {
+pub struct BoardParams {
     rank: Option<u64>,
     q: Option<String>,
     limit: Option<u32>,
 }
 
-enum LeaderboardKind {
+enum BoardKind {
     Users,
     Channels,
     Words,
 }
 
-pub async fn get_leaderboard(
+pub async fn get_boards(
     State(state): State<AppState>,
     Path(category): Path<String>,
-    Query(params): Query<LeaderboardParams>,
+    Query(params): Query<BoardParams>,
 ) -> Response {
     let pool = match state.pool() {
         Ok(pool) => pool,
@@ -648,7 +648,7 @@ pub async fn get_leaderboard(
                  WHERE {sup}",
                 sup = super::EXCLUDE_BOTS_DELETED_SCORE
             ),
-            LeaderboardKind::Users,
+            BoardKind::Users,
         ),
         "coders" => (
             format!(
@@ -661,7 +661,7 @@ pub async fn get_leaderboard(
                  )",
                 sup = super::EXCLUDE_BOTS_DELETED_SLACK_ID
             ),
-            LeaderboardKind::Users,
+            BoardKind::Users,
         ),
         "channels" => (
             "SELECT channel_id AS id, total_time::bigint AS value, \
@@ -669,7 +669,7 @@ pub async fn get_leaderboard(
              row_number() OVER (ORDER BY total_time DESC) AS rank \
              FROM channel_scores"
                 .to_string(),
-            LeaderboardKind::Channels,
+            BoardKind::Channels,
         ),
         "combined" => (
             format!(
@@ -691,7 +691,7 @@ pub async fn get_leaderboard(
                  )",
                 sup = super::EXCLUDE_BOTS_DELETED_SCORE
             ),
-            LeaderboardKind::Users,
+            BoardKind::Users,
         ),
         "words" => (
             "SELECT word AS id, cnt::bigint AS value, CAST(NULL AS BIGINT) AS extra, rank \
@@ -700,7 +700,7 @@ pub async fn get_leaderboard(
                  FROM word_totals \
              )"
             .to_string(),
-            LeaderboardKind::Words,
+            BoardKind::Words,
         ),
         _ => {
             return error_response(
@@ -728,8 +728,8 @@ pub async fn get_leaderboard(
             Some(lo_hi) => lo_hi,
             None => {
                 let resolve = match kind {
-                    LeaderboardKind::Users => super::resolve_user_sql(&inner, qq),
-                    LeaderboardKind::Channels => {
+                    BoardKind::Users => super::resolve_user_sql(&inner, qq),
+                    BoardKind::Channels => {
                         let eq = super::sql_escape(&qq.to_lowercase());
                         format!(
                             "SELECT c.channel_id AS id FROM slack_channels AS c \
@@ -739,7 +739,7 @@ pub async fn get_leaderboard(
                              LIMIT 1"
                         )
                     }
-                    LeaderboardKind::Words => {
+                    BoardKind::Words => {
                         let eq = super::sql_escape(&qq.to_lowercase());
                         format!(
                             "SELECT id FROM ({inner}) WHERE id = '{eq}' OR id LIKE '{eq}%' \
@@ -756,7 +756,7 @@ pub async fn get_leaderboard(
                         None => {
                             return error_response(
                                 StatusCode::NOT_FOUND,
-                                &format!("'{}' is not on this leaderboard", qq),
+                                &format!("'{}' is not on this board", qq),
                             );
                         }
                     },
@@ -797,7 +797,7 @@ pub async fn get_leaderboard(
 async fn fetch_merged_names(
     pool: &crate::sqlx::PgPool,
     rows: &[super::RankedRow],
-    kind: &LeaderboardKind,
+    kind: &BoardKind,
 ) -> std::collections::HashMap<String, String> {
     let mut names = std::collections::HashMap::new();
     let ids: Vec<String> = rows.iter().map(|r| r.id.clone()).collect();
@@ -805,7 +805,7 @@ async fn fetch_merged_names(
         return names;
     }
     match kind {
-        LeaderboardKind::Users => {
+        BoardKind::Users => {
             let found: Vec<(String, String)> =
                 sqlx::query_as("SELECT user_id, merged_name FROM users WHERE user_id = ANY($1)")
                     .bind(&ids)
@@ -816,7 +816,7 @@ async fn fetch_merged_names(
                 names.insert(id, name);
             }
         }
-        LeaderboardKind::Channels => {
+        BoardKind::Channels => {
             let found: Vec<(String, String)> = sqlx::query_as(
                 "SELECT channel_id, name FROM slack_channels WHERE channel_id = ANY($1)",
             )
@@ -828,7 +828,7 @@ async fn fetch_merged_names(
                 names.insert(id, name);
             }
         }
-        LeaderboardKind::Words => {}
+        BoardKind::Words => {}
     }
     names
 }

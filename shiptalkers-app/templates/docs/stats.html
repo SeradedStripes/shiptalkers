@@ -14,7 +14,7 @@
             <h2>Stats</h2>
             <p>
                 Global counters and per-entity stats. These endpoints mirror the website's
-                homepage, leaderboards, and profile pages.
+                homepage, boards, and profile pages.
             </p>
 
             <section id="stats" class="endpoint">
@@ -45,14 +45,14 @@
                 <pre class="code-block">curl {{ base_url }}/api/v1/stats?include=messages,channels</pre>
             </section>
 
-            <section id="leaderboard" class="endpoint">
+                <section id="boards" class="endpoint">
                 <div class="endpoint-head">
                     <span class="method">GET</span>
-                    <code>/api/v1/leaderboard/&#123;category&#125;</code>
+                    <code>/api/v1/boards/&#123;category&#125;</code>
                     <span class="tag">Public</span>
                 </div>
                 <p>
-                    Returns ranked entries for a leaderboard category. With no query params
+                    Returns ranked entries for a board category. With no query params
                     this returns the top 100. Pass <code>rank=N</code> to fetch a small
                     window around rank N, or <code>q=name</code> to look up an entity by
                     name and fetch its rank window.
@@ -82,7 +82,7 @@
   ]
 }</pre>
                 <p><strong>Example</strong></p>
-                <pre class="code-block">curl {{ base_url }}/api/v1/leaderboard/talkers?q=Orpheus</pre>
+                <pre class="code-block">curl {{ base_url }}/api/v1/boards/talkers?q=Orpheus</pre>
             </section>
 
             <section id="users" class="endpoint">
@@ -92,7 +92,7 @@
                     <span class="tag">Public</span>
                 </div>
                 <p>
-                    Slack-time sessionizer output, coding minutes, leaderboard rank, and top
+                    Slack-time sessionizer output, coding minutes, board rank, and top
                     channels for one user. Bot and deleted-user stats are returned but
                     excluded from rankings.
                 </p>
