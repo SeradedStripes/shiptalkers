@@ -248,8 +248,8 @@ pub async fn run_scraper(
         // List and message passes have separate rate budgets, so run them in parallel
         let (list_result, _) = tokio::join!(full_fetch(&list_pool, &pool), async {
             if !user_tokens.is_empty() {
-                backfill_consented_content(&settings, &pool).await;
                 scrape_all_messages(&settings, &pool).await;
+                backfill_consented_content(&settings, &pool).await;
             }
         });
         if let Err(e) = list_result {
@@ -406,20 +406,6 @@ async fn scrape_all_messages(settings: &settings::RuntimeSettings, pool: &sqlx::
     let touched_users = Arc::new(Mutex::new(std::collections::HashSet::new()));
     let touched_channels = Arc::new(Mutex::new(std::collections::HashSet::new()));
 
-    if !new_channels.is_empty() {
-        tracing::info!("Full-scraping {} new channels...", new_channels.len());
-        scrape_channel_list(
-            settings,
-            pool,
-            &new_channels,
-            touched_users.clone(),
-            touched_channels.clone(),
-            0,
-            None,
-        )
-        .await;
-    }
-
     if !check_channels.is_empty() {
         let resume = db::postgres_db::get_sweep_resume(pool)
             .await
@@ -450,6 +436,20 @@ async fn scrape_all_messages(settings: &settings::RuntimeSettings, pool: &sqlx::
         )
         .await;
         sweep.finish().await;
+    }
+
+    if !new_channels.is_empty() {
+        tracing::info!("Full-scraping {} new channels...", new_channels.len());
+        scrape_channel_list(
+            settings,
+            pool,
+            &new_channels,
+            touched_users.clone(),
+            touched_channels.clone(),
+            0,
+            None,
+        )
+        .await;
     }
 
     let users: Vec<String> = touched_users.lock().unwrap().iter().cloned().collect();
