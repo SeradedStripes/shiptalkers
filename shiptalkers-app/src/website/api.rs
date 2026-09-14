@@ -463,7 +463,7 @@ async fn load_user_stats(
          ORDER BY messages DESC
          LIMIT 10",
     )
-    .bind(ship_talkers_id)
+    .bind(&ship_talkers_id)
     .fetch_all(pool)
     .await
     .map_err(|e| e.to_string())?;
@@ -527,7 +527,7 @@ async fn load_user_stats(
         real_name,
         username,
         email,
-        pfp: super::local_pfp(slack_id, &pfp_url),
+        pfp: super::local_pfp(&ship_talkers_id, &pfp_url),
         is_bot,
         is_deleted,
         found,
@@ -917,8 +917,8 @@ async fn load_channel_stats(
     .unwrap_or(0)
     .max(0);
 
-    let posters: Vec<(String, i64)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-        "SELECT u.user_id, count(*) AS messages \
+    let posters: Vec<(String, String, i64)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT u.user_id, COALESCE(u.ship_talkers_id, u.user_id), count(*) AS messages \
          FROM slack_messages m \
          JOIN slack_identities i ON i.internal_id = m.identity_id \
           JOIN users u ON u.ship_talkers_id = i.ship_talkers_id \
@@ -933,7 +933,7 @@ async fn load_channel_stats(
     .await
     .map_err(|e| e.to_string())?;
 
-    let name_ids: Vec<String> = posters.iter().map(|(id, _)| id.clone()).collect();
+    let name_ids: Vec<String> = posters.iter().map(|(id, _, _)| id.clone()).collect();
     let mut poster_names = std::collections::HashMap::new();
     if !name_ids.is_empty() {
         let found: Vec<(String, String, String)> =
@@ -949,7 +949,7 @@ async fn load_channel_stats(
 
     let top_posters: Vec<TopPosterJson> = posters
         .into_iter()
-        .map(|(user_id, messages)| {
+        .map(|(user_id, ship_talkers_id, messages)| {
             let (merged_name, pfp) = poster_names.get(&user_id).cloned().unwrap_or_default();
             TopPosterJson {
                 slack_id: user_id.clone(),
@@ -958,7 +958,7 @@ async fn load_channel_stats(
                 } else {
                     merged_name
                 },
-                pfp: super::local_pfp(&user_id, &pfp),
+                pfp: super::local_pfp(&ship_talkers_id, &pfp),
                 messages,
             }
         })

@@ -74,7 +74,7 @@
                     <tr><td colspan="2" class="empty">No activity</td></tr>
                     {% else %}
                     {% for c in top_channels %}
-                    <tr><td><a href="/stats/{{ c.user_id }}">{{ c.channel_name }}</a></td><td>{{ c.messages }}</td></tr>
+                    <tr><td><a href="/stats/{{ c.url_id }}">{{ c.channel_name }}</a></td><td>{{ c.messages }}</td></tr>
                     {% endfor %}
                     {% endif %}
                 </tbody>

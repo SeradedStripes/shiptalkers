@@ -166,6 +166,7 @@ pub struct UserTemplate {
 
 pub struct ChannelStats {
     pub user_id: String,
+    pub url_id: String,
     pub channel_name: String,
     pub messages: String,
 }
@@ -284,6 +285,7 @@ pub struct BoardCategoryTemplate {
 
 pub struct BoardEntry {
     pub user_id: String,
+    pub url_id: String,
     pub merged_name: String,
     pub pfp: String,
     pub value: String,
@@ -298,6 +300,7 @@ pub struct SearchResult {
     pub merged_name: String,
     pub pfp: String,
     pub user_id: String,
+    pub url_id: String,
     pub deactivated: bool,
 }
 
@@ -305,6 +308,7 @@ pub struct UserStats {
     pub merged_name: String,
     pub pfp: String,
     pub user_id: String,
+    pub url_id: String,
     pub messages: String,
 }
 
@@ -413,15 +417,15 @@ fn signed_in(state: &AppState, headers: &HeaderMap) -> bool {
 
 async fn get_pfp(State(state): State<AppState>, Path(user_id): Path<String>) -> Response {
     let url: String = match state.pool() {
-        Ok(pool) => {
-            sqlx::query_scalar::<_, Option<String>>("SELECT pfp FROM users WHERE user_id = $1")
-                .bind(&user_id)
-                .fetch_one(pool)
-                .await
-                .ok()
-                .flatten()
-                .unwrap_or_default()
-        }
+        Ok(pool) => sqlx::query_scalar::<_, Option<String>>(
+            "SELECT pfp FROM users WHERE user_id = $1 OR ship_talkers_id = $1",
+        )
+        .bind(&user_id)
+        .fetch_one(pool)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_default(),
         Err(_) => String::new(),
     };
     if url.is_empty() {
@@ -552,8 +556,8 @@ async fn get_search(
     let results = match (pool, query.trim().is_empty()) {
         (Some(pool), false) => {
             let pattern = format!("%{}%", query.trim());
-            sqlx::query_as::<_, (String, String, String, i16)>(
-                "SELECT user_id, merged_name, pfp, is_deleted FROM users
+            sqlx::query_as::<_, (String, String, String, i16, String)>(
+                "SELECT user_id, merged_name, pfp, is_deleted, COALESCE(ship_talkers_id, user_id) FROM users
                  WHERE merged_name ILIKE $1 OR real_name ILIKE $1 OR username ILIKE $1 OR user_id ILIKE $1
                  ORDER BY (merged_name ILIKE $1) DESC, merged_name, real_name
                  LIMIT 25",
@@ -563,14 +567,15 @@ async fn get_search(
             .await
             .unwrap_or_default()
             .into_iter()
-            .map(|(user_id, merged_name, pfp, is_deleted)| SearchResult {
+            .map(|(user_id, merged_name, pfp, is_deleted, url_id)| SearchResult {
                 merged_name: if merged_name.is_empty() {
                     user_id.clone()
                 } else {
                     merged_name
                 },
-                pfp: local_pfp(&user_id, &pfp),
+                pfp: local_pfp(&url_id, &pfp),
                 user_id,
+                url_id,
                 deactivated: is_deleted == 1,
             })
             .collect()
@@ -581,8 +586,8 @@ async fn get_search(
     let channels = match (pool, query.trim().is_empty()) {
         (Some(pool), false) => {
             let pattern = format!("%{}%", query.trim());
-            sqlx::query_as::<_, (String, String)>(
-                "SELECT channel_id, name FROM slack_channels
+            sqlx::query_as::<_, (String, String, String)>(
+                "SELECT channel_id, name, COALESCE(ship_talkers_id, channel_id) FROM slack_channels
                  WHERE name ILIKE $1
                  ORDER BY name
                  LIMIT 25",
@@ -592,10 +597,11 @@ async fn get_search(
             .await
             .unwrap_or_default()
             .into_iter()
-            .map(|(channel_id, name)| SearchResult {
+            .map(|(channel_id, name, url_id)| SearchResult {
                 merged_name: name,
                 pfp: String::new(),
                 user_id: channel_id,
+                url_id,
                 deactivated: false,
             })
             .collect()
@@ -954,6 +960,7 @@ async fn get_board_category(
                 .into_iter()
                 .map(|r| BoardEntry {
                     user_id: r.id.clone(),
+                    url_id: r.id.clone(),
                     merged_name: r.id,
                     pfp: String::new(),
                     value: fmt_thousands(r.value.max(0) as u64),
@@ -1026,9 +1033,10 @@ async fn get_users_board(
     .unwrap_or_default()
     .into_iter()
     .map(|(user_id, ship_talkers_id, merged_name, pfp)| {
-        let pfp = local_pfp(&user_id, &pfp);
+        let pfp = local_pfp(&ship_talkers_id, &pfp);
         BoardEntry {
             user_id,
+            url_id: ship_talkers_id.clone(),
             merged_name: if merged_name.is_empty() {
                 ship_talkers_id.clone()
             } else {
@@ -1081,6 +1089,7 @@ async fn get_channels_board(
     .into_iter()
     .map(|(channel_id, ship_talkers_id, name)| BoardEntry {
         user_id: channel_id,
+        url_id: ship_talkers_id.clone(),
         merged_name: if name.is_empty() {
             ship_talkers_id.clone()
         } else {
@@ -1131,29 +1140,34 @@ async fn board_entries(
     name_ids.sort();
     name_ids.dedup();
 
-    let names: std::collections::HashMap<String, (String, String)> = if name_ids.is_empty() {
+    let names: std::collections::HashMap<String, (String, String, String)> = if name_ids.is_empty()
+    {
         std::collections::HashMap::new()
     } else {
         match source {
-            BoardSource::Users => sqlx::query_as::<_, (String, String, String)>(
-                "SELECT user_id, merged_name, pfp FROM users WHERE user_id = ANY($1)",
+            BoardSource::Users => sqlx::query_as::<_, (String, String, String, String)>(
+                "SELECT user_id, merged_name, pfp, COALESCE(ship_talkers_id, user_id) FROM users WHERE user_id = ANY($1)",
             )
             .bind(&name_ids)
             .fetch_all(ch)
             .await
             .unwrap_or_default()
             .into_iter()
-            .map(|(user_id, merged_name, pfp)| (user_id, (merged_name, pfp)))
+            .map(|(user_id, merged_name, pfp, ship_talkers_id)| {
+                (user_id, (merged_name, pfp, ship_talkers_id))
+            })
             .collect(),
-            BoardSource::Channels => sqlx::query_as::<_, (String, String)>(
-                "SELECT channel_id, name FROM slack_channels WHERE channel_id = ANY($1)",
+            BoardSource::Channels => sqlx::query_as::<_, (String, String, String)>(
+                "SELECT channel_id, name, COALESCE(ship_talkers_id, channel_id) FROM slack_channels WHERE channel_id = ANY($1)",
             )
             .bind(&name_ids)
             .fetch_all(ch)
             .await
             .unwrap_or_default()
             .into_iter()
-            .map(|(channel_id, name)| (channel_id, (name, String::new())))
+            .map(|(channel_id, name, ship_talkers_id)| {
+                (channel_id, (name, String::new(), ship_talkers_id))
+            })
             .collect(),
         }
     };
@@ -1161,15 +1175,21 @@ async fn board_entries(
     rows.into_iter()
         .map(|r| {
             let value = r.value.max(0) as u64;
-            let (merged_name, pfp) = names.get(&r.id).cloned().unwrap_or_default();
+            let (merged_name, pfp, url_id) = names.get(&r.id).cloned().unwrap_or_default();
+            let pfp = local_pfp(&url_id, &pfp);
             BoardEntry {
                 user_id: r.id.clone(),
+                url_id: if url_id.is_empty() {
+                    r.id.clone()
+                } else {
+                    url_id
+                },
                 merged_name: if merged_name.is_empty() {
                     r.id.clone()
                 } else {
                     merged_name
                 },
-                pfp: local_pfp(&r.id, &pfp),
+                pfp,
                 value: format_value(value),
                 extra: r
                     .extra
@@ -1317,12 +1337,19 @@ async fn get_user_stats(
         .map(|i| i.username.clone())
         .unwrap_or_default();
     let email = info.as_ref().map(|i| i.email.clone()).unwrap_or_default();
-    let pfp_url = info.as_ref().map(|i| i.pfp.clone()).unwrap_or_default();
-    let pfp = local_pfp(slack_id, &pfp_url);
     let shiptalkers_id = info
         .as_ref()
         .and_then(|i| i.ship_talkers_id.clone())
         .unwrap_or_default();
+    let pfp_url = info.as_ref().map(|i| i.pfp.clone()).unwrap_or_default();
+    let pfp = local_pfp(
+        if shiptalkers_id.is_empty() {
+            slack_id
+        } else {
+            &shiptalkers_id
+        },
+        &pfp_url,
+    );
 
     #[derive(Debug)]
     struct ScoreRow {
@@ -1371,17 +1398,19 @@ async fn get_user_stats(
     .unwrap_or_default();
 
     let name_ids: Vec<String> = counts.iter().map(|(id, _)| id.clone()).collect();
-    let channel_names: std::collections::HashMap<String, String> = if name_ids.is_empty() {
+    let channel_names: std::collections::HashMap<String, (String, String)> = if name_ids.is_empty()
+    {
         std::collections::HashMap::new()
     } else {
-        sqlx::query_as::<_, (String, String)>(
-            "SELECT channel_id, name FROM slack_channels WHERE channel_id = ANY($1)",
+        sqlx::query_as::<_, (String, String, String)>(
+            "SELECT channel_id, name, COALESCE(ship_talkers_id, channel_id) FROM slack_channels WHERE channel_id = ANY($1)",
         )
         .bind(&name_ids)
         .fetch_all(ch)
         .await
         .unwrap_or_default()
         .into_iter()
+        .map(|(channel_id, name, ship_talkers_id)| (channel_id, (name, ship_talkers_id)))
         .collect()
     };
 
@@ -1389,9 +1418,14 @@ async fn get_user_stats(
         .into_iter()
         .map(|(channel_id, messages)| ChannelStats {
             user_id: channel_id.clone(),
+            url_id: channel_names
+                .get(&channel_id)
+                .map(|(_, id)| id.clone())
+                .unwrap_or_else(|| channel_id.clone()),
             channel_name: channel_names
                 .get(&channel_id)
-                .cloned()
+                .map(|(name, _)| name.clone())
+                .filter(|name| !name.is_empty())
                 .unwrap_or_else(|| channel_id.clone()),
             messages: fmt_thousands(messages.max(0) as u64),
         })
@@ -1494,8 +1528,8 @@ async fn get_channel_stats(
     .unwrap_or(0)
     .max(0) as u64;
 
-    let posters: Vec<(String, i64)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-        "SELECT u.user_id, count(*) as messages
+    let posters: Vec<(String, String, i64)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT u.user_id, COALESCE(u.ship_talkers_id, u.user_id), count(*) as messages
          FROM slack_messages m
          JOIN slack_identities i ON i.internal_id = m.identity_id
           JOIN users u ON u.ship_talkers_id = i.ship_talkers_id
@@ -1509,7 +1543,7 @@ async fn get_channel_stats(
     .await
     .unwrap_or_default();
 
-    let name_ids: Vec<String> = posters.iter().map(|(id, _)| id.clone()).collect();
+    let name_ids: Vec<String> = posters.iter().map(|(id, _, _)| id.clone()).collect();
 
     let poster_names: std::collections::HashMap<String, (String, String)> = if name_ids.is_empty() {
         std::collections::HashMap::new()
@@ -1535,16 +1569,17 @@ async fn get_channel_stats(
 
     let top_posters: Vec<UserStats> = posters
         .into_iter()
-        .map(|(user_id, messages)| {
+        .map(|(user_id, ship_talkers_id, messages)| {
             let (merged_name, pfp) = poster_names.get(&user_id).cloned().unwrap_or_default();
             UserStats {
                 user_id: user_id.clone(),
+                url_id: ship_talkers_id.clone(),
                 merged_name: if merged_name.is_empty() {
                     user_id.clone()
                 } else {
                     merged_name
                 },
-                pfp: local_pfp(&user_id, &pfp),
+                pfp: local_pfp(&ship_talkers_id, &pfp),
                 messages: fmt_thousands(messages.max(0) as u64),
             }
         })
