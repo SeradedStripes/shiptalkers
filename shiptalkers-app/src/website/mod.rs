@@ -614,11 +614,31 @@ async fn get_stats_for_id(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Html<String>, StatusCode> {
-    if id.starts_with('C') {
-        get_channel_stats(&state, &headers, &id).await
-    } else {
-        get_user_stats(&state, &headers, &id).await
+    let pool = state.pool()?;
+
+    let channel_id: Option<String> = sqlx::query_scalar(
+        "SELECT channel_id FROM slack_channels
+         WHERE channel_id = $1 OR anonymous_id = $1
+         LIMIT 1",
+    )
+    .bind(&id)
+    .fetch_optional(pool)
+    .await
+    .unwrap_or(None);
+    if let Some(channel_id) = channel_id {
+        return get_channel_stats(&state, &headers, &channel_id).await;
     }
+
+    let user_id: Option<String> = sqlx::query_scalar(
+        "SELECT user_id FROM users
+         WHERE user_id = $1 OR anonymous_id = $1
+         LIMIT 1",
+    )
+    .bind(&id)
+    .fetch_optional(pool)
+    .await
+    .unwrap_or(None);
+    get_user_stats(&state, &headers, user_id.as_deref().unwrap_or(&id)).await
 }
 
 async fn get_leaderboard(

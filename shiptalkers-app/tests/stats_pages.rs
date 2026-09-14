@@ -55,6 +55,8 @@ async fn stats_routes_match() {
     for uri in [
         "/stats/U01MPHKFZ7S",
         "/stats/C0123456789",
+        "/stats/anonymous-user-id",
+        "/stats/anonymous-channel-id",
         "/search",
         "/leaderboard/channels",
         "/leaderboard/words",
