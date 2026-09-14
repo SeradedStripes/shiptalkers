@@ -18,11 +18,12 @@
             <p class="empty">Coming soon</p>
         </div>
         {% else %}
-        <form class="search" method="get" action="/boards/{{ category }}">
+        {% if !numbered %}{% include "directory_pagination.html" %}{% endif %}
+        {% if numbered %}<form class="search" method="get" action="/boards/{{ category }}">
             <input type="text" name="q" placeholder="Rank (e.g. 1234) or name..." value="{{ query }}">
             <button type="submit">Search</button>
-        </form>
-        {% if notice.is_some() %}
+        </form>{% endif %}
+        {% if numbered && notice.is_some() %}
         <p class="empty">{{ notice.as_deref().unwrap_or("") }}</p>
         {% endif %}
         <div class="table-card">
@@ -68,13 +69,7 @@
                 </tbody>
             </table>
         </div>
-        {% if !numbered && (has_previous || has_next) %}
-        <nav class="pagination">
-            {% if has_previous %}<a href="/boards/{{ category }}?page={{ page - 1 }}">Previous</a>{% endif %}
-            <span>Page {{ page }}</span>
-            {% if has_next %}<a href="/boards/{{ category }}?page={{ page + 1 }}">Next</a>{% endif %}
-        </nav>
-        {% endif %}
+        {% if !numbered %}{% include "directory_pagination.html" %}{% endif %}
         {% endif %}
     </div>
     {% include "footer.html" %}

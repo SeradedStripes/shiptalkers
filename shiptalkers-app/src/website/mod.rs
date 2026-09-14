@@ -282,6 +282,8 @@ pub struct BoardCategoryTemplate {
     pub has_previous: bool,
     pub has_next: bool,
     pub page: u64,
+    pub page_count: u64,
+    pub directory_path: String,
     pub signed_in: bool,
     pub page_load_ms: String,
 }
@@ -336,6 +338,7 @@ pub fn router(
         .route("/stats", get(get_stats_page))
         .route("/stats/{id}", get(get_stats_for_id))
         .route("/boards", get(get_boards))
+        .route("/boards/users", get(get_users_board))
         .route("/boards/users/", get(get_users_board))
         .route("/boards/channels/", get(get_channels_board))
         .route("/boards/{category}", get(get_board_category))
@@ -1016,6 +1019,8 @@ async fn get_board_category(
         has_previous: false,
         has_next: false,
         page: 1,
+        page_count: 1,
+        directory_path: String::new(),
         signed_in,
         page_load_ms: format!("{}ms", started.elapsed().as_millis()),
     };
@@ -1041,6 +1046,13 @@ async fn get_users_board(
         .saturating_sub(1)
         .saturating_mul(DIRECTORY_PAGE_SIZE as u64)
         .min(i64::MAX as u64) as i64;
+    let total: i64 = sqlx::query_scalar("SELECT count(*) FROM users")
+        .fetch_one(ch)
+        .await
+        .unwrap_or(0);
+    let page_count = ((total.max(0) as u64).saturating_add(DIRECTORY_PAGE_SIZE as u64 - 1)
+        / DIRECTORY_PAGE_SIZE as u64)
+        .max(1);
     let mut records: Vec<(String, String, String, String)> = sqlx::query_as(
         "SELECT user_id, COALESCE(ship_talkers_id, user_id), merged_name, pfp \
          FROM users \
@@ -1091,6 +1103,8 @@ async fn get_users_board(
         has_previous: page > 1,
         has_next,
         page,
+        page_count,
+        directory_path: "/boards/users/".into(),
         signed_in: signed_in(&state, &headers),
         page_load_ms: format!("{}ms", started.elapsed().as_millis()),
     };
@@ -1116,6 +1130,13 @@ async fn get_channels_board(
         .saturating_sub(1)
         .saturating_mul(DIRECTORY_PAGE_SIZE as u64)
         .min(i64::MAX as u64) as i64;
+    let total: i64 = sqlx::query_scalar("SELECT count(*) FROM slack_channels")
+        .fetch_one(ch)
+        .await
+        .unwrap_or(0);
+    let page_count = ((total.max(0) as u64).saturating_add(DIRECTORY_PAGE_SIZE as u64 - 1)
+        / DIRECTORY_PAGE_SIZE as u64)
+        .max(1);
     let mut records: Vec<(String, String, String)> = sqlx::query_as(
         "SELECT channel_id, COALESCE(ship_talkers_id, channel_id), name \
          FROM slack_channels \
@@ -1163,6 +1184,8 @@ async fn get_channels_board(
         has_previous: page > 1,
         has_next,
         page,
+        page_count,
+        directory_path: "/boards/channels/".into(),
         signed_in: signed_in(&state, &headers),
         page_load_ms: format!("{}ms", started.elapsed().as_millis()),
     };
