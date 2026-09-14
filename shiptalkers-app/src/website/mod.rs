@@ -1042,11 +1042,17 @@ async fn get_users_board(
         .and_then(|page| page.parse::<u64>().ok())
         .filter(|page| *page > 0)
         .unwrap_or(1);
+    let query = params.get("q").cloned().unwrap_or_default();
+    let search_pattern = format!("%{}%", query.trim());
     let offset = page
         .saturating_sub(1)
         .saturating_mul(DIRECTORY_PAGE_SIZE as u64)
         .min(i64::MAX as u64) as i64;
-    let total: i64 = sqlx::query_scalar("SELECT count(*) FROM users")
+    let total: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM users \
+         WHERE merged_name ILIKE $1 OR user_id ILIKE $1 OR COALESCE(ship_talkers_id, user_id) ILIKE $1",
+    )
+        .bind(&search_pattern)
         .fetch_one(ch)
         .await
         .unwrap_or(0);
@@ -1056,9 +1062,11 @@ async fn get_users_board(
     let mut records: Vec<(String, String, String, String)> = sqlx::query_as(
         "SELECT user_id, COALESCE(ship_talkers_id, user_id), merged_name, pfp \
          FROM users \
+         WHERE merged_name ILIKE $1 OR user_id ILIKE $1 OR COALESCE(ship_talkers_id, user_id) ILIKE $1 \
          ORDER BY COALESCE(ship_talkers_id, user_id), user_id \
-         LIMIT $1 OFFSET $2",
+         LIMIT $2 OFFSET $3",
     )
+    .bind(&search_pattern)
     .bind(DIRECTORY_PAGE_SIZE + 1)
     .bind(offset)
     .fetch_all(ch)
@@ -1097,7 +1105,7 @@ async fn get_users_board(
         rows,
         coming_soon: false,
         category: "users".into(),
-        query: page.to_string(),
+        query,
         notice: None,
         numbered: false,
         has_previous: page > 1,
@@ -1126,11 +1134,17 @@ async fn get_channels_board(
         .and_then(|page| page.parse::<u64>().ok())
         .filter(|page| *page > 0)
         .unwrap_or(1);
+    let query = params.get("q").cloned().unwrap_or_default();
+    let search_pattern = format!("%{}%", query.trim());
     let offset = page
         .saturating_sub(1)
         .saturating_mul(DIRECTORY_PAGE_SIZE as u64)
         .min(i64::MAX as u64) as i64;
-    let total: i64 = sqlx::query_scalar("SELECT count(*) FROM slack_channels")
+    let total: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM slack_channels \
+         WHERE name ILIKE $1 OR channel_id ILIKE $1 OR COALESCE(ship_talkers_id, channel_id) ILIKE $1",
+    )
+        .bind(&search_pattern)
         .fetch_one(ch)
         .await
         .unwrap_or(0);
@@ -1140,9 +1154,11 @@ async fn get_channels_board(
     let mut records: Vec<(String, String, String)> = sqlx::query_as(
         "SELECT channel_id, COALESCE(ship_talkers_id, channel_id), name \
          FROM slack_channels \
+         WHERE name ILIKE $1 OR channel_id ILIKE $1 OR COALESCE(ship_talkers_id, channel_id) ILIKE $1 \
          ORDER BY COALESCE(ship_talkers_id, channel_id), channel_id \
-         LIMIT $1 OFFSET $2",
+         LIMIT $2 OFFSET $3",
     )
+    .bind(&search_pattern)
     .bind(DIRECTORY_PAGE_SIZE + 1)
     .bind(offset)
     .fetch_all(ch)
@@ -1178,7 +1194,7 @@ async fn get_channels_board(
         rows,
         coming_soon: false,
         category: "channels".into(),
-        query: page.to_string(),
+        query,
         notice: None,
         numbered: false,
         has_previous: page > 1,

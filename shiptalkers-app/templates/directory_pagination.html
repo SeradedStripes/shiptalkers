@@ -1,13 +1,13 @@
 <nav class="pagination" aria-label="Pagination">
-    {% if has_previous %}<a class="btn" href="{{ directory_path }}?page={{ page - 1 }}">Previous</a>{% else %}<span class="btn disabled">Previous</span>{% endif %}
+    {% if has_previous %}<a class="btn" href="{{ directory_path }}?page={{ page - 1 }}{% if !query.is_empty() %}&amp;q={{ query }}{% endif %}">Previous</a>{% else %}<span class="btn disabled">Previous</span>{% endif %}
     <form method="get" action="{{ directory_path }}">
-        <label for="page-select">Page</label>
-        <select id="page-select" name="page" onchange="this.form.submit()">
+        {% if !query.is_empty() %}<input type="hidden" name="q" value="{{ query }}">{% endif %}
+        <select id="page-select" name="page" aria-label="Select page" onchange="this.form.submit()">
             {% for p in 1..=page_count %}
             <option value="{{ p }}"{% if p == page %} selected{% endif %}>{{ p }}</option>
             {% endfor %}
         </select>
         <noscript><button class="btn" type="submit">Go</button></noscript>
     </form>
-    {% if has_next %}<a class="btn" href="{{ directory_path }}?page={{ page + 1 }}">Next</a>{% else %}<span class="btn disabled">Next</span>{% endif %}
+    {% if has_next %}<a class="btn" href="{{ directory_path }}?page={{ page + 1 }}{% if !query.is_empty() %}&amp;q={{ query }}{% endif %}">Next</a>{% else %}<span class="btn disabled">Next</span>{% endif %}
 </nav>
