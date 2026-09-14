@@ -454,7 +454,7 @@ async fn load_user_stats(
     let ship_talkers_id = ship_talkers_lib::base36::encode(slack_id.as_bytes());
 
     let counts: Vec<(String, i64)> = sqlx::query_as(
-        "SELECT channel_id, count(*) as messages
+        "SELECT c.channel_id, count(*) as messages
          FROM slack_messages m
          JOIN slack_identities i ON i.internal_id = m.identity_id
          JOIN slack_channels c ON c.internal_id = m.channel_id

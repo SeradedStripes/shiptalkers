@@ -1248,7 +1248,7 @@ async fn get_user_stats(
     .max(0) as u64;
 
     let counts: Vec<(String, i64)> = sqlx::query_as(
-        "SELECT channel_id, count(*) as messages
+        "SELECT c.channel_id, count(*) as messages
          FROM slack_messages m
          JOIN slack_identities i ON i.internal_id = m.identity_id
          JOIN slack_channels c ON c.internal_id = m.channel_id
