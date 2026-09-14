@@ -122,9 +122,13 @@ p { color: #888; line-height: 1.6; margin-bottom: 1.5rem; }
 
 .board-directory .table-card { width: 100%; overflow-x: auto; }
 .board-directory table { width: 100%; table-layout: fixed; }
-.board-directory th:nth-child(1), .board-directory td:nth-child(1) { width: 4.5rem; }
-.board-directory th:nth-child(2), .board-directory td:nth-child(2) { width: 13rem; }
-.directory-users th:nth-child(3), .directory-users td:nth-child(3) { width: 5rem; }
+.directory-users th:nth-child(1), .directory-users td:nth-child(1) { width: 8%; }
+.directory-users th:nth-child(2), .directory-users td:nth-child(2) { width: 32%; }
+.directory-users th:nth-child(3), .directory-users td:nth-child(3) { width: 10%; }
+.directory-users th:nth-child(4), .directory-users td:nth-child(4) { width: 50%; }
+.directory-channels th:nth-child(1), .directory-channels td:nth-child(1) { width: 8%; }
+.directory-channels th:nth-child(2), .directory-channels td:nth-child(2) { width: 38%; }
+.directory-channels th:nth-child(3), .directory-channels td:nth-child(3) { width: 54%; }
 .board-directory td { overflow-wrap: anywhere; white-space: normal; }
 .board-directory th, .board-directory td { vertical-align: top; }
 .board-directory .search { width: 100%; max-width: 38rem; }
