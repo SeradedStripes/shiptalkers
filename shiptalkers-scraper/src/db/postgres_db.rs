@@ -81,19 +81,75 @@ pub async fn load_consent_cache(pool: &PgPool) -> Result<(), Box<dyn std::error:
 
 pub async fn pending_consent_channels(
     pool: &PgPool,
-) -> Result<Vec<(i32, String)>, Box<dyn std::error::Error>> {
-    Ok(sqlx::query_as(
-        "SELECT i.internal_id, c.channel_id
+) -> Result<Vec<(i32, String, u64)>, Box<dyn std::error::Error>> {
+    let rows: Vec<(i32, String, i64)> = sqlx::query_as(
+        "SELECT i.internal_id, c.channel_id,
+                COALESCE(p.latest_message_ts, 0) AS latest_message_ts
          FROM slack_consents consent
          JOIN slack_identities i ON i.internal_id = consent.identity_id
          JOIN slack_messages m ON m.identity_id = i.internal_id
          JOIN slack_channels c ON c.internal_id = m.channel_id
+         LEFT JOIN consent_backfill_progress p
+           ON p.identity_id = i.internal_id AND p.channel_id = c.channel_id
          WHERE consent.revoked_at IS NULL AND consent.content_backfilled_at IS NULL
+           AND COALESCE(p.completed, 0) = 0
          GROUP BY i.internal_id, c.channel_id
          ORDER BY i.internal_id, c.channel_id",
     )
     .fetch_all(pool)
-    .await?)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(identity_id, channel_id, timestamp)| {
+            (identity_id, channel_id, timestamp.max(0) as u64)
+        })
+        .collect())
+}
+
+pub async fn save_consent_backfill_progress(
+    pool: &PgPool,
+    identity_ids: &[i32],
+    channel_id: &str,
+    latest_message_ts: u64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if identity_ids.is_empty() {
+        return Ok(());
+    }
+    for identity_id in identity_ids {
+        sqlx::query(
+            "INSERT INTO consent_backfill_progress
+                 (identity_id, channel_id, latest_message_ts, completed)
+             VALUES ($1, $2, $3, 0)
+             ON CONFLICT (identity_id, channel_id) DO UPDATE SET
+                 latest_message_ts = EXCLUDED.latest_message_ts",
+        )
+        .bind(identity_id)
+        .bind(channel_id)
+        .bind(latest_message_ts as i64)
+        .execute(pool)
+        .await?;
+    }
+    Ok(())
+}
+
+pub async fn complete_consent_backfill(
+    pool: &PgPool,
+    identity_ids: &[i32],
+    channel_id: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if identity_ids.is_empty() {
+        return Ok(());
+    }
+    sqlx::query(
+        "UPDATE consent_backfill_progress
+         SET completed = 1
+         WHERE channel_id = $1 AND identity_id = ANY($2)",
+    )
+    .bind(channel_id)
+    .bind(identity_ids)
+    .execute(pool)
+    .await?;
+    Ok(())
 }
 
 pub async fn mark_content_backfilled(

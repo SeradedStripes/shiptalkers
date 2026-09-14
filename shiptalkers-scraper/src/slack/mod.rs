@@ -289,8 +289,29 @@ impl SlackClient {
     where
         F: FnMut(Vec<SlackMessage>) -> Pin<Box<dyn Future<Output = ()> + Send>>,
     {
-        self.for_each_message_page("conversations.history", channel_id, None, oldest, on_page)
+        self.stream_channel_history_before(channel_id, oldest, None, on_page)
             .await
+    }
+
+    pub async fn stream_channel_history_before<F>(
+        &self,
+        channel_id: &str,
+        oldest: Option<&str>,
+        latest: Option<&str>,
+        on_page: F,
+    ) -> Result<usize, Box<dyn std::error::Error + Send + Sync>>
+    where
+        F: FnMut(Vec<SlackMessage>) -> Pin<Box<dyn Future<Output = ()> + Send>>,
+    {
+        self.for_each_message_page(
+            "conversations.history",
+            channel_id,
+            None,
+            oldest,
+            latest,
+            on_page,
+        )
+        .await
     }
 
     /// Streams a thread's replies page by page, so a thread with thousands of
@@ -310,6 +331,7 @@ impl SlackClient {
             channel_id,
             Some(thread_ts),
             oldest,
+            None,
             on_page,
         )
         .await
@@ -325,7 +347,7 @@ impl SlackClient {
         let all: std::sync::Arc<tokio::sync::Mutex<Vec<SlackMessage>>> =
             std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
         let collected = all.clone();
-        self.for_each_message_page(method, channel_id, thread_ts, oldest, move |page| {
+        self.for_each_message_page(method, channel_id, thread_ts, oldest, None, move |page| {
             let collected = collected.clone();
             Box::pin(async move {
                 collected.lock().await.extend(page);
@@ -343,6 +365,7 @@ impl SlackClient {
         channel_id: &str,
         thread_ts: Option<&str>,
         oldest: Option<&str>,
+        latest: Option<&str>,
         mut on_page: F,
     ) -> Result<usize, Box<dyn std::error::Error + Send + Sync>>
     where
@@ -391,6 +414,11 @@ impl SlackClient {
                 && !o.is_empty()
             {
                 params.push(("oldest".to_string(), o.to_string()));
+            }
+            if let Some(l) = latest
+                && !l.is_empty()
+            {
+                params.push(("latest".to_string(), l.to_string()));
             }
 
             let resp = self.get(method, &params).await?;

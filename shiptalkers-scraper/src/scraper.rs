@@ -295,23 +295,46 @@ async fn backfill_consented_content(settings: &settings::RuntimeSettings, pool: 
         settings.get_u64("SLACK_MAX_INFLIGHT") as usize,
     );
     let mut channels: HashMap<String, std::collections::HashSet<i32>> = HashMap::new();
+    let mut resume_at: HashMap<String, u64> = HashMap::new();
     let mut complete: HashMap<i32, bool> = HashMap::new();
-    for (identity_id, channel_id) in pending {
-        channels.entry(channel_id).or_default().insert(identity_id);
+    for (identity_id, channel_id, latest_message_ts) in pending {
+        channels
+            .entry(channel_id.clone())
+            .or_default()
+            .insert(identity_id);
+        resume_at
+            .entry(channel_id)
+            .and_modify(|current| *current = (*current).min(latest_message_ts))
+            .or_insert(latest_message_ts);
         complete.entry(identity_id).or_insert(true);
     }
 
     for (channel_id, identities) in channels {
         let pool_for_page = pool.clone();
         let channel_for_page = channel_id.clone();
+        let identities_for_page: Vec<i32> = identities.iter().copied().collect();
+        let identities_for_callback = identities_for_page.clone();
         let failed = Arc::new(AtomicBool::new(false));
         let failed_for_page = failed.clone();
+        let latest = resume_at
+            .get(&channel_id)
+            .copied()
+            .filter(|&timestamp| timestamp > 0)
+            .map(db::postgres_db::micros_to_slack_ts);
         let result = client
-            .stream_channel_history(&channel_id, None, move |page| {
+            .stream_channel_history_before(&channel_id, None, latest.as_deref(), move |page| {
                 let pool = pool_for_page.clone();
                 let channel_id = channel_for_page.clone();
+                let identities = identities_for_callback.clone();
                 let failed = failed_for_page.clone();
                 Box::pin(async move {
+                    if failed.load(Ordering::Relaxed) {
+                        return;
+                    }
+                    let oldest = page
+                        .iter()
+                        .map(|message| db::postgres_db::slack_ts_to_micros(&message.ts))
+                        .min();
                     let rows: Vec<db::postgres_db::SlackMessageRow> = page
                         .iter()
                         .map(|message| db::postgres_db::SlackMessageRow {
@@ -329,13 +352,42 @@ async fn backfill_consented_content(settings: &settings::RuntimeSettings, pool: 
                     if let Err(e) = db::postgres_db::insert_messages(&pool, &rows).await {
                         tracing::warn!("Failed to backfill content in {}: {}", channel_id, e);
                         failed.store(true, Ordering::Relaxed);
+                    } else if let Some(oldest) = oldest
+                        && let Err(e) = db::postgres_db::save_consent_backfill_progress(
+                            &pool,
+                            &identities,
+                            &channel_id,
+                            oldest,
+                        )
+                        .await
+                    {
+                        tracing::warn!(
+                            "Failed to save consent backfill progress in {}: {}",
+                            channel_id,
+                            e
+                        );
+                        failed.store(true, Ordering::Relaxed);
                     }
                 })
             })
             .await;
         if result.is_err() || failed.load(Ordering::Relaxed) {
-            for identity_id in identities {
-                complete.insert(identity_id, false);
+            for identity_id in &identities_for_page {
+                complete.insert(*identity_id, false);
+            }
+            continue;
+        }
+        if let Err(e) =
+            db::postgres_db::complete_consent_backfill(pool, &identities_for_page, &channel_id)
+                .await
+        {
+            tracing::warn!(
+                "Failed to complete consent backfill in {}: {}",
+                channel_id,
+                e
+            );
+            for identity_id in &identities_for_page {
+                complete.insert(*identity_id, false);
             }
         }
     }
@@ -344,7 +396,7 @@ async fn backfill_consented_content(settings: &settings::RuntimeSettings, pool: 
             && let Err(e) = db::postgres_db::mark_content_backfilled(pool, identity_id).await
         {
             tracing::warn!(
-                "Failed to mark consent content backfill complete for {}: {}",
+                "Failed to mark content backfill complete for {}: {}",
                 identity_id,
                 e
             );
