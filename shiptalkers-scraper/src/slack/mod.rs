@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use tokio::sync::Notify;
 
@@ -74,6 +74,7 @@ struct Inner {
     burst: f64,
     queue: VecDeque<u64>,
     next_ticket: u64,
+    cooldown_until: Option<Instant>,
 }
 
 pub struct RateLimiter {
@@ -91,6 +92,7 @@ impl RateLimiter {
                 burst,
                 queue: VecDeque::new(),
                 next_ticket: 0,
+                cooldown_until: None,
             }),
             notify: Notify::new(),
         }
@@ -117,15 +119,26 @@ impl RateLimiter {
                     (s.tokens + now.duration_since(s.last).as_secs_f64() * s.rate).min(s.burst);
                 s.last = now;
 
-                if s.queue.front() == Some(&ticket) && s.tokens >= 1.0 {
+                let cooldown_wait = s.cooldown_until.and_then(|until| {
+                    if until > now {
+                        Some(until.duration_since(now))
+                    } else {
+                        s.cooldown_until = None;
+                        None
+                    }
+                });
+
+                if s.queue.front() == Some(&ticket)
+                    && let Some(wait) = cooldown_wait
+                {
+                    Some(wait)
+                } else if s.queue.front() == Some(&ticket) && s.tokens >= 1.0 {
                     s.tokens -= 1.0;
                     s.queue.pop_front();
                     self.notify.notify_waiters();
                     return;
-                }
-
-                if s.queue.front() == Some(&ticket) {
-                    Some((1.0 - s.tokens) / s.rate)
+                } else if s.queue.front() == Some(&ticket) {
+                    Some(Duration::from_secs_f64((1.0 - s.tokens) / s.rate))
                 } else {
                     None
                 }
@@ -135,7 +148,7 @@ impl RateLimiter {
                 Some(w) => {
                     tokio::select! {
                         _ = &mut notified => {}
-                        _ = tokio::time::sleep(Duration::from_secs_f64(w)) => {}
+                        _ = tokio::time::sleep(w) => {}
                     }
                 }
                 None => {
@@ -144,6 +157,37 @@ impl RateLimiter {
             }
         }
     }
+
+    pub async fn cooldown(&self, duration: Duration) {
+        let mut state = self.state.lock().await;
+        let until = Instant::now() + duration;
+        state.cooldown_until = Some(
+            state
+                .cooldown_until
+                .map_or(until, |current| current.max(until)),
+        );
+        state.tokens = 0.0;
+        state.last = Instant::now();
+    }
+}
+
+struct SharedLimiters {
+    by_method: Mutex<HashMap<String, Arc<RateLimiter>>>,
+}
+
+static SHARED_LIMITERS: OnceLock<Mutex<HashMap<String, Arc<SharedLimiters>>>> = OnceLock::new();
+
+fn shared_limiters_for(token: &str) -> Arc<SharedLimiters> {
+    let registry = SHARED_LIMITERS.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut registry = registry.lock().unwrap();
+    registry
+        .entry(token.to_string())
+        .or_insert_with(|| {
+            Arc::new(SharedLimiters {
+                by_method: Mutex::new(HashMap::new()),
+            })
+        })
+        .clone()
 }
 
 #[derive(Clone)]
@@ -153,11 +197,12 @@ pub struct SlackClient {
     base_url: String,
     delay_between_requests: Duration,
     max_inflight: usize,
-    limiters: Arc<Mutex<HashMap<String, Arc<RateLimiter>>>>,
+    limiters: Arc<SharedLimiters>,
 }
 
 impl SlackClient {
     pub fn new(token: String, delay_between_requests: Duration, max_inflight: usize) -> Self {
+        let limiters = shared_limiters_for(&token);
         Self {
             client: Client::builder()
                 .timeout(Duration::from_secs(60))
@@ -167,13 +212,13 @@ impl SlackClient {
             base_url: "https://slack.com/api".to_string(),
             delay_between_requests,
             max_inflight,
-            limiters: Arc::new(Mutex::new(HashMap::new())),
+            limiters,
         }
     }
 
     fn limiter_for(&self, method: &str) -> Arc<RateLimiter> {
         let rate = 1.0 / self.delay_between_requests.as_secs_f64().max(0.001);
-        let mut map = self.limiters.lock().unwrap();
+        let mut map = self.limiters.by_method.lock().unwrap();
         map.entry(method.to_string())
             .or_insert_with(|| Arc::new(RateLimiter::new(rate, self.max_inflight as f64)))
             .clone()
@@ -186,9 +231,10 @@ impl SlackClient {
     ) -> Result<serde_json::Value, Box<dyn std::error::Error + Send + Sync>> {
         let url = format!("{}/{}", self.base_url, method);
         let mut retry_count = 0u32;
+        let limiter = self.limiter_for(method);
 
         loop {
-            self.limiter_for(method).acquire().await;
+            limiter.acquire().await;
 
             let response = self
                 .client
@@ -205,8 +251,9 @@ impl SlackClient {
                     .and_then(|v| v.to_str().ok())
                     .and_then(|v| v.parse::<f64>().ok())
                     .unwrap_or(5.0);
-                let backoff = (retry_after as u64).saturating_mul(2u64.saturating_pow(retry_count));
-                let wait = backoff.min(60);
+                let backoff = (retry_after.ceil().max(1.0) as u64)
+                    .saturating_mul(2u64.saturating_pow(retry_count));
+                let wait = backoff;
                 tracing::warn!(
                     "Rate limited on {}, attempt {}, waiting {}s (retry_after={}s)",
                     method,
@@ -214,6 +261,7 @@ impl SlackClient {
                     wait,
                     retry_after
                 );
+                limiter.cooldown(Duration::from_secs(wait)).await;
                 if retry_count >= MAX_RATE_LIMIT_RETRIES {
                     return Err(
                         format!("rate limited on {method} after {retry_count} retries").into(),
@@ -232,9 +280,9 @@ impl SlackClient {
                         .get("retry_after")
                         .and_then(|v| v.as_f64())
                         .unwrap_or(5.0);
-                    let backoff =
-                        (retry_after as u64).saturating_mul(2u64.saturating_pow(retry_count));
-                    let wait = backoff.min(60);
+                    let backoff = (retry_after.ceil().max(1.0) as u64)
+                        .saturating_mul(2u64.saturating_pow(retry_count));
+                    let wait = backoff;
                     tracing::warn!(
                         "Rate limited on {}, attempt {}, waiting {}s (retry_after={}s)",
                         method,
@@ -242,6 +290,7 @@ impl SlackClient {
                         wait,
                         retry_after
                     );
+                    limiter.cooldown(Duration::from_secs(wait)).await;
                     if retry_count >= MAX_RATE_LIMIT_RETRIES {
                         return Err(format!(
                             "rate limited on {method} after {retry_count} retries"
