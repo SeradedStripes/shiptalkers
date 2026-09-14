@@ -120,10 +120,14 @@ p { color: #888; line-height: 1.6; margin-bottom: 1.5rem; }
 }
 .pagination select:focus { outline: 2px solid #f472b6; outline-offset: 1px; }
 
-.board-directory table { table-layout: fixed; }
+.board-directory .table-card { width: fit-content; max-width: 100%; overflow-x: auto; }
+.board-directory table { width: 42rem; table-layout: fixed; }
 .board-directory th:nth-child(1), .board-directory td:nth-child(1) { width: 4.5rem; }
 .board-directory th:nth-child(2), .board-directory td:nth-child(2) { width: 13rem; }
-.board-directory th:nth-child(3), .board-directory td:nth-child(3) { width: 5rem; }
+.directory-users th:nth-child(3), .directory-users td:nth-child(3) { width: 5rem; }
+.directory-users th:nth-child(4), .directory-users td:nth-child(4) { width: 19.5rem; }
+.directory-channels th:nth-child(3), .directory-channels td:nth-child(3) { width: 24.5rem; }
+.board-directory td { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .board-directory .search { width: 100%; max-width: 38rem; }
 .board-directory .search input { min-width: 0; }
 

@@ -7,7 +7,7 @@
     <title>{{ title }} - Ship Talkers</title>
     <link rel="stylesheet" href="/style.css">
 </head>
-<body class="{% if numbered %}boards{% else %}boards board-directory{% endif %}">
+<body class="{% if numbered %}boards{% else %}boards board-directory directory-{{ category }}{% endif %}">
     {% include "header.html" %}
     <div class="container">
         <a href="/boards" class="back-link">Back to all boards</a>
