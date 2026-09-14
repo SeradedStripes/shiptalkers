@@ -289,7 +289,7 @@ impl SlackClient {
         on_page: F,
     ) -> Result<usize, Box<dyn std::error::Error + Send + Sync>>
     where
-        F: FnMut(Vec<SlackMessage>) -> Pin<Box<dyn Future<Output = ()> + Send>>,
+        F: FnMut(Vec<SlackMessage>) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send>>,
     {
         self.stream_channel_history_before(channel_id, oldest, None, on_page)
             .await
@@ -303,7 +303,7 @@ impl SlackClient {
         on_page: F,
     ) -> Result<usize, Box<dyn std::error::Error + Send + Sync>>
     where
-        F: FnMut(Vec<SlackMessage>) -> Pin<Box<dyn Future<Output = ()> + Send>>,
+        F: FnMut(Vec<SlackMessage>) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send>>,
     {
         self.for_each_message_page(
             "conversations.history",
@@ -326,7 +326,7 @@ impl SlackClient {
         on_page: F,
     ) -> Result<usize, Box<dyn std::error::Error + Send + Sync>>
     where
-        F: FnMut(Vec<SlackMessage>) -> Pin<Box<dyn Future<Output = ()> + Send>>,
+        F: FnMut(Vec<SlackMessage>) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send>>,
     {
         self.for_each_message_page(
             "conversations.replies",
@@ -353,6 +353,7 @@ impl SlackClient {
             let collected = collected.clone();
             Box::pin(async move {
                 collected.lock().await.extend(page);
+                Ok(())
             })
         })
         .await?;
@@ -371,7 +372,7 @@ impl SlackClient {
         mut on_page: F,
     ) -> Result<usize, Box<dyn std::error::Error + Send + Sync>>
     where
-        F: FnMut(Vec<SlackMessage>) -> Pin<Box<dyn Future<Output = ()> + Send>>,
+        F: FnMut(Vec<SlackMessage>) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send>>,
     {
         let mut total = 0usize;
         let mut cursor: Option<String> = None;
@@ -426,7 +427,7 @@ impl SlackClient {
             let resp = self.get(method, &params).await?;
             let messages = parse_message_page(&resp, channel_id);
             total += messages.len();
-            on_page(messages).await;
+            on_page(messages).await?;
 
             let what = thread_ts.map_or("channel".to_string(), |ts| format!("thread {}", ts));
             if page.is_multiple_of(10) {

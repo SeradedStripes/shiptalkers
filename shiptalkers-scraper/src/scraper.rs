@@ -329,7 +329,7 @@ async fn backfill_consented_content(settings: &settings::RuntimeSettings, pool: 
                 let failed = failed_for_page.clone();
                 Box::pin(async move {
                     if failed.load(Ordering::Relaxed) {
-                        return;
+                        return Ok(());
                     }
                     let oldest = page
                         .iter()
@@ -349,25 +349,20 @@ async fn backfill_consented_content(settings: &settings::RuntimeSettings, pool: 
                             text: message.text.clone(),
                         })
                         .collect();
-                    if let Err(e) = db::postgres_db::insert_messages(&pool, &rows).await {
-                        tracing::warn!("Failed to backfill content in {}: {}", channel_id, e);
-                        failed.store(true, Ordering::Relaxed);
-                    } else if let Some(oldest) = oldest
-                        && let Err(e) = db::postgres_db::save_consent_backfill_progress(
+                    db::postgres_db::insert_messages(&pool, &rows)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    if let Some(oldest) = oldest {
+                        db::postgres_db::save_consent_backfill_progress(
                             &pool,
                             &identities,
                             &channel_id,
                             oldest,
                         )
                         .await
-                    {
-                        tracing::warn!(
-                            "Failed to save consent backfill progress in {}: {}",
-                            channel_id,
-                            e
-                        );
-                        failed.store(true, Ordering::Relaxed);
+                        .map_err(|e| e.to_string())?;
                     }
+                    Ok(())
                 })
             })
             .await;
@@ -840,7 +835,10 @@ fn word_count_rows_from(
     rows
 }
 
-async fn upsert_bot_users(pool: &sqlx::PgPool, messages: &[slack::SlackMessage]) {
+async fn upsert_bot_users(
+    pool: &sqlx::PgPool,
+    messages: &[slack::SlackMessage],
+) -> Result<(), String> {
     let mut seen = std::collections::HashSet::new();
     let bots: Vec<db::postgres_db::SlackUserRow> = messages
         .iter()
@@ -869,11 +867,12 @@ async fn upsert_bot_users(pool: &sqlx::PgPool, messages: &[slack::SlackMessage])
         })
         .collect();
     if bots.is_empty() {
-        return;
+        return Ok(());
     }
-    if let Err(e) = db::postgres_db::upsert_users(pool, &bots).await {
-        tracing::warn!("Failed to upsert bot users: {}", e);
-    }
+    db::postgres_db::upsert_users(pool, &bots)
+        .await
+        .map(|_| ())
+        .map_err(|e| e.to_string())
 }
 
 #[derive(Default)]
@@ -899,7 +898,7 @@ async fn process_channel_page(
     accum: &std::sync::Mutex<ChannelPageAccum>,
     total: &AtomicU64,
     touched_users: &std::sync::Mutex<std::collections::HashSet<String>>,
-) {
+) -> Result<(), String> {
     let raw = page.len() as u64;
     let page: Vec<_> = if let Some(o) = oldest {
         page.into_iter().filter(|m| m.ts.as_str() > o).collect()
@@ -955,26 +954,27 @@ async fn process_channel_page(
     } else {
         db::postgres_db::insert_messages(pool, &rows)
             .await
-            .unwrap_or(0)
+            .map_err(|e| e.to_string())?
     };
     total.fetch_add(inserted, Ordering::Relaxed);
     accum.lock().unwrap().inserted += inserted;
 
     let reaction_rows = reaction_rows_from(&page, channel_id);
-    if !reaction_rows.is_empty()
-        && let Err(e) = db::postgres_db::insert_reactions(pool, &reaction_rows).await
-    {
-        tracing::warn!("Failed to insert reactions for {}: {}", channel_id, e);
+    if !reaction_rows.is_empty() {
+        db::postgres_db::insert_reactions(pool, &reaction_rows)
+            .await
+            .map_err(|e| e.to_string())?;
     }
 
     let word_rows = word_count_rows_from(&page, channel_id);
-    if !word_rows.is_empty()
-        && let Err(e) = db::postgres_db::insert_word_counts(pool, &word_rows).await
-    {
-        tracing::warn!("Failed to insert word counts for {}: {}", channel_id, e);
+    if !word_rows.is_empty() {
+        db::postgres_db::insert_word_counts(pool, &word_rows)
+            .await
+            .map_err(|e| e.to_string())?;
     }
 
-    upsert_bot_users(pool, &page).await;
+    upsert_bot_users(pool, &page).await?;
+    Ok(())
 }
 
 async fn process_thread_page(
@@ -985,7 +985,7 @@ async fn process_thread_page(
     page: Vec<slack::SlackMessage>,
     accum: &std::sync::Mutex<ThreadPageAccum>,
     total: &AtomicU64,
-) {
+) -> Result<(), String> {
     let page: Vec<_> = page
         .into_iter()
         .filter(|m| m.ts != thread_ts)
@@ -1013,7 +1013,7 @@ async fn process_thread_page(
             .collect();
         inserted = db::postgres_db::insert_messages(pool, &rows)
             .await
-            .unwrap_or(0);
+            .map_err(|e| e.to_string())?;
         total.fetch_add(inserted, Ordering::Relaxed);
     }
 
@@ -1041,30 +1041,21 @@ async fn process_thread_page(
     }
 
     let reply_reactions = reaction_rows_from(&page, channel_id);
-    if !reply_reactions.is_empty()
-        && let Err(e) = db::postgres_db::insert_reactions(pool, &reply_reactions).await
-    {
-        tracing::warn!(
-            "Failed to insert reactions for thread {} in {}: {}",
-            thread_ts,
-            channel_id,
-            e
-        );
+    if !reply_reactions.is_empty() {
+        db::postgres_db::insert_reactions(pool, &reply_reactions)
+            .await
+            .map_err(|e| e.to_string())?;
     }
 
     let reply_words = word_count_rows_from(&page, channel_id);
-    if !reply_words.is_empty()
-        && let Err(e) = db::postgres_db::insert_word_counts(pool, &reply_words).await
-    {
-        tracing::warn!(
-            "Failed to insert word counts for thread {} in {}: {}",
-            thread_ts,
-            channel_id,
-            e
-        );
+    if !reply_words.is_empty() {
+        db::postgres_db::insert_word_counts(pool, &reply_words)
+            .await
+            .map_err(|e| e.to_string())?;
     }
 
-    upsert_bot_users(pool, &page).await;
+    upsert_bot_users(pool, &page).await?;
+    Ok(())
 }
 
 async fn scrape_one_channel(
@@ -1157,7 +1148,7 @@ async fn scrape_one_channel(
                     &total,
                     &touched_users,
                 )
-                .await;
+                .await
             })
         })
         .await
@@ -1253,6 +1244,7 @@ async fn scrape_one_channel(
         }
     }
 
+    let mut rescan_failed = false;
     if oldest.is_some()
         && db::postgres_db::get_thread_rescan_at(pool, &channel_id)
             .await
@@ -1278,6 +1270,7 @@ async fn scrape_one_channel(
                 channel_id,
                 e
             );
+            rescan_failed = true;
         }
         let thread_roots = thread_roots.clone();
         let thread_activity = thread_activity.clone();
@@ -1326,22 +1319,19 @@ async fn scrape_one_channel(
                         );
                     }
                     let extra_reactions = reaction_rows_from(&page, &channel_id);
-                    if !extra_reactions.is_empty()
-                        && let Err(e) =
-                            db::postgres_db::insert_reactions(&pool, &extra_reactions).await
-                    {
-                        tracing::warn!(
-                            "Failed to insert reactions from thread re-scan of {}: {}",
-                            channel_id,
-                            e
-                        );
+                    if !extra_reactions.is_empty() {
+                        db::postgres_db::insert_reactions(&pool, &extra_reactions)
+                            .await
+                            .map_err(|e| e.to_string())?;
                     }
+                    Ok(())
                 })
             })
             .await
         {
             Ok(_) => {}
             Err(e) => {
+                rescan_failed = true;
                 tracing::warn!(
                     "[token {}][{}/{}] Failed to re-scan recent history for threads in {}: {}",
                     token_idx,
@@ -1356,10 +1346,19 @@ async fn scrape_one_channel(
 
     let all_thread_parents: Vec<String> = thread_roots.lock().unwrap().iter().cloned().collect();
     let current_activity = thread_activity.lock().unwrap().clone();
-    let stored_activity =
-        db::postgres_db::get_thread_activities(pool, &channel_id, &all_thread_parents)
-            .await
-            .unwrap_or_default();
+    let stored_activity = match db::postgres_db::get_thread_activities(
+        pool,
+        &channel_id,
+        &all_thread_parents,
+    )
+    .await
+    {
+        Ok(activity) => activity,
+        Err(e) => {
+            tracing::warn!("Failed to read thread activity for {}: {}", channel_id, e);
+            return;
+        }
+    };
     let mut thread_activity_rows = Vec::with_capacity(current_activity.len());
     for (thread_ts, (reply_count, latest_reply_ts)) in &current_activity {
         thread_activity_rows.push((thread_ts.clone(), *reply_count, *latest_reply_ts));
@@ -1368,6 +1367,7 @@ async fn scrape_one_channel(
         db::postgres_db::upsert_thread_activities(pool, &channel_id, &thread_activity_rows).await
     {
         tracing::warn!("Failed to save thread activity for {}: {}", channel_id, e);
+        return;
     }
     let thread_parents: Vec<String> = all_thread_parents
         .into_iter()
@@ -1439,6 +1439,7 @@ async fn scrape_one_channel(
     }
 
     if !fully_scraped
+        && !rescan_failed
         && threads_skipped == 0
         && let Err(e) = db::postgres_db::mark_fully_scraped(pool, &channel_id).await
     {
@@ -1546,7 +1547,7 @@ async fn scrape_thread(
                         &accum,
                         &total,
                     )
-                    .await;
+                    .await
                 })
             },
         )
@@ -1593,6 +1594,7 @@ async fn scrape_thread(
                     thread_ts,
                     e
                 );
+                return (1, inserted, reply_users);
             }
 
             (0, inserted, reply_users)
