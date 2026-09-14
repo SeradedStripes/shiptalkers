@@ -29,7 +29,13 @@
             <table>
                 <thead>
                     <tr>
-                        <th>{% if numbered %}#{% else %}ShipTalkers ID{% endif %}</th>
+                        {% if numbered %}
+                        <th>#</th>
+                        {% else %}
+                        <th>#</th>
+                        <th>ShipTalkers ID</th>
+                        <th>PFP</th>
+                        {% endif %}
                         <th>{{ entity }}</th>
                         <th>{{ unit }}</th>
                         {% if extra_unit.is_some() %}
@@ -43,8 +49,15 @@
                     {% else %}
                     {% for e in rows %}
                     <tr{% if e.highlight %} class="highlighted"{% endif %}>
+                        {% if numbered %}
                         <td>{{ e.label }}</td>
                         <td><span class="user-cell">{% if !e.pfp.is_empty() %}<img class="avatar" src="{{ e.pfp }}" alt="">{% endif %}{% if e.linked %}<a href="/stats/{{ e.url_id }}">{{ e.merged_name }}</a>{% else %}{{ e.merged_name }}{% endif %}</span></td>
+                        {% else %}
+                        <td>{{ e.rank }}</td>
+                        <td>{{ e.label }}</td>
+                        <td>{% if !e.pfp.is_empty() %}<img class="avatar" src="{{ e.pfp }}" alt="">{% endif %}</td>
+                        <td><span class="user-cell">{% if e.linked %}<a href="/stats/{{ e.url_id }}">{{ e.merged_name }}</a>{% else %}{{ e.merged_name }}{% endif %}</span></td>
+                        {% endif %}
                         <td>{{ e.value }}</td>
                         {% if extra_unit.is_some() %}
                         <td>{{ e.extra }}</td>
@@ -55,6 +68,13 @@
                 </tbody>
             </table>
         </div>
+        {% if !numbered && (has_previous || has_next) %}
+        <nav class="pagination">
+            {% if has_previous %}<a href="/boards/{{ category }}?page={{ page - 1 }}">Previous</a>{% endif %}
+            <span>Page {{ page }}</span>
+            {% if has_next %}<a href="/boards/{{ category }}?page={{ page + 1 }}">Next</a>{% endif %}
+        </nav>
+        {% endif %}
         {% endif %}
     </div>
     {% include "footer.html" %}

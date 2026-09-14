@@ -279,6 +279,9 @@ pub struct BoardCategoryTemplate {
     pub query: String,
     pub notice: Option<String>,
     pub numbered: bool,
+    pub has_previous: bool,
+    pub has_next: bool,
+    pub page: u64,
     pub signed_in: bool,
     pub page_load_ms: String,
 }
@@ -671,6 +674,7 @@ async fn get_boards(
 }
 
 const RANK_WINDOW: u64 = 3;
+const DIRECTORY_PAGE_SIZE: i64 = 100;
 
 fn sql_escape(s: &str) -> String {
     s.replace('\'', "''")
@@ -1009,6 +1013,9 @@ async fn get_board_category(
         query,
         notice,
         numbered: true,
+        has_previous: false,
+        has_next: false,
+        page: 1,
         signed_in,
         page_load_ms: format!("{}ms", started.elapsed().as_millis()),
     };
@@ -1021,37 +1028,55 @@ async fn get_board_category(
 async fn get_users_board(
     State(state): State<AppState>,
     headers: HeaderMap,
+    Query(params): Query<HashMap<String, String>>,
 ) -> Result<Html<String>, StatusCode> {
     let started = Instant::now();
     let ch = state.pool()?;
-    let rows: Vec<BoardEntry> = sqlx::query_as::<_, (String, String, String, String)>(
+    let page = params
+        .get("page")
+        .and_then(|page| page.parse::<u64>().ok())
+        .filter(|page| *page > 0)
+        .unwrap_or(1);
+    let offset = page
+        .saturating_sub(1)
+        .saturating_mul(DIRECTORY_PAGE_SIZE as u64)
+        .min(i64::MAX as u64) as i64;
+    let mut records: Vec<(String, String, String, String)> = sqlx::query_as(
         "SELECT user_id, COALESCE(ship_talkers_id, user_id), merged_name, pfp \
-         FROM users ORDER BY COALESCE(ship_talkers_id, user_id), user_id",
+         FROM users \
+         ORDER BY COALESCE(ship_talkers_id, user_id), user_id \
+         LIMIT $1 OFFSET $2",
     )
+    .bind(DIRECTORY_PAGE_SIZE + 1)
+    .bind(offset)
     .fetch_all(ch)
     .await
-    .unwrap_or_default()
-    .into_iter()
-    .map(|(user_id, ship_talkers_id, merged_name, pfp)| {
-        let pfp = local_pfp(&ship_talkers_id, &pfp);
-        BoardEntry {
-            user_id,
-            url_id: ship_talkers_id.clone(),
-            merged_name: if merged_name.is_empty() {
-                ship_talkers_id.clone()
-            } else {
-                merged_name
-            },
-            pfp,
-            value: String::new(),
-            extra: String::new(),
-            linked: true,
-            rank: 0,
-            label: ship_talkers_id,
-            highlight: false,
-        }
-    })
-    .collect();
+    .unwrap_or_default();
+    let has_next = records.len() > DIRECTORY_PAGE_SIZE as usize;
+    records.truncate(DIRECTORY_PAGE_SIZE as usize);
+    let rows: Vec<BoardEntry> = records
+        .into_iter()
+        .enumerate()
+        .map(|(index, (user_id, ship_talkers_id, merged_name, pfp))| {
+            let pfp = local_pfp(&ship_talkers_id, &pfp);
+            BoardEntry {
+                user_id,
+                url_id: ship_talkers_id.clone(),
+                merged_name: if merged_name.is_empty() {
+                    ship_talkers_id.clone()
+                } else {
+                    merged_name
+                },
+                pfp,
+                value: String::new(),
+                extra: String::new(),
+                linked: true,
+                rank: offset as u64 + index as u64 + 1,
+                label: ship_talkers_id,
+                highlight: false,
+            }
+        })
+        .collect();
     let template = BoardCategoryTemplate {
         title: "All Users".into(),
         entity: "User".into(),
@@ -1060,9 +1085,12 @@ async fn get_users_board(
         rows,
         coming_soon: false,
         category: "users".into(),
-        query: String::new(),
+        query: page.to_string(),
         notice: None,
         numbered: false,
+        has_previous: page > 1,
+        has_next,
+        page,
         signed_in: signed_in(&state, &headers),
         page_load_ms: format!("{}ms", started.elapsed().as_millis()),
     };
@@ -1075,35 +1103,52 @@ async fn get_users_board(
 async fn get_channels_board(
     State(state): State<AppState>,
     headers: HeaderMap,
+    Query(params): Query<HashMap<String, String>>,
 ) -> Result<Html<String>, StatusCode> {
     let started = Instant::now();
     let ch = state.pool()?;
-    let rows: Vec<BoardEntry> = sqlx::query_as::<_, (String, String, String)>(
+    let page = params
+        .get("page")
+        .and_then(|page| page.parse::<u64>().ok())
+        .filter(|page| *page > 0)
+        .unwrap_or(1);
+    let offset = page
+        .saturating_sub(1)
+        .saturating_mul(DIRECTORY_PAGE_SIZE as u64)
+        .min(i64::MAX as u64) as i64;
+    let mut records: Vec<(String, String, String)> = sqlx::query_as(
         "SELECT channel_id, COALESCE(ship_talkers_id, channel_id), name \
          FROM slack_channels \
-         ORDER BY COALESCE(ship_talkers_id, channel_id), channel_id",
+         ORDER BY COALESCE(ship_talkers_id, channel_id), channel_id \
+         LIMIT $1 OFFSET $2",
     )
+    .bind(DIRECTORY_PAGE_SIZE + 1)
+    .bind(offset)
     .fetch_all(ch)
     .await
-    .unwrap_or_default()
-    .into_iter()
-    .map(|(channel_id, ship_talkers_id, name)| BoardEntry {
-        user_id: channel_id,
-        url_id: ship_talkers_id.clone(),
-        merged_name: if name.is_empty() {
-            ship_talkers_id.clone()
-        } else {
-            name
-        },
-        pfp: String::new(),
-        value: String::new(),
-        extra: String::new(),
-        linked: true,
-        rank: 0,
-        label: ship_talkers_id,
-        highlight: false,
-    })
-    .collect();
+    .unwrap_or_default();
+    let has_next = records.len() > DIRECTORY_PAGE_SIZE as usize;
+    records.truncate(DIRECTORY_PAGE_SIZE as usize);
+    let rows: Vec<BoardEntry> = records
+        .into_iter()
+        .enumerate()
+        .map(|(index, (channel_id, ship_talkers_id, name))| BoardEntry {
+            user_id: channel_id,
+            url_id: ship_talkers_id.clone(),
+            merged_name: if name.is_empty() {
+                ship_talkers_id.clone()
+            } else {
+                name
+            },
+            pfp: String::new(),
+            value: String::new(),
+            extra: String::new(),
+            linked: true,
+            rank: offset as u64 + index as u64 + 1,
+            label: ship_talkers_id,
+            highlight: false,
+        })
+        .collect();
     let template = BoardCategoryTemplate {
         title: "All Channels".into(),
         entity: "Channel".into(),
@@ -1112,9 +1157,12 @@ async fn get_channels_board(
         rows,
         coming_soon: false,
         category: "channels".into(),
-        query: String::new(),
+        query: page.to_string(),
         notice: None,
         numbered: false,
+        has_previous: page > 1,
+        has_next,
+        page,
         signed_in: signed_in(&state, &headers),
         page_load_ms: format!("{}ms", started.elapsed().as_millis()),
     };
