@@ -388,17 +388,19 @@ pub async fn insert_messages(
             }
         }
         q.execute(pool).await?;
-        for (channel_id, message_ts, text) in contents {
-            sqlx::query(
-                "INSERT INTO slack_message_contents (channel_id, message_ts, text)
-                 VALUES ($1, $2, $3)
-                 ON CONFLICT (channel_id, message_ts) DO UPDATE SET text = EXCLUDED.text",
-            )
-            .bind(channel_id)
-            .bind(message_ts)
-            .bind(text)
-            .execute(pool)
-            .await?;
+        for content_chunk in contents.chunks(INSERT_CHUNK) {
+            let mut content_sql = String::from(
+                "INSERT INTO slack_message_contents (channel_id, message_ts, text) VALUES ",
+            );
+            content_sql.push_str(&placeholders(content_chunk.len(), 3));
+            content_sql.push_str(
+                " ON CONFLICT (channel_id, message_ts) DO UPDATE SET text = EXCLUDED.text",
+            );
+            let mut content_query = sqlx::query(sqlx::AssertSqlSafe(content_sql.as_str()));
+            for (channel_id, message_ts, text) in content_chunk {
+                content_query = content_query.bind(channel_id).bind(message_ts).bind(text);
+            }
+            content_query.execute(pool).await?;
         }
     }
     Ok(count)
