@@ -7,3 +7,7 @@ data/
 # Added by cargo
 
 /target
+
+# Other
+
+.ignore/
