@@ -89,6 +89,12 @@ pub async fn resync_all(pool: &PgPool, http: &reqwest::Client) {
                 tracing::warn!("Hackatime rate limit reached, stopping this resync pass");
                 break;
             }
+            Err(SyncFailure::BudgetExhausted) => {
+                tracing::warn!(
+                    "Hackatime daily request budget exhausted, stopping this resync pass"
+                );
+                break;
+            }
             Err(SyncFailure::Message(e)) => {
                 tracing::warn!("Coding sync failed for {}: {}", user_id, e);
             }

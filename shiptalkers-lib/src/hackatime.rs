@@ -5,6 +5,7 @@ use crate::db::{INSERT_CHUNK, placeholders};
 
 const HACKATIME_ME_URL: &str = "https://hackatime.hackclub.com/api/v1/authenticated/me";
 const HACKATIME_USER_STATS_URL: &str = "https://hackatime.hackclub.com/api/v1/users";
+pub const MAX_DAILY_SPANS_REQUESTS: i64 = 50_000;
 
 #[derive(Deserialize)]
 struct HackatimeMeResponse {
@@ -83,6 +84,24 @@ pub async fn fetch_coding_spans(
     let spans: SpansResponse =
         serde_json::from_str(&body).map_err(|e| (None, format!("bad JSON ({body:?}): {e}")))?;
     Ok(spans.spans)
+}
+
+/// Atomically reserves one spans request for the current UTC day.
+pub async fn claim_spans_request(
+    pool: &PgPool,
+    daily_limit: i64,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    let request_count: Option<i64> = sqlx::query_scalar(
+        "INSERT INTO hackatime_request_budget (request_date, request_count) \
+         VALUES (CURRENT_DATE, 1) \
+         ON CONFLICT (request_date) DO UPDATE SET request_count = hackatime_request_budget.request_count + 1 \
+         WHERE hackatime_request_budget.request_count < $1 \
+         RETURNING request_count",
+    )
+    .bind(daily_limit)
+    .fetch_optional(pool)
+    .await?;
+    Ok(request_count.is_some())
 }
 
 /// Seconds of a coding span (`start_ts` unix seconds + `duration` seconds) that fall inside the range `[range_start, range_end)` (unix seconds; `None` means unbounded).
@@ -379,6 +398,8 @@ pub enum SyncFailure {
     RateLimited,
     /// Transient failure
     Message(String),
+    /// The process-wide daily request budget is exhausted.
+    BudgetExhausted,
 }
 
 impl std::fmt::Display for SyncFailure {
@@ -388,6 +409,7 @@ impl std::fmt::Display for SyncFailure {
             SyncFailure::NoAccount => write!(f, "no hackatime account"),
             SyncFailure::RateLimited => write!(f, "rate limited"),
             SyncFailure::Message(m) => write!(f, "{m}"),
+            SyncFailure::BudgetExhausted => write!(f, "daily request budget exhausted"),
         }
     }
 }
@@ -438,6 +460,13 @@ pub async fn sync_coding_activity(
         date_plus_days(&last_synced, -1).unwrap_or_else(|| SYNC_START_DATE.to_string())
     };
     let end_date = days_from_now(1);
+
+    let budget_available = claim_spans_request(pool, MAX_DAILY_SPANS_REQUESTS)
+        .await
+        .map_err(|e| SyncFailure::Message(format!("claim hackatime request: {e}")))?;
+    if !budget_available {
+        return Err(SyncFailure::BudgetExhausted);
+    }
 
     let spans = match fetch_coding_spans(http, slack_id, access_token, &start_date, &end_date).await
     {
