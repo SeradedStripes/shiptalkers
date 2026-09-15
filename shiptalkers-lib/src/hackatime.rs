@@ -375,6 +375,8 @@ pub enum SyncFailure {
     PrivateProfile,
     /// No hackatime account for this Slack UID.
     NoAccount,
+    /// The remote service asked callers to wait before retrying.
+    RateLimited,
     /// Transient failure
     Message(String),
 }
@@ -384,6 +386,7 @@ impl std::fmt::Display for SyncFailure {
         match self {
             SyncFailure::PrivateProfile => write!(f, "profile is not public"),
             SyncFailure::NoAccount => write!(f, "no hackatime account"),
+            SyncFailure::RateLimited => write!(f, "rate limited"),
             SyncFailure::Message(m) => write!(f, "{m}"),
         }
     }
@@ -422,6 +425,9 @@ pub async fn sync_coding_activity(
         .as_ref()
         .and_then(|c| c.last_synced_date.clone())
         .unwrap_or_default();
+    if !last_synced.is_empty() && last_synced == today {
+        return Ok(());
+    }
     let span_count = get_hackatime_span_count(pool, slack_id)
         .await
         .map_err(|e| SyncFailure::Message(format!("read hackatime_spans count: {e}")))?;
@@ -465,6 +471,7 @@ pub async fn sync_coding_activity(
             }
             (None, Some(403)) => return Err(SyncFailure::PrivateProfile),
             (None, Some(404)) => return Err(SyncFailure::NoAccount),
+            (_, Some(429)) => return Err(SyncFailure::RateLimited),
             (_, Some(code)) => {
                 return Err(SyncFailure::Message(format!(
                     "hackatime HTTP {code} (down, keeping data): {message}"

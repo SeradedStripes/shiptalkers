@@ -1,12 +1,15 @@
 use std::collections::HashMap;
 
 use crate::sqlx::PgPool;
-use futures_util::stream::{self, StreamExt};
-
 use ship_talkers_lib::hackatime;
 pub use ship_talkers_lib::hackatime::{SyncFailure, sync_coding_activity};
 
 const NO_ACCOUNT_RETRY_DAYS: u64 = 30;
+const REQUEST_DELAY_MS: u64 = 1000;
+
+fn needs_resync(last_synced_date: Option<&str>, today: &str) -> bool {
+    last_synced_date != Some(today)
+}
 
 /// 30m resync pass: sync every user via token or public API, recording private/no_account states.
 pub async fn resync_all(pool: &PgPool, http: &reqwest::Client) {
@@ -29,6 +32,7 @@ pub async fn resync_all(pool: &PgPool, http: &reqwest::Client) {
         .map(|c| (c.slack_id.clone(), c))
         .collect();
     let retry_cutoff = hackatime::date_days_ago(NO_ACCOUNT_RETRY_DAYS);
+    let today = hackatime::today_utc();
 
     let total_users = user_ids.len() as u64;
 
@@ -44,6 +48,9 @@ pub async fn resync_all(pool: &PgPool, http: &reqwest::Client) {
                     }
                 }
                 if c.status == "private" && c.access_token.is_empty() {
+                    return None;
+                }
+                if !needs_resync(c.last_synced_date.as_deref(), &today) {
                     return None;
                 }
             }
@@ -64,23 +71,10 @@ pub async fn resync_all(pool: &PgPool, http: &reqwest::Client) {
         work.len(),
         skipped
     );
-    let pc = pool.clone();
-    let hc = http.clone();
-    let results: Vec<_> = stream::iter(work)
-        .map(|(user_id, token)| {
-            let ch = pc.clone();
-            let hc = hc.clone();
-            async move {
-                let result = sync_coding_activity(&ch, &hc, &user_id, token.as_deref()).await;
-                (user_id, result)
-            }
-        })
-        .buffer_unordered(8)
-        .collect()
-        .await;
-
     let mut synced = 0u64;
-    for (user_id, result) in results {
+    for (user_id, token) in work {
+        let result = sync_coding_activity(pool, http, &user_id, token.as_deref()).await;
+        tokio::time::sleep(std::time::Duration::from_millis(REQUEST_DELAY_MS)).await;
         match result {
             Ok(()) => synced += 1,
             Err(SyncFailure::PrivateProfile) => {
@@ -90,6 +84,10 @@ pub async fn resync_all(pool: &PgPool, http: &reqwest::Client) {
             Err(SyncFailure::NoAccount) => {
                 record_hackatime_status(pool, &user_id, "no_account").await;
                 tracing::debug!("{} has no hackatime account", user_id);
+            }
+            Err(SyncFailure::RateLimited) => {
+                tracing::warn!("Hackatime rate limit reached, stopping this resync pass");
+                break;
             }
             Err(SyncFailure::Message(e)) => {
                 tracing::warn!("Coding sync failed for {}: {}", user_id, e);
@@ -118,5 +116,17 @@ async fn record_hackatime_status(pool: &PgPool, slack_id: &str, status: &str) {
     .await
     {
         tracing::warn!("Failed to record hackatime status {status} for {slack_id}: {e}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::needs_resync;
+
+    #[test]
+    fn resync_skips_users_synced_today() {
+        assert!(!needs_resync(Some("2026-09-15"), "2026-09-15"));
+        assert!(needs_resync(Some("2026-09-14"), "2026-09-15"));
+        assert!(needs_resync(None, "2026-09-15"));
     }
 }
