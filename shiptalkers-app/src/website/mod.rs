@@ -91,6 +91,8 @@ struct StatsSnapshot {
     total_channels: u64,
     archived_channels: u64,
     total_users: u64,
+    hackatime_users: u64,
+    private_hackatime_users: u64,
     coding_minutes: u64,
     slack_time_secs: u64,
     db_size_bytes: u64,
@@ -131,6 +133,8 @@ pub struct Stats {
     pub total_channels: String,
     pub archived_channels: String,
     pub total_users: String,
+    pub hackatime_users: String,
+    pub private_hackatime_users: String,
     pub coding_hours: String,
     pub coding_time: String,
     pub slack_hours: String,
@@ -1788,6 +1792,8 @@ async fn load_stats(state: &AppState, headers: &HeaderMap) -> Stats {
         total_channels: fmt_thousands(snapshot.total_channels),
         archived_channels: fmt_thousands(snapshot.archived_channels),
         total_users: fmt_thousands(snapshot.total_users),
+        hackatime_users: fmt_thousands(snapshot.hackatime_users),
+        private_hackatime_users: fmt_thousands(snapshot.private_hackatime_users),
         coding_hours: fmt_minutes(snapshot.coding_minutes),
         coding_time: fmt_total_time(snapshot.coding_minutes * 60),
         slack_hours: fmt_duration(snapshot.slack_time_secs),
@@ -1806,6 +1812,8 @@ async fn compute_stats(state: &AppState) -> StatsSnapshot {
             total_channels: 0,
             archived_channels: 0,
             total_users: 0,
+            hackatime_users: 0,
+            private_hackatime_users: 0,
             coding_minutes: 0,
             slack_time_secs: 0,
             db_size_bytes: 0,
@@ -1813,8 +1821,8 @@ async fn compute_stats(state: &AppState) -> StatsSnapshot {
         };
     };
 
-    let cached: Option<(i64, i64, i64, i64, i64, i64, i64, i64)> = sqlx::query_as(
-        "SELECT total_messages, total_channels, archived_channels, total_users, coding_minutes, slack_time_secs, db_size_bytes, updated
+    let cached: Option<(i64, i64, i64, i64, i64, i64, i64, i64, i64, i64)> = sqlx::query_as(
+        "SELECT total_messages, total_channels, archived_channels, total_users, hackatime_users, private_hackatime_users, coding_minutes, slack_time_secs, db_size_bytes, updated
          FROM stats_meta WHERE id = 1",
     )
     .fetch_optional(ch)
@@ -1828,6 +1836,8 @@ async fn compute_stats(state: &AppState) -> StatsSnapshot {
             total_channels,
             archived_channels,
             total_users,
+            hackatime_users,
+            private_hackatime_users,
             coding_minutes,
             slack_time_secs,
             db_size_bytes,
@@ -1837,6 +1847,8 @@ async fn compute_stats(state: &AppState) -> StatsSnapshot {
             total_channels: total_channels.max(0) as u64,
             archived_channels: archived_channels.max(0) as u64,
             total_users: total_users.max(0) as u64,
+            hackatime_users: hackatime_users.max(0) as u64,
+            private_hackatime_users: private_hackatime_users.max(0) as u64,
             coding_minutes: coding_minutes.max(0) as u64,
             slack_time_secs: slack_time_secs.max(0) as u64,
             db_size_bytes: db_size_bytes.max(0) as u64,
@@ -1865,6 +1877,20 @@ async fn compute_stats(state: &AppState) -> StatsSnapshot {
                     .max(0);
             let total_users: i64 = sqlx::query_scalar(
                 "SELECT count(*) FROM users WHERE is_bot = 0 AND is_deleted = 0",
+            )
+            .fetch_one(ch)
+            .await
+            .unwrap_or(0)
+            .max(0);
+            let hackatime_users: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM hackatime_connections WHERE status != 'no_account'",
+            )
+            .fetch_one(ch)
+            .await
+            .unwrap_or(0)
+            .max(0);
+            let private_hackatime_users: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM hackatime_connections WHERE status = 'private'",
             )
             .fetch_one(ch)
             .await
@@ -1901,6 +1927,8 @@ async fn compute_stats(state: &AppState) -> StatsSnapshot {
                 total_channels: total_channels as u64,
                 archived_channels: archived_channels as u64,
                 total_users: total_users as u64,
+                hackatime_users: hackatime_users as u64,
+                private_hackatime_users: private_hackatime_users as u64,
                 coding_minutes: coding_minutes as u64,
                 slack_time_secs: slack_time_secs as u64,
                 db_size_bytes: db_size_bytes as u64,

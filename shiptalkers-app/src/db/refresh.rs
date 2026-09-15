@@ -225,6 +225,17 @@ pub async fn refresh_page_stats(pool: &PgPool) -> Result<(), Box<dyn std::error:
             .fetch_one(pool)
             .await
             .unwrap_or(0);
+    let hackatime_users: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM hackatime_connections WHERE status != 'no_account'",
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap_or(0);
+    let private_hackatime_users: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM hackatime_connections WHERE status = 'private'")
+            .fetch_one(pool)
+            .await
+            .unwrap_or(0);
     let coding_minutes: i64 =
         sqlx::query_scalar("SELECT sum(total_minutes)::bigint FROM hackatime_connections")
             .fetch_one(pool)
@@ -247,13 +258,15 @@ pub async fn refresh_page_stats(pool: &PgPool) -> Result<(), Box<dyn std::error:
 
     let updated = now_secs();
     sqlx::query(
-        "INSERT INTO stats_meta (id, total_messages, total_channels, archived_channels, total_users, coding_minutes, slack_time_secs, db_size_bytes, updated)
-         VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8)
+        "INSERT INTO stats_meta (id, total_messages, total_channels, archived_channels, total_users, hackatime_users, private_hackatime_users, coding_minutes, slack_time_secs, db_size_bytes, updated)
+         VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
          ON CONFLICT (id) DO UPDATE SET
            total_messages = EXCLUDED.total_messages,
            total_channels = EXCLUDED.total_channels,
            archived_channels = EXCLUDED.archived_channels,
            total_users = EXCLUDED.total_users,
+           hackatime_users = EXCLUDED.hackatime_users,
+           private_hackatime_users = EXCLUDED.private_hackatime_users,
            coding_minutes = EXCLUDED.coding_minutes,
            slack_time_secs = EXCLUDED.slack_time_secs,
            db_size_bytes = EXCLUDED.db_size_bytes,
@@ -263,6 +276,8 @@ pub async fn refresh_page_stats(pool: &PgPool) -> Result<(), Box<dyn std::error:
     .bind(total_channels.max(0))
     .bind(archived_channels.max(0))
     .bind(total_users.max(0))
+    .bind(hackatime_users.max(0))
+    .bind(private_hackatime_users.max(0))
     .bind(coding_minutes.max(0))
     .bind(slack_time_secs.max(0))
     .bind(db_size_bytes.max(0))
