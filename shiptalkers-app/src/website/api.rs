@@ -572,7 +572,7 @@ pub async fn get_stats(
     let snapshot = state
         .cache
         .stats
-        .get_or(async { super::compute_stats(&state).await })
+        .get_or(async { super::stats::compute_stats(&state).await })
         .await;
     let requested: Option<Vec<&str>> = params
         .include
