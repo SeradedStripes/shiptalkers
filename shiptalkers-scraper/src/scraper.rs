@@ -12,6 +12,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 const SCORE_RECOMPUTE_INTERVAL: Duration = Duration::from_secs(60 * 60);
+static MESSAGE_SCRAPE_LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> =
+    std::sync::OnceLock::new();
 
 async fn recompute_stale_scores(pool: &sqlx::PgPool, force_full: bool, reason: &str) {
     let (channels, users) = tokio::join!(
@@ -433,6 +435,10 @@ async fn scrape_messages(
     pool: &sqlx::PgPool,
     incremental_only: bool,
 ) {
+    let _guard = MESSAGE_SCRAPE_LOCK
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await;
     let channels = match db::postgres_db::get_known_channel_ids(pool).await {
         Ok(c) => c,
         Err(e) => {
