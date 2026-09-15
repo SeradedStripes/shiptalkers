@@ -13,6 +13,7 @@
         <h1><span class="live"></span>Stats</h1>
 
         <div class="grid">
+            <!-- Row 1 -->
             <div class="stat">
                 <h3>Total Messages</h3>
                 <div class="value pink">{{ total_messages }}</div>
@@ -29,38 +30,43 @@
                 <h3>Total Users</h3>
                 <div class="value pink">{{ total_users }}</div>
             </div>
-            <div class="stat">
-                <h3>Hackatime Users</h3>
-                <div class="value pink">{{ hackatime_users }}</div>
-            </div>
-            <div class="stat">
-                <h3>Private Hackatime Users</h3>
-                <div class="value pink">{{ private_hackatime_users }}</div>
-            </div>
-            <div class="stat">
-                <h3>No Hackatime Account</h3>
-                <div class="value pink">{{ no_hackatime_account_users }}</div>
-            </div>
+            <!-- Row 2 -->
             <div class="stat double">
                 <h3>Total Coding Hours</h3>
                 <div class="value pink">{{ coding_hours }}</div>
-            </div>
-            <div class="stat double">
-                <h3>Total Slack Hours</h3>
-                <div class="value pink">{{ slack_hours }}</div>
             </div>
             <div class="stat">
                 <h3>Total Coding Time</h3>
                 <div class="value pink compact">{{ coding_time }}</div>
             </div>
+            <div class="stat">
+                <h3>Hackatime Users</h3>
+                <div class="value pink">{{ hackatime_users }}</div>
+            </div>
+            <!-- Row 3 -->
             <div class="stat double">
-                <h3>Total Combined Time</h3>
-                <div class="value pink">{{ combined_time }}</div>
+                <h3>Total Slack Hours</h3>
+                <div class="value pink">{{ slack_hours }}</div>
             </div>
             <div class="stat">
                 <h3>Total Slack Time</h3>
                 <div class="value pink compact">{{ slack_time }}</div>
             </div>
+            <div class="stat">
+                <h3>No Hackatime Account</h3>
+                <div class="value pink">{{ no_hackatime_account_users }}</div>
+            </div>
+            <!-- Row 4 -->
+            <div class="stat double">
+                <h3>Total Combined Time</h3>
+                <div class="value pink">{{ combined_time }}</div>
+            </div>
+            <div class="stat invisible"></div>
+            <div class="stat">
+                <h3>Private Hackatime Users</h3>
+                <div class="value pink">{{ private_hackatime_users }}</div>
+            </div>
+            <!-- Row 5 -->
             <div class="stat">
                 <h3>Database Size</h3>
                 <div class="value pink">{{ db_size_label }}</div>
