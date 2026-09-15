@@ -4,7 +4,7 @@ use crate::sqlx::PgPool;
 use ship_talkers_lib::hackatime;
 pub use ship_talkers_lib::hackatime::{SyncFailure, sync_coding_activity};
 
-const NO_ACCOUNT_RETRY_DAYS: u64 = 30;
+const STATUS_RETRY_DAYS: u64 = 30;
 const REQUEST_DELAY_MS: u64 = 1000;
 
 fn needs_resync(last_synced_date: Option<&str>, today: &str) -> bool {
@@ -31,7 +31,7 @@ pub async fn resync_all(pool: &PgPool, http: &reqwest::Client) {
         .into_iter()
         .map(|c| (c.slack_id.clone(), c))
         .collect();
-    let retry_cutoff = hackatime::date_days_ago(NO_ACCOUNT_RETRY_DAYS);
+    let retry_cutoff = hackatime::date_days_ago(STATUS_RETRY_DAYS);
     let today = hackatime::today_utc();
 
     let total_users = user_ids.len() as u64;
@@ -41,14 +41,13 @@ pub async fn resync_all(pool: &PgPool, http: &reqwest::Client) {
         .filter_map(|user_id| {
             let conn = conns.get(&user_id);
             if let Some(c) = conn {
-                if c.status == "no_account" {
+                if matches!(c.status.as_str(), "no_account" | "private")
+                    && c.access_token.is_empty()
+                {
                     let probed = c.last_synced_date.as_deref().unwrap_or("");
                     if probed >= retry_cutoff.as_str() {
                         return None;
                     }
-                }
-                if c.status == "private" && c.access_token.is_empty() {
-                    return None;
                 }
                 if !needs_resync(c.last_synced_date.as_deref(), &today) {
                     return None;
