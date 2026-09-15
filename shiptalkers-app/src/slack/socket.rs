@@ -527,11 +527,10 @@ async fn handle_message(
         .await
         .unwrap_or(false)
     {
-        let reply = "You need to opt in to use this app. Please type \"Opt In\" in the channel root to opt in.";
+        let reply = "We recommend opting in for more accurate stats. Type \"Opt In\" in the channel root to opt in.";
         if let Err(e) = post_reply(client, &bot_token, &msg.channel, &msg.ts, reply).await {
-            tracing::error!("Stats bot: failed to post opt-in prompt: {}", e);
+            tracing::error!("Stats bot: failed to post opt-in recommendation: {}", e);
         }
-        return;
     }
     tracing::info!(
         "Stats bot: stats request for {} (from {}) in {} ({:?})",
@@ -540,52 +539,6 @@ async fn handle_message(
         msg.channel,
         text
     );
-
-    let base_url = settings.get("BASE_URL");
-
-    // If we have no usable coding data on the user (private or no-account
-    // profile, never synced, or a genuine zero total), still show their
-    // slack time as a card and explain the situation.
-    if !has_coding_data(pool, &user).await {
-        tracing::info!(
-            user,
-            range = range.label().as_str(),
-            message = text.as_str(),
-            "Stats bot: no coding data for {}, sending slack-only card",
-            user
-        );
-        let slack_seconds = query_slack_seconds(pool, &user, &range).await;
-        let (user_name, user_deactivated) = user_display_name(pool, &user).await;
-        let slack_time = fmt_span(slack_seconds);
-
-        let image = bot_image::SlackOnlyImage {
-            user: &user_name,
-            slack_time: &slack_time,
-            deactivated: user_deactivated,
-        };
-        match bot_image::render_slack_only_image(&image) {
-            Ok(png) => {
-                if let Err(e) = upload_image(client, &bot_token, &msg.channel, &msg.ts, png).await {
-                    tracing::error!("Stats bot: failed to upload slack-only image: {}", e);
-                }
-            }
-            Err(e) => {
-                tracing::error!("Stats bot: failed to render slack-only image: {}", e);
-            }
-        }
-
-        let link = format!("{}/link", base_url.trim_end_matches('/'));
-        let reply = format!(
-            "No Hackatime Data available, your coding time is either private or you have none. \
-             If it is private link your account here to see your stats: {link}, \
-             if you have no coding time then get coding :thumbs-up:. \
-             For now here's just your slack time data"
-        );
-        if let Err(e) = post_reply(client, &bot_token, &msg.channel, &msg.ts, &reply).await {
-            tracing::error!("Stats bot: failed to post reply: {}", e);
-        }
-        return;
-    }
 
     let (slack_seconds, coding_seconds) = query_stats(pool, &user, &range, &text).await;
     let (user_name, user_deactivated) = user_display_name(pool, &user).await;
@@ -846,24 +799,6 @@ async fn query_total_minutes(pool: &sqlx::PgPool, user: &str) -> u64 {
     .await
     .unwrap_or(0)
     .max(0) as u64
-}
-
-/// Whether the stats bot has usable all-time coding data on a user: a synced
-/// `hackatime_connections` row (empty `status`; `private`/`no_account` rows
-/// carry none) with a nonzero total. The 30m resync loop fills this in, so a
-/// fresh user may get the prompt until their first sync lands.
-async fn has_coding_data(pool: &sqlx::PgPool, user: &str) -> bool {
-    let row: Option<(String, i64)> = sqlx::query_as(
-        "SELECT status, total_minutes FROM hackatime_connections WHERE slack_id = $1",
-    )
-    .bind(user)
-    .fetch_optional(pool)
-    .await
-    .unwrap_or(None);
-    match row {
-        Some((status, total_minutes)) => status.is_empty() && total_minutes > 0,
-        None => false,
-    }
 }
 
 async fn user_display_name(pool: &sqlx::PgPool, user: &str) -> (String, bool) {
