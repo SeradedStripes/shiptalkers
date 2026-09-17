@@ -8,6 +8,7 @@ It estimates time spent writing messages, compares that time with Hackatime codi
 It is a fun way to see how much time you spend on Slack versus coding.  
 Are you a real maker or is it all just shiptalk?  
 Drop a message in the [#ship-talkers](https://hackclub.enterprise.slack.com/archives/C07TCQ45NTS) channel to find out.
+Website: [here](https://shiptalkers.kirze.de/)
 
 ## How it works
 
