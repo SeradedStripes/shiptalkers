@@ -593,7 +593,22 @@ async fn handle_message(
         }
     };
 
-    if let Err(e) = upload_image(client, &bot_token, &msg.channel, &msg.ts, png).await {
+    let base_url = settings.get("BASE_URL");
+    let user_page_url = format!(
+        "{}/stats/{}",
+        base_url.trim_end_matches('/'),
+        ship_talkers_lib::base36::encode(user.as_bytes())
+    );
+    if let Err(e) = upload_image(
+        client,
+        &bot_token,
+        &msg.channel,
+        &msg.ts,
+        png,
+        &user_page_url,
+    )
+    .await
+    {
         tracing::error!("Stats bot: failed to upload stats image: {}", e);
     }
 }
@@ -826,6 +841,7 @@ async fn upload_image(
     channel: &str,
     thread_ts: &str,
     png: Vec<u8>,
+    user_page_url: &str,
 ) -> Result<(), String> {
     let response = client
         .post("https://slack.com/api/files.getUploadURLExternal")
@@ -867,6 +883,7 @@ async fn upload_image(
     }
 
     let files = serde_json::json!([{ "id": file_id }]).to_string();
+    let initial_comment = format!("Stats page: <{user_page_url}|View user stats>");
     let response = client
         .post("https://slack.com/api/files.completeUploadExternal")
         .header("Authorization", format!("Bearer {}", bot_token))
@@ -874,6 +891,7 @@ async fn upload_image(
             ("files", files.as_str()),
             ("channel_id", channel),
             ("thread_ts", thread_ts),
+            ("initial_comment", initial_comment.as_str()),
         ])
         .send()
         .await
