@@ -9,6 +9,7 @@ on:
       - ".dockerignore"
       - "shiptalkers-scraper/**"
       - "shiptalkers-lib/**"
+      - ".github/actions/build-push-docker/**"
       - ".github/workflows/build-shiptalkers-scraper.yml"
   workflow_dispatch:
 
@@ -27,29 +28,14 @@ jobs:
       - name: Check out code
         uses: actions/checkout@v7
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Log in to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Build and push image
-        uses: docker/build-push-action@v6
-        env:
-          DOCKER_BUILD_RECORD_UPLOAD: false
+        uses: ./.github/actions/build-push-docker
         with:
           context: .
           file: ./shiptalkers-scraper/Dockerfile
-          push: true
-          tags: ghcr.io/seradedstripes/shiptalkers-scraper:latest
-          cache-from: type=gha,scope=shiptalkers-scraper
-          cache-to: type=gha,mode=max,scope=shiptalkers-scraper
-          provenance: false
-          sbom: false
+          registry_token: ${{ secrets.GITHUB_TOKEN }}
+          image: seradedstripes/shiptalkers-scraper
+          cache_scope: shiptalkers-scraper
 
       - name: Deploy to Coolify
         uses: SeradedStripes/coolify-deploy@v1.1

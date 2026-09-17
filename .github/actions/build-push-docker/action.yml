@@ -1,0 +1,76 @@
+name: Build and push Docker image
+description: Build and push a Docker image with GitHub Actions layer caching.
+
+inputs:
+  context:
+    description: Docker build context.
+    required: false
+    default: .
+  dockerfile:
+    description: Dockerfile path.
+    required: true
+  registry:
+    description: Container registry hostname.
+    required: false
+    default: ghcr.io
+  registry_token:
+    description: Token used to authenticate with the container registry.
+    required: true
+  image:
+    description: Image name without the registry hostname.
+    required: true
+  tag:
+    description: Image tag.
+    required: false
+    default: latest
+  cache_scope:
+    description: Unique GitHub Actions cache scope for this image.
+    required: true
+  push:
+    description: Whether to push the built image.
+    required: false
+    default: 'true'
+  provenance:
+    description: Whether to generate build provenance attestations.
+    required: false
+    default: 'false'
+  sbom:
+    description: Whether to generate an SBOM attestation.
+    required: false
+    default: 'false'
+  build_record_upload:
+    description: Whether to upload the Docker Buildx build record.
+    required: false
+    default: 'false'
+  build_summary:
+    description: Whether to publish the Docker build summary.
+    required: false
+    default: 'true'
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Log in to container registry
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ inputs.registry }}
+        username: ${{ github.actor }}
+        password: ${{ inputs.registry_token }}
+
+    - name: Build and push image
+      uses: docker/build-push-action@v6
+      env:
+        DOCKER_BUILD_RECORD_UPLOAD: ${{ inputs.build_record_upload }}
+        DOCKER_BUILD_SUMMARY: ${{ inputs.build_summary }}
+      with:
+        context: ${{ inputs.context }}
+        file: ${{ inputs.dockerfile }}
+        push: ${{ inputs.push }}
+        tags: ${{ inputs.registry }}/${{ inputs.image }}:${{ inputs.tag }}
+        cache-from: type=gha,scope=${{ inputs.cache_scope }}
+        cache-to: type=gha,mode=max,scope=${{ inputs.cache_scope }}
+        provenance: ${{ inputs.provenance }}
+        sbom: ${{ inputs.sbom }}
