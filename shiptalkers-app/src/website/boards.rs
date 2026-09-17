@@ -75,15 +75,34 @@ async fn fetch_rank_window(ch: &PgPool, inner: &str, lo: u64, hi: u64) -> Vec<Ra
         .collect()
 }
 
+async fn ranked_page_count(ch: &PgPool, inner: &str) -> u64 {
+    let sql = format!("SELECT count(*) FROM ({inner}) ranked");
+    let total: i64 = super::sqlx::query_scalar(super::sqlx::AssertSqlSafe(sql.as_str()))
+        .fetch_one(ch)
+        .await
+        .unwrap_or(0);
+    (total.max(0) as u64).div_ceil(100).max(1)
+}
+
 async fn ranked_window(
     ch: &PgPool,
     inner: &str,
     q: &str,
     parsed_rank: Option<u64>,
     resolve_sql: Option<&str>,
-) -> (Vec<RankedRow>, Option<String>) {
+    requested_page: u64,
+) -> (Vec<RankedRow>, Option<String>, u64, u64) {
     if q.is_empty() {
-        return (fetch_rank_window(ch, inner, 1, 100).await, None);
+        let page_count = ranked_page_count(ch, inner).await;
+        let page = requested_page.min(page_count).max(1);
+        let lo = (page - 1) * 100 + 1;
+        let hi = page * 100;
+        return (
+            fetch_rank_window(ch, inner, lo, hi).await,
+            None,
+            page,
+            page_count,
+        );
     }
     if let Some(n) = parsed_rank
         && n >= 1
@@ -94,7 +113,7 @@ async fn ranked_window(
         if let Some(r) = rows.iter_mut().find(|r| r.rank == n) {
             r.highlight = true;
         }
-        return (rows, None);
+        return (rows, None, 1, 1);
     }
     let id = match resolve_sql {
         Some(sql) => resolve_id(ch, sql).await,
@@ -102,7 +121,7 @@ async fn ranked_window(
     };
     let id = match id {
         Some(id) => id,
-        None => return (Vec::new(), Some(format!("No matches for '{}'", q))),
+        None => return (Vec::new(), Some(format!("No matches for '{}'", q)), 1, 1),
     };
     match fetch_rank_of(ch, inner, &id).await {
         Some(rank) => {
@@ -112,9 +131,14 @@ async fn ranked_window(
             if let Some(r) = rows.iter_mut().find(|r| r.id == id) {
                 r.highlight = true;
             }
-            (rows, None)
+            (rows, None, 1, 1)
         }
-        None => (Vec::new(), Some(format!("'{}' is not on this board", q))),
+        None => (
+            Vec::new(),
+            Some(format!("'{}' is not on this board", q)),
+            1,
+            1,
+        ),
     }
 }
 
@@ -137,23 +161,31 @@ async fn render_board_category(
     let query = params.get("q").cloned().unwrap_or_default();
     let q = query.trim();
     let parsed_rank: Option<u64> = q.parse().ok();
-    let (title, unit, extra_unit, rows, notice): (
+    let requested_page = params
+        .get("page")
+        .and_then(|page| page.parse::<u64>().ok())
+        .filter(|page| *page > 0)
+        .unwrap_or(1);
+    let (title, unit, extra_unit, rows, notice, page, page_count): (
         String,
         String,
         Option<String>,
         Vec<BoardEntry>,
         Option<String>,
+        u64,
+        u64,
     ) = match category.as_str() {
         "talkers" => {
             let inner = format!(
                 "SELECT user_id AS id, score AS value, messages::bigint AS extra, row_number() OVER (ORDER BY score DESC) AS rank FROM user_scores WHERE {EXCLUDE_BOTS_DELETED_SCORE}"
             );
-            let (ranked, notice) = ranked_window(
+            let (ranked, notice, page, page_count) = ranked_window(
                 ch,
                 &inner,
                 q,
                 parsed_rank,
                 Some(&resolve_user_sql(&inner, q)),
+                requested_page,
             )
             .await;
             (
@@ -169,18 +201,21 @@ async fn render_board_category(
                 )
                 .await,
                 notice,
+                page,
+                page_count,
             )
         }
         "coders" => {
             let inner = format!(
                 "SELECT user_id AS id, value, CAST(NULL AS BIGINT) AS extra, rank FROM (SELECT slack_id AS user_id, total_minutes::bigint AS value, row_number() OVER (ORDER BY total_minutes DESC) AS rank FROM hackatime_connections WHERE {EXCLUDE_BOTS_DELETED_SLACK_ID})"
             );
-            let (ranked, notice) = ranked_window(
+            let (ranked, notice, page, page_count) = ranked_window(
                 ch,
                 &inner,
                 q,
                 parsed_rank,
                 Some(&resolve_user_sql(&inner, q)),
+                requested_page,
             )
             .await;
             (
@@ -189,6 +224,8 @@ async fn render_board_category(
                 None,
                 board_entries(ch, ranked, BoardSource::Users, fmt_minutes, None).await,
                 notice,
+                page,
+                page_count,
             )
         }
         "channels" => {
@@ -197,7 +234,8 @@ async fn render_board_category(
             let resolve = format!(
                 "SELECT c.channel_id AS id FROM slack_channels AS c FINAL JOIN ({inner}) lb ON c.channel_id = lb.id WHERE lower(c.name) LIKE '%{eq}%' ORDER BY (lower(c.name) = '{eq}') DESC, lb.rank, lower(c.name) LIMIT 1"
             );
-            let (ranked, notice) = ranked_window(ch, inner, q, parsed_rank, Some(&resolve)).await;
+            let (ranked, notice, page, page_count) =
+                ranked_window(ch, inner, q, parsed_rank, Some(&resolve), requested_page).await;
             (
                 "Top Channels".into(),
                 "Slack Time".into(),
@@ -211,18 +249,21 @@ async fn render_board_category(
                 )
                 .await,
                 notice,
+                page,
+                page_count,
             )
         }
         "combined" => {
             let inner = format!(
                 "SELECT user_id AS id, value, CAST(NULL AS BIGINT) AS extra, rank FROM (SELECT user_id, value, row_number() OVER (ORDER BY value DESC) AS rank FROM (SELECT user_id, sum(v)::bigint AS value FROM (SELECT user_id, total_time::bigint AS v FROM user_scores UNION ALL SELECT slack_id AS user_id, (total_minutes * 60)::bigint AS v FROM hackatime_connections) GROUP BY user_id) WHERE {EXCLUDE_BOTS_DELETED_SCORE})"
             );
-            let (ranked, notice) = ranked_window(
+            let (ranked, notice, page, page_count) = ranked_window(
                 ch,
                 &inner,
                 q,
                 parsed_rank,
                 Some(&resolve_user_sql(&inner, q)),
+                requested_page,
             )
             .await;
             (
@@ -231,17 +272,27 @@ async fn render_board_category(
                 None,
                 board_entries(ch, ranked, BoardSource::Users, fmt_duration, None).await,
                 notice,
+                page,
+                page_count,
             )
         }
         "words" => {
             let inner = "SELECT word AS id, cnt::bigint AS value, CAST(NULL AS BIGINT) AS extra, rank FROM (SELECT word, cnt, row_number() OVER (ORDER BY cnt DESC) AS rank FROM word_totals)";
+            let page_count = ranked_page_count(ch, inner).await;
+            let page = requested_page.min(page_count).max(1);
             let (ranked, notice) = if q.is_empty() {
+                let lo = (page - 1) * 100 + 1;
+                let hi = page * 100;
                 (
-                    state
-                        .cache
-                        .words
-                        .get_or(async { fetch_rank_window(ch, inner, 1, 100).await })
-                        .await,
+                    if page == 1 {
+                        state
+                            .cache
+                            .words
+                            .get_or(async { fetch_rank_window(ch, inner, lo, hi).await })
+                            .await
+                    } else {
+                        fetch_rank_window(ch, inner, lo, hi).await
+                    },
                     None,
                 )
             } else {
@@ -249,7 +300,9 @@ async fn render_board_category(
                 let resolve = format!(
                     "SELECT id FROM ({inner}) WHERE id = '{eq}' OR id LIKE '{eq}%' ORDER BY (id = '{eq}') DESC LIMIT 1"
                 );
-                ranked_window(ch, inner, q, parsed_rank, Some(&resolve)).await
+                let (ranked, notice, _, _) =
+                    ranked_window(ch, inner, q, parsed_rank, Some(&resolve), requested_page).await;
+                (ranked, notice)
             };
             let rows = ranked
                 .into_iter()
@@ -266,7 +319,15 @@ async fn render_board_category(
                     highlight: r.highlight,
                 })
                 .collect();
-            ("Top Words".into(), "Uses".into(), None, rows, notice)
+            (
+                "Top Words".into(),
+                "Uses".into(),
+                None,
+                rows,
+                notice,
+                page,
+                page_count,
+            )
         }
         _ => return Err(StatusCode::NOT_FOUND),
     };
@@ -290,16 +351,16 @@ async fn render_board_category(
         extra_unit,
         rows,
         coming_soon: false,
-        category,
+        category: category.clone(),
         query,
         notice,
         numbered: true,
         show_pfp: true,
-        has_previous: false,
-        has_next: false,
-        page: 1,
-        page_count: 1,
-        directory_path: String::new(),
+        has_previous: page > 1,
+        has_next: page < page_count,
+        page,
+        page_count,
+        directory_path: format!("/boards/{category}"),
         signed_in,
         page_load_ms: format!("{}ms", started.elapsed().as_millis()),
     };
