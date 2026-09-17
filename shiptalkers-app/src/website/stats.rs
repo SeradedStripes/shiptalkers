@@ -433,10 +433,10 @@ async fn load_stats(state: &super::AppState, headers: &HeaderMap) -> super::Stat
         no_hackatime_account_users: super::fmt_thousands(snapshot.no_hackatime_account_users),
         coding_hours: super::fmt_minutes(snapshot.coding_minutes),
         coding_time: super::fmt_total_time(snapshot.coding_minutes * 60),
-        slack_hours: super::fmt_duration(snapshot.slack_time_secs),
+        slack_hours: super::fmt_minutes(snapshot.slack_time_secs / 60),
         slack_time: super::fmt_total_time(snapshot.slack_time_secs),
-        combined_hours: super::fmt_duration(
-            snapshot.slack_time_secs + snapshot.coding_minutes * 60,
+        combined_hours: super::fmt_minutes(
+            (snapshot.slack_time_secs + snapshot.coding_minutes * 60) / 60,
         ),
         combined_time: super::fmt_total_time(
             snapshot.slack_time_secs + snapshot.coding_minutes * 60,
