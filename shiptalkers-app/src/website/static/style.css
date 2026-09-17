@@ -131,7 +131,7 @@ p { color: #888; line-height: 1.6; margin-bottom: 1.5rem; }
 .directory-channels th:nth-child(3), .directory-channels td:nth-child(3) { width: 54%; }
 .board-directory td { overflow-wrap: anywhere; white-space: normal; }
 .board-directory th, .board-directory td { vertical-align: top; }
-.board-directory .search { width: 100%; max-width: 38rem; }
+.board-directory .search { width: 100%; }
 .board-directory .search input { min-width: 0; }
 
 .card { background: #1a1a1a; border-radius: 12px; padding: 1.5rem; margin-bottom: 1rem; }
