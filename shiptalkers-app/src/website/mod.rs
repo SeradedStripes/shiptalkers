@@ -132,6 +132,7 @@ pub struct Stats {
     pub coding_time: String,
     pub slack_hours: String,
     pub slack_time: String,
+    pub combined_hours: String,
     pub combined_time: String,
     pub db_size_label: String,
     pub signed_in: bool,

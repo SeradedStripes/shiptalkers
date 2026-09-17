@@ -435,7 +435,12 @@ async fn load_stats(state: &super::AppState, headers: &HeaderMap) -> super::Stat
         coding_time: super::fmt_total_time(snapshot.coding_minutes * 60),
         slack_hours: super::fmt_duration(snapshot.slack_time_secs),
         slack_time: super::fmt_total_time(snapshot.slack_time_secs),
-        combined_time: super::fmt_duration(snapshot.slack_time_secs + snapshot.coding_minutes * 60),
+        combined_hours: super::fmt_duration(
+            snapshot.slack_time_secs + snapshot.coding_minutes * 60,
+        ),
+        combined_time: super::fmt_total_time(
+            snapshot.slack_time_secs + snapshot.coding_minutes * 60,
+        ),
         db_size_label,
         signed_in: super::signed_in(state, headers),
         page_load_ms: String::new(),
