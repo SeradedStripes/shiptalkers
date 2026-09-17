@@ -92,7 +92,7 @@ pub async fn pending_consent_channels(
 ) -> Result<Vec<(i32, String, u64)>, Box<dyn std::error::Error>> {
     let rows: Vec<(i32, String, i64)> = sqlx::query_as(
         "SELECT i.internal_id, c.channel_id,
-                COALESCE(p.latest_message_ts, 0) AS latest_message_ts
+                COALESCE(MAX(p.latest_message_ts), 0) AS latest_message_ts
          FROM slack_consents consent
          JOIN slack_identities i ON i.internal_id = consent.identity_id
          JOIN slack_messages m ON m.identity_id = i.internal_id
