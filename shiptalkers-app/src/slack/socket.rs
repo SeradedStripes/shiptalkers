@@ -29,6 +29,8 @@ struct ChannelCreated {
 struct ChannelInfo {
     id: String,
     name: String,
+    #[serde(default)]
+    created: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -335,6 +337,7 @@ async fn handle_channel_created(_client: &Client, event: &serde_json::Value, poo
         name: created.channel.name,
         is_archived: 0,
         num_members: 0,
+        created_at: created.channel.created,
     };
 
     if let Err(e) =

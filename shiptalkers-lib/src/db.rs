@@ -8,6 +8,7 @@ pub struct SlackChannelRow {
     pub name: String,
     pub is_archived: u8,
     pub num_members: u64,
+    pub created_at: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -94,11 +95,11 @@ pub async fn insert_new_channels_rows(
     let count = channels.len() as u64;
     for chunk in channels.chunks(INSERT_CHUNK) {
         let mut sql = String::from(
-            "INSERT INTO slack_channels (ship_talkers_id, channel_id, name, is_archived, num_members) VALUES ",
+            "INSERT INTO slack_channels (ship_talkers_id, channel_id, name, is_archived, num_members, created_at) VALUES ",
         );
         sql.push_str(&placeholders(chunk.len(), 5));
         sql.push_str(
-            " ON CONFLICT (channel_id) DO UPDATE SET name = EXCLUDED.name, is_archived = EXCLUDED.is_archived, num_members = EXCLUDED.num_members",
+            " ON CONFLICT (channel_id) DO UPDATE SET name = EXCLUDED.name, is_archived = EXCLUDED.is_archived, num_members = EXCLUDED.num_members, created_at = GREATEST(slack_channels.created_at, EXCLUDED.created_at)",
         );
         let mut q = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()));
         for ch in chunk {
@@ -107,7 +108,8 @@ pub async fn insert_new_channels_rows(
                 .bind(&ch.channel_id)
                 .bind(&ch.name)
                 .bind(ch.is_archived as i16)
-                .bind(ch.num_members as i64);
+                .bind(ch.num_members as i64)
+                .bind(ch.created_at as i64);
         }
         q.execute(pool).await?;
     }

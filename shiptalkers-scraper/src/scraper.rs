@@ -54,6 +54,7 @@ pub fn insert_page(
                 name: ch.name.clone(),
                 is_archived: u8::from(ch.is_archived),
                 num_members: ch.num_members,
+                created_at: ch.created_at,
             })
             .collect();
         if rows.is_empty() {

@@ -235,8 +235,8 @@ async fn render_user_stats(
     let found = total_messages > 0 || coding_minutes > 0 || !merged_name.is_empty();
 
     let slack_time = match scores.as_ref() {
-        Some(s) if s.messages > 0 => super::fmt_duration(s.total_time),
-        _ => "0m".into(),
+        Some(s) if s.messages > 0 => super::fmt_minutes(s.total_time / 60),
+        _ => "0hrs 0min".into(),
     };
 
     let template = super::UserTemplate {
@@ -306,27 +306,18 @@ async fn render_channel_stats(
     .unwrap_or(0)
     .max(0) as u64;
 
-    let last_ts: u64 = super::sqlx::query_scalar::<_, Option<i64>>(
-        "SELECT max(m.message_ts) FROM slack_messages m JOIN slack_channels c ON c.internal_id = m.channel_id WHERE c.channel_id = $1",
+    let (channel_created_at, slack_time_secs): (i64, i64) = super::sqlx::query_as(
+        "SELECT c.created_at, COALESCE(s.total_time, 0)
+         FROM slack_channels c
+         LEFT JOIN channel_scores s ON s.channel_id = c.channel_id
+         WHERE c.channel_id = $1",
     )
     .bind(channel_id)
-    .fetch_one(ch)
+    .fetch_optional(ch)
     .await
     .ok()
     .flatten()
-    .unwrap_or(0)
-    .max(0) as u64;
-
-    let first_ts: u64 = super::sqlx::query_scalar::<_, Option<i64>>(
-        "SELECT min(m.message_ts) FROM slack_messages m JOIN slack_channels c ON c.internal_id = m.channel_id WHERE c.channel_id = $1",
-    )
-    .bind(channel_id)
-    .fetch_one(ch)
-    .await
-    .ok()
-    .flatten()
-    .unwrap_or(0)
-    .max(0) as u64;
+    .unwrap_or((0, 0));
 
     let posters: Vec<(String, String, i64)> = super::sqlx::query_as(super::sqlx::AssertSqlSafe(format!(
         "SELECT u.user_id, COALESCE(u.ship_talkers_id, u.user_id), count(*) as messages
@@ -396,8 +387,8 @@ async fn render_channel_stats(
         channel_id: channel_id.to_string(),
         total_messages: super::fmt_thousands(total_messages),
         active_users: super::fmt_thousands(active_users),
-        first_msg: fmt_ts_local(first_ts),
-        last_msg: fmt_ts_local(last_ts),
+        slack_time: super::fmt_minutes(slack_time_secs.max(0) as u64 / 60),
+        creation_date: fmt_date(channel_created_at.max(0) as u64),
         top_posters,
         signed_in,
         found,
@@ -604,11 +595,10 @@ pub fn parse_ts(micros: u64) -> Option<(u32, u32, u32, u32, u32)> {
     Some((year, month, day, hour, minute))
 }
 
-fn fmt_ts_local(micros: u64) -> String {
-    match parse_ts(micros) {
-        Some((year, month, day, hour, minute)) => format!(
-            "<time datetime=\"{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:00Z\">\
-             {year:04}-{month:02}-{day:02} {hour:02}:{minute:02} UTC</time>"
+fn fmt_date(secs: u64) -> String {
+    match parse_ts(secs.saturating_mul(1_000_000)) {
+        Some((year, month, day, _, _)) => format!(
+            "<time datetime=\"{year:04}-{month:02}-{day:02}\">{year:04}-{month:02}-{day:02}</time>"
         ),
         None => String::new(),
     }

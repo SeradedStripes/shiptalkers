@@ -42,6 +42,7 @@ pub struct SlackChannel {
     pub name: String,
     pub is_archived: bool,
     pub num_members: u64,
+    pub created_at: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -663,6 +664,7 @@ impl SlackClientPool {
                                 .get("num_members")
                                 .and_then(|v| v.as_u64())
                                 .unwrap_or(0),
+                            created_at: ch.get("created").and_then(|v| v.as_u64()).unwrap_or(0),
                         });
                     }
                 }

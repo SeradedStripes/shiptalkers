@@ -1,0 +1,2 @@
+ALTER TABLE slack_channels
+    ADD COLUMN IF NOT EXISTS created_at BIGINT NOT NULL DEFAULT 0;
