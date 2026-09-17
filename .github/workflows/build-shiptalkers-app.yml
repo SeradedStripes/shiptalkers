@@ -39,6 +39,8 @@ jobs:
 
       - name: Build and push image
         uses: docker/build-push-action@v6
+        env:
+          DOCKER_BUILD_RECORD_UPLOAD: false
         with:
           context: .
           file: ./shiptalkers-app/Dockerfile
@@ -46,6 +48,8 @@ jobs:
           tags: ghcr.io/seradedstripes/shiptalkers-app:latest
           cache-from: type=gha,scope=shiptalkers-app
           cache-to: type=gha,mode=max,scope=shiptalkers-app
+          provenance: false
+          sbom: false
 
       - name: Deploy to Coolify
         uses: SeradedStripes/coolify-deploy@v1.1
