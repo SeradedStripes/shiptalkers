@@ -32,10 +32,10 @@ RUN cargo chef prepare --recipe-path recipe.json --bin ship-talkers
 FROM chef AS builder
 
 COPY --from=planner /app/recipe.json recipe.json
-RUN cargo chef cook --release --recipe-path recipe.json --bin ship-talkers
+RUN cargo chef cook --release --recipe-path recipe.json --package ship-talkers --bin ship-talkers
 
 COPY . .
-RUN cargo build --release --locked --bin ship-talkers
+RUN cargo build --release --locked --package ship-talkers --bin ship-talkers
 
 FROM alpine:3.22 AS runtime
 

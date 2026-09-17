@@ -27,10 +27,10 @@ RUN cargo chef prepare --recipe-path recipe.json --bin ship-talkers-scraper
 FROM chef AS builder
 
 COPY --from=planner /app/recipe.json recipe.json
-RUN cargo chef cook --release --recipe-path recipe.json --bin ship-talkers-scraper
+RUN cargo chef cook --release --recipe-path recipe.json --package ship-talkers-scraper --bin ship-talkers-scraper
 
 COPY . .
-RUN cargo build --release --locked --bin ship-talkers-scraper
+RUN cargo build --release --locked --package ship-talkers-scraper --bin ship-talkers-scraper
 
 FROM alpine:3.22 AS runtime
 
