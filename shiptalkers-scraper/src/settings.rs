@@ -24,7 +24,7 @@ fn default_value(key: &str) -> &str {
         "SLACK_INCREMENTAL_BUDGET_SECS" => "300",
         "SLACK_USER_SYNC_DELAY_MS" => "3000",
         "SLACK_THREAD_RESCAN_HOURS" => "720",
-        "SLACK_THREAD_RESCAN_INTERVAL_HOURS" => "6",
+        "SLACK_THREAD_RESCAN_INTERVAL_HOURS" => "24",
         _ => "",
     }
 }

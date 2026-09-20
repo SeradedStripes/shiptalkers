@@ -52,7 +52,7 @@ pub async fn connect(database_url: &str) -> Result<PgPool, Box<dyn std::error::E
         .ok()
         .and_then(|value| value.parse::<u32>().ok())
         .filter(|value| *value > 0)
-        .unwrap_or(5);
+        .unwrap_or(3);
     let pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(max_connections)
         .after_connect(|conn, _meta| {
