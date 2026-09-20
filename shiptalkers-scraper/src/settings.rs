@@ -19,8 +19,8 @@ fn default_value(key: &str) -> &str {
     match key {
         "HEALTH_PORT" => "3001",
         "SLACK_REQUEST_DELAY_MS" => "1200",
-        "SLACK_MAX_INFLIGHT" => "8",
-        "SLACK_CHANNEL_CONCURRENCY" => "8",
+        "SLACK_MAX_INFLIGHT" => "4",
+        "SLACK_CHANNEL_CONCURRENCY" => "4",
         "SLACK_INCREMENTAL_BUDGET_SECS" => "300",
         "SLACK_USER_SYNC_DELAY_MS" => "3000",
         "SLACK_THREAD_RESCAN_HOURS" => "720",

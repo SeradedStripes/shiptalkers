@@ -48,8 +48,13 @@ pub fn placeholders(rows: usize, cols: usize) -> String {
 }
 
 pub async fn connect(database_url: &str) -> Result<PgPool, Box<dyn std::error::Error>> {
+    let max_connections = std::env::var("DATABASE_MAX_CONNECTIONS")
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(5);
     let pool = sqlx::postgres::PgPoolOptions::new()
-        .max_connections(20)
+        .max_connections(max_connections)
         .after_connect(|conn, _meta| {
             Box::pin(async move {
                 sqlx::query("SET TIME ZONE 'UTC'")

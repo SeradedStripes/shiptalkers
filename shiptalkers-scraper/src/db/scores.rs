@@ -32,15 +32,22 @@ pub async fn backfill_stale_user_scores(
     }
 
     let ids: Vec<String> = sqlx::query_scalar(
-        "SELECT msg.user_id FROM (
-             SELECT u.user_id, max(m.message_ts) AS last_ts
-             FROM slack_messages m JOIN slack_identities i ON i.internal_id = m.identity_id
-             JOIN users u ON u.ship_talkers_id = i.ship_talkers_id
-             GROUP BY u.user_id
-         ) msg
-         LEFT JOIN (SELECT user_id, updated, longest FROM user_scores) sc
-           ON msg.user_id = sc.user_id
-         WHERE sc.user_id IS NULL OR msg.last_ts / 1000000 > sc.updated OR sc.longest = 0",
+        "SELECT u.user_id
+         FROM users u
+         LEFT JOIN user_scores sc ON sc.user_id = u.user_id
+         WHERE EXISTS (
+             SELECT 1
+             FROM slack_messages m
+             JOIN slack_identities i ON i.internal_id = m.identity_id
+             WHERE i.ship_talkers_id = u.ship_talkers_id
+         )
+           AND (sc.user_id IS NULL OR sc.longest = 0 OR EXISTS (
+               SELECT 1
+               FROM slack_messages m
+               JOIN slack_identities i ON i.internal_id = m.identity_id
+               WHERE i.ship_talkers_id = u.ship_talkers_id
+                 AND m.message_ts > sc.updated * 1000000
+           ))",
     )
     .fetch_all(pool)
     .await?;
@@ -67,14 +74,18 @@ pub async fn backfill_stale_channel_scores(
     }
 
     let ids: Vec<String> = sqlx::query_scalar(
-        "SELECT msg.channel_id FROM (
-             SELECT c.channel_id, max(m.message_ts) AS last_ts
-             FROM slack_messages m JOIN slack_channels c ON c.internal_id = m.channel_id
-             GROUP BY c.channel_id
-         ) msg
-         LEFT JOIN (SELECT channel_id, updated FROM channel_scores) sc
-           ON msg.channel_id = sc.channel_id
-         WHERE sc.channel_id IS NULL OR msg.last_ts / 1000000 > sc.updated",
+        "SELECT c.channel_id
+         FROM slack_channels c
+         LEFT JOIN channel_scores sc ON sc.channel_id = c.channel_id
+         WHERE EXISTS (
+             SELECT 1 FROM slack_messages m
+             WHERE m.channel_id = c.internal_id
+         )
+           AND (sc.channel_id IS NULL OR EXISTS (
+               SELECT 1 FROM slack_messages m
+               WHERE m.channel_id = c.internal_id
+                 AND m.message_ts > sc.updated * 1000000
+           ))",
     )
     .fetch_all(pool)
     .await?;

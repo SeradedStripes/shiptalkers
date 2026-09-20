@@ -177,14 +177,28 @@ pub async fn mark_content_backfilled(
 async fn refresh_consent_cache(pool: &PgPool) -> Result<(), Box<dyn std::error::Error>> {
     let now = crate::db::postgres_db::now_secs();
     let previous = CONSENT_CACHE_REFRESHED.load(std::sync::atomic::Ordering::Relaxed);
-    if now.saturating_sub(previous) < 30 {
+    if now.saturating_sub(previous) < 300 {
+        return Ok(());
+    }
+    if CONSENT_CACHE_REFRESHED
+        .compare_exchange(
+            previous,
+            now,
+            std::sync::atomic::Ordering::AcqRel,
+            std::sync::atomic::Ordering::Relaxed,
+        )
+        .is_err()
+    {
         return Ok(());
     }
     let ids: Vec<i32> = sqlx::query_scalar(
         "SELECT identity_id FROM slack_consents WHERE consented_at IS NOT NULL AND revoked_at IS NULL",
     )
     .fetch_all(pool)
-    .await?;
+    .await
+    .inspect_err(|_| {
+        CONSENT_CACHE_REFRESHED.store(previous, std::sync::atomic::Ordering::Release);
+    })?;
     CONSENT_CACHE
         .get_or_init(Default::default)
         .lock()
@@ -195,7 +209,6 @@ async fn refresh_consent_cache(pool: &PgPool) -> Result<(), Box<dyn std::error::
         .lock()
         .map_err(|_| "consent cache poisoned")?
         .extend(ids);
-    CONSENT_CACHE_REFRESHED.store(now, std::sync::atomic::Ordering::Relaxed);
     Ok(())
 }
 
