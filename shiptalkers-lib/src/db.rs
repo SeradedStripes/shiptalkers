@@ -102,7 +102,7 @@ pub async fn insert_new_channels_rows(
         let mut sql = String::from(
             "INSERT INTO slack_channels (ship_talkers_id, channel_id, name, is_archived, num_members, created_at) VALUES ",
         );
-        sql.push_str(&placeholders(chunk.len(), 5));
+        sql.push_str(&placeholders(chunk.len(), 6));
         sql.push_str(
             " ON CONFLICT (channel_id) DO UPDATE SET name = EXCLUDED.name, is_archived = EXCLUDED.is_archived, num_members = EXCLUDED.num_members, created_at = GREATEST(slack_channels.created_at, EXCLUDED.created_at)",
         );
