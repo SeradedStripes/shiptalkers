@@ -276,59 +276,6 @@ async fn render_board_category(
                 page_count,
             )
         }
-        "words" => {
-            let inner = "SELECT word AS id, cnt::bigint AS value, CAST(NULL AS BIGINT) AS extra, rank FROM (SELECT word, cnt, row_number() OVER (ORDER BY cnt DESC) AS rank FROM word_totals)";
-            let page_count = ranked_page_count(ch, inner).await;
-            let page = requested_page.min(page_count).max(1);
-            let (ranked, notice) = if q.is_empty() {
-                let lo = (page - 1) * 100 + 1;
-                let hi = page * 100;
-                (
-                    if page == 1 {
-                        state
-                            .cache
-                            .words
-                            .get_or(async { fetch_rank_window(ch, inner, lo, hi).await })
-                            .await
-                    } else {
-                        fetch_rank_window(ch, inner, lo, hi).await
-                    },
-                    None,
-                )
-            } else {
-                let eq = sql_escape(&q.to_lowercase());
-                let resolve = format!(
-                    "SELECT id FROM ({inner}) WHERE id = '{eq}' OR id LIKE '{eq}%' ORDER BY (id = '{eq}') DESC LIMIT 1"
-                );
-                let (ranked, notice, _, _) =
-                    ranked_window(ch, inner, q, parsed_rank, Some(&resolve), requested_page).await;
-                (ranked, notice)
-            };
-            let rows = ranked
-                .into_iter()
-                .map(|r| BoardEntry {
-                    user_id: r.id.clone(),
-                    url_id: r.id.clone(),
-                    merged_name: r.id,
-                    pfp: String::new(),
-                    value: fmt_thousands(r.value.max(0) as u64),
-                    extra: String::new(),
-                    linked: false,
-                    rank: r.rank,
-                    label: r.rank.to_string(),
-                    highlight: r.highlight,
-                })
-                .collect();
-            (
-                "Top Words".into(),
-                "Uses".into(),
-                None,
-                rows,
-                notice,
-                page,
-                page_count,
-            )
-        }
         _ => return Err(StatusCode::NOT_FOUND),
     };
     let notice = notice.or_else(|| {
@@ -341,8 +288,6 @@ async fn render_board_category(
         title,
         entity: if category == "channels" {
             "Channel"
-        } else if category == "words" {
-            "Word"
         } else {
             "User"
         }

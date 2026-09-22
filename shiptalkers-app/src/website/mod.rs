@@ -79,14 +79,12 @@ struct RankedRow {
 #[derive(Clone)]
 pub struct AppCache {
     stats: Arc<TtlCache<stats::StatsSnapshot>>,
-    words: Arc<TtlCache<Vec<RankedRow>>>,
 }
 
 impl AppCache {
     fn new() -> Self {
         Self {
             stats: Arc::new(TtlCache::new(Duration::from_secs(30))),
-            words: Arc::new(TtlCache::new(Duration::from_secs(600))),
         }
     }
 }
@@ -367,8 +365,6 @@ pub fn router(
             post(auth::link_revoke_api_key),
         )
         .route("/link/grants", post(auth::link_create_grant))
-        .route("/link/consent", post(auth::link_grant_consent))
-        .route("/link/consent/revoke", post(auth::link_revoke_consent))
         .route(
             "/link/grants/{key_id}/revoke",
             post(auth::link_revoke_grant),
@@ -739,55 +735,6 @@ async fn legacy_board_category(
                 notice,
             )
         }
-        "words" => {
-            let inner = "SELECT word AS id, cnt::bigint AS value, \
-                 CAST(NULL AS BIGINT) AS extra, rank \
-                 FROM ( \
-                     SELECT word, cnt, \
-                            row_number() OVER (ORDER BY cnt DESC) AS rank \
-                     FROM word_totals \
-                 )";
-            let (ranked, notice) = if q.is_empty() {
-                let cached = state
-                    .cache
-                    .words
-                    .get_or(async { fetch_rank_window(ch, inner, 1, 100).await })
-                    .await;
-                (cached, None)
-            } else {
-                // Words are stored lowercase, so match the query case-insensitively.
-                let eq = sql_escape(&q.to_lowercase());
-                let resolve = format!(
-                    "SELECT id FROM ({inner}) WHERE id = '{}' OR id LIKE '{}%' \
-                     ORDER BY (id = '{}') DESC LIMIT 1",
-                    eq, eq, eq
-                );
-                ranked_window(ch, inner, q, parsed_rank, Some(&resolve)).await
-            };
-            let entries = ranked
-                .into_iter()
-                .map(|r| BoardEntry {
-                    user_id: r.id.clone(),
-                    url_id: r.id.clone(),
-                    merged_name: r.id,
-                    pfp: String::new(),
-                    value: fmt_thousands(r.value.max(0) as u64),
-                    extra: String::new(),
-                    linked: false,
-                    rank: r.rank,
-                    label: r.rank.to_string(),
-                    highlight: r.highlight,
-                })
-                .collect();
-            (
-                "Top Words".into(),
-                "Uses".into(),
-                None,
-                false,
-                entries,
-                notice,
-            )
-        }
         _ => {
             return Err(StatusCode::NOT_FOUND);
         }
@@ -805,7 +752,6 @@ async fn legacy_board_category(
         title,
         entity: match category.as_str() {
             "channels" => "Channel",
-            "words" => "Word",
             _ => "User",
         }
         .into(),

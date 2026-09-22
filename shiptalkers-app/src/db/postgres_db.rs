@@ -7,65 +7,11 @@ use rand::Rng;
 use rand::rng;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use std::collections::HashSet;
-use std::sync::Arc;
-use tokio::sync::RwLock;
 
 pub use ship_talkers_lib::db::{
     SlackChannelRow, SlackUserRow, connect, insert_new_channels_rows, migrate, placeholders,
     upsert_users,
 };
-
-pub async fn grant_slack_consent(pool: &PgPool, slack_id: &str) -> Result<(), String> {
-    let ship_talkers_id = ship_talkers_lib::base36::encode(slack_id.as_bytes());
-    sqlx::query(
-        "WITH identity AS (
-             INSERT INTO slack_identities (ship_talkers_id) VALUES ($1)
-             ON CONFLICT (ship_talkers_id) DO UPDATE SET ship_talkers_id = EXCLUDED.ship_talkers_id
-             RETURNING internal_id
-         )
-         INSERT INTO slack_consents (identity_id, consent_source)
-         SELECT internal_id, 'slack_channel' FROM identity
-          ON CONFLICT (identity_id) DO UPDATE SET consented_at = NOW(), revoked_at = NULL, content_backfilled_at = NULL,
-             consent_source = EXCLUDED.consent_source",
-    )
-    .bind(ship_talkers_id)
-    .execute(pool)
-    .await
-    .map(|_| ())
-    .map_err(|e| e.to_string())
-}
-
-pub async fn slack_user_has_consent(pool: &PgPool, slack_id: &str) -> Result<bool, String> {
-    let ship_talkers_id = ship_talkers_lib::base36::encode(slack_id.as_bytes());
-    sqlx::query_scalar::<_, i32>(
-        "SELECT 1 FROM slack_consents c
-         JOIN slack_identities i ON i.internal_id = c.identity_id
-         WHERE i.ship_talkers_id = $1 AND c.consented_at IS NOT NULL AND c.revoked_at IS NULL",
-    )
-    .bind(ship_talkers_id)
-    .fetch_optional(pool)
-    .await
-    .map(|row| row.is_some())
-    .map_err(|e| e.to_string())
-}
-
-pub async fn revoke_slack_consent(pool: &PgPool, slack_id: &str) -> Result<(), String> {
-    let ship_talkers_id = ship_talkers_lib::base36::encode(slack_id.as_bytes());
-    sqlx::query(
-        "UPDATE slack_consents c
-         SET revoked_at = NOW()
-         FROM slack_identities i
-         WHERE c.identity_id = i.internal_id
-           AND i.ship_talkers_id = $1
-           AND c.revoked_at IS NULL",
-    )
-    .bind(ship_talkers_id)
-    .execute(pool)
-    .await
-    .map(|_| ())
-    .map_err(|e| e.to_string())
-}
 
 pub async fn insert_new_channels(
     pool: &PgPool,
@@ -89,66 +35,11 @@ pub async fn insert_new_channels(
 #[derive(Clone)]
 pub struct AuthDb {
     pool: PgPool,
-    consented: Arc<RwLock<HashSet<i32>>>,
 }
 
 impl AuthDb {
     pub fn new(pool: PgPool) -> Self {
-        Self {
-            pool,
-            consented: Arc::new(RwLock::new(HashSet::new())),
-        }
-    }
-
-    pub async fn load_consents(&self) -> Result<(), String> {
-        let ids: Vec<i32> = sqlx::query_scalar(
-            "SELECT identity_id FROM slack_consents WHERE consented_at IS NOT NULL AND revoked_at IS NULL",
-        )
-        .fetch_all(&self.pool)
-        .await
-        .map_err(|e| e.to_string())?;
-        self.consented.write().await.extend(ids);
-        Ok(())
-    }
-
-    pub async fn identity_is_consented(&self, identity_id: i32) -> bool {
-        self.consented.read().await.contains(&identity_id)
-    }
-
-    async fn identity_id(&self, slack_id: &str) -> Result<Option<i32>, String> {
-        let ship_talkers_id = ship_talkers_lib::base36::encode(slack_id.as_bytes());
-        sqlx::query_scalar("SELECT internal_id FROM slack_identities WHERE ship_talkers_id = $1")
-            .bind(ship_talkers_id)
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(|e| e.to_string())
-    }
-
-    pub async fn grant_consent(&self, slack_id: &str, source: Option<&str>) -> Result<(), String> {
-        let identity_id = self
-            .identity_id(slack_id)
-            .await?
-            .ok_or_else(|| "Slack identity has no stored locator".to_owned())?;
-        sqlx::query(
-            "INSERT INTO slack_consents (identity_id, consent_source) VALUES ($1, $2)
-             ON CONFLICT (identity_id) DO UPDATE SET consented_at = NOW(), revoked_at = NULL, content_backfilled_at = NULL, consent_source = EXCLUDED.consent_source",
-        )
-        .bind(identity_id)
-        .bind(source)
-        .execute(&self.pool)
-        .await
-        .map_err(|e| e.to_string())?;
-        self.consented.write().await.insert(identity_id);
-        Ok(())
-    }
-
-    pub async fn revoke_consent(&self, slack_id: &str) -> Result<(), String> {
-        let identity_id = self.identity_id(slack_id).await?;
-        revoke_slack_consent(&self.pool, slack_id).await?;
-        if let Some(identity_id) = identity_id {
-            self.consented.write().await.remove(&identity_id);
-        }
-        Ok(())
+        Self { pool }
     }
 
     pub async fn mark_linked(&self, slack_id: &str, display_name: &str) -> Result<(), String> {

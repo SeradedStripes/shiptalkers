@@ -8,205 +8,10 @@ fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
-const WORD_FULL_REBUILD_SECS: u64 = 24 * 3600;
-
-const EXCLUDE_WORD_BOTS_DELETED: &str =
+const EXCLUDE_SCORE_BOTS_DELETED: &str =
     "user_id NOT IN (SELECT user_id FROM users WHERE is_bot = 1 OR is_deleted = 1)";
-const EXCLUDE_MESSAGE_BOTS_DELETED: &str = "NOT EXISTS (SELECT 1 FROM slack_identities bi JOIN users bu ON bu.ship_talkers_id = bi.ship_talkers_id WHERE bi.internal_id = m.identity_id AND (bu.is_bot = 1 OR bu.is_deleted = 1))";
 
-pub async fn refresh_word_totals(pool: &PgPool) -> Result<(), Box<dyn std::error::Error>> {
-    let now = now_secs();
-    let (watermark, last_full) = read_word_refresh_meta(pool).await;
-
-    // First run, or the safety-net rebuild is due: recompute the whole table.
-    // The watermark is set to now rather than max(inserted_at), because rows
-    // backfilled before the `inserted_at` column existed all carry 0 and must
-    // count as folded, not as dirty on every pass.
-    if watermark == 0 || now.saturating_sub(last_full) >= WORD_FULL_REBUILD_SECS {
-        refresh_word_totals_full(pool, now).await?;
-        write_word_refresh_meta(pool, now, now).await?;
-        return Ok(());
-    }
-
-    let words = dirty_words(pool, watermark).await?;
-    if words.is_empty() {
-        // Nothing new since the last fold; advance the watermark so the scan
-        // does not re-read the same rows next pass.
-        write_word_refresh_meta(pool, now, last_full).await?;
-        return Ok(());
-    }
-    refresh_word_totals_for_words(pool, &words, now).await?;
-    write_word_refresh_meta(pool, now, last_full).await?;
-    Ok(())
-}
-
-async fn read_word_refresh_meta(pool: &PgPool) -> (u64, u64) {
-    sqlx::query_as::<_, (i64, i64)>(
-        "SELECT watermark, last_full FROM word_refresh_meta WHERE id = 1",
-    )
-    .fetch_optional(pool)
-    .await
-    .ok()
-    .flatten()
-    .map(|(watermark, last_full)| (watermark.max(0) as u64, last_full.max(0) as u64))
-    .unwrap_or((0, 0))
-}
-
-async fn write_word_refresh_meta(
-    pool: &PgPool,
-    watermark: u64,
-    last_full: u64,
-) -> Result<(), Box<dyn std::error::Error>> {
-    sqlx::query(
-        "INSERT INTO word_refresh_meta (id, watermark, last_full) VALUES (1, $1, $2)
-         ON CONFLICT (id) DO UPDATE SET watermark = EXCLUDED.watermark, last_full = EXCLUDED.last_full",
-    )
-    .bind(watermark as i64)
-    .bind(last_full as i64)
-    .execute(pool)
-    .await?;
-    Ok(())
-}
-
-async fn dirty_words(
-    pool: &PgPool,
-    watermark: u64,
-) -> Result<Vec<String>, Box<dyn std::error::Error>> {
-    let rows: Vec<String> =
-        sqlx::query_scalar("SELECT DISTINCT word FROM word_counts WHERE inserted_at > $1")
-            .bind(watermark as i64)
-            .fetch_all(pool)
-            .await?;
-    Ok(rows)
-}
-
-/// Recomputes totals for the given words and writes only the rows whose count actually changed, mirroring the old FINAL + LEFT JOIN guard.
-async fn refresh_word_totals_upsert(
-    pool: &PgPool,
-    words: Option<&[String]>,
-    updated: u64,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let (sql, has_word_bind) = match words {
-        Some(_) => (
-            format!(
-                "WITH agg AS (
-                     SELECT word, sum(count) AS cnt
-                     FROM word_counts
-                     WHERE word = ANY($2)
-                       AND {EXCLUDE_WORD_BOTS_DELETED}
-                     GROUP BY word
-                 )
-                 INSERT INTO word_totals (word, cnt, updated)
-                 SELECT a.word, a.cnt, $1
-                 FROM agg a
-                 LEFT JOIN word_totals t ON t.word = a.word
-                 WHERE t.word IS NULL OR t.cnt != a.cnt
-                 ON CONFLICT (word) DO UPDATE SET cnt = EXCLUDED.cnt, updated = EXCLUDED.updated"
-            ),
-            true,
-        ),
-        None => (
-            format!(
-                "WITH agg AS (
-                     SELECT word, sum(count) AS cnt
-                     FROM word_counts
-                      WHERE {EXCLUDE_WORD_BOTS_DELETED}
-                     GROUP BY word
-                 )
-                 INSERT INTO word_totals (word, cnt, updated)
-                 SELECT a.word, a.cnt, $1
-                 FROM agg a
-                 LEFT JOIN word_totals t ON t.word = a.word
-                 WHERE t.word IS NULL OR t.cnt != a.cnt
-                 ON CONFLICT (word) DO UPDATE SET cnt = EXCLUDED.cnt, updated = EXCLUDED.updated"
-            ),
-            false,
-        ),
-    };
-    let mut q = sqlx::query(sqlx::AssertSqlSafe(sql.as_str())).bind(updated as i64);
-    if let Some(words) = words.filter(|_| has_word_bind) {
-        q = q.bind(words);
-    }
-    q.execute(pool).await?;
-    Ok(())
-}
-
-async fn refresh_word_totals_for_words(
-    pool: &PgPool,
-    words: &[String],
-    updated: u64,
-) -> Result<(), Box<dyn std::error::Error>> {
-    refresh_word_totals_upsert(pool, Some(words), updated).await
-}
-
-async fn refresh_word_totals_full(
-    pool: &PgPool,
-    updated: u64,
-) -> Result<(), Box<dyn std::error::Error>> {
-    refresh_word_totals_upsert(pool, None, updated).await
-}
-
-pub async fn refresh_daily_stats(pool: &PgPool) -> Result<(), Box<dyn std::error::Error>> {
-    let boundary = crate::sessionize::SESSION_GAP_BOUNDARY_SECS;
-    let rate = crate::sessionize::MESSAGE_TYPING_CHARS_PER_SEC;
-    let overhead = crate::sessionize::MESSAGE_READ_OVERHEAD_SECS;
-    let max_secs = crate::sessionize::SESSION_MAX_SECS;
-    let slack: Vec<(time::Date, i64)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-        "WITH
-         msg AS (
-             SELECT m.identity_id, m.message_ts / 1000000 AS ts,
-                    sum(m.char_count) AS chars,
-                    count(*) AS msgs
-             FROM slack_messages m
-             WHERE {EXCLUDE_MESSAGE_BOTS_DELETED}
-             GROUP BY user_id, ts
-         ),
-         flagged AS (
-             SELECT user_id, ts, chars, msgs,
-                 CASE WHEN ts - lag(ts) OVER (PARTITION BY user_id ORDER BY ts) > {boundary} THEN 1 ELSE 0 END AS boundary
-             FROM msg
-         ),
-         sess AS (
-             SELECT user_id, ts, chars, msgs,
-                 sum(boundary) OVER (PARTITION BY user_id ORDER BY ts) AS sid
-             FROM flagged
-         ),
-         sessions AS (
-             SELECT user_id, sid, min(ts) AS start_ts, max(ts) AS end_ts,
-                    (array_agg(chars ORDER BY ts))[1] AS first_chars,
-                    (array_agg(msgs ORDER BY ts))[1] AS first_msgs
-             FROM sess
-             GROUP BY user_id, sid
-         )
-         SELECT (to_timestamp(start_ts) AT TIME ZONE 'UTC')::date AS date,
-                sum(least(end_ts - start_ts + (first_chars + {rate} - 1) / {rate} + first_msgs * {overhead}, {max_secs}))::bigint AS total_time
-         FROM sessions
-         GROUP BY date"
-    )))
-    .fetch_all(pool)
-    .await?;
-
-    let mut tx = pool.begin().await?;
-    sqlx::query("DELETE FROM daily_stats")
-        .execute(&mut *tx)
-        .await?;
-    for chunk in slack.chunks(ship_talkers_lib::db::INSERT_CHUNK) {
-        let mut sql = String::from("INSERT INTO daily_stats (date, slack_secs) VALUES ");
-        sql.push_str(&ship_talkers_lib::db::placeholders(chunk.len(), 2));
-        let mut q = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()));
-        for (date, slack_secs) in chunk {
-            q = q.bind(date).bind(*slack_secs);
-        }
-        q.execute(&mut *tx).await?;
-    }
-    tx.commit().await?;
-    Ok(())
-}
-
-/// Precomputes the homepage stats into `stats_meta` on a background loop,
-/// `count(*)` scans on every request
 pub async fn refresh_page_stats(pool: &PgPool) -> Result<(), Box<dyn std::error::Error>> {
-    // The message counter is seeded by the scraper (the only writer)
     let total_messages: i64 = sqlx::query_scalar("SELECT total FROM message_count WHERE id = 1")
         .fetch_one(pool)
         .await
@@ -250,7 +55,7 @@ pub async fn refresh_page_stats(pool: &PgPool) -> Result<(), Box<dyn std::error:
             .flatten()
             .unwrap_or(0);
     let slack_time_secs: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
-        "SELECT sum(total_time)::bigint FROM user_scores WHERE {EXCLUDE_WORD_BOTS_DELETED}"
+        "SELECT sum(total_time)::bigint FROM user_scores WHERE {EXCLUDE_SCORE_BOTS_DELETED}"
     )))
     .fetch_one(pool)
     .await
@@ -262,7 +67,6 @@ pub async fn refresh_page_stats(pool: &PgPool) -> Result<(), Box<dyn std::error:
         .await
         .unwrap_or(0);
 
-    let updated = now_secs();
     sqlx::query(
         "INSERT INTO stats_meta (id, total_messages, total_channels, archived_channels, total_users, hackatime_users, private_hackatime_users, no_hackatime_account_users, coding_minutes, slack_time_secs, db_size_bytes, updated)
          VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
@@ -289,7 +93,7 @@ pub async fn refresh_page_stats(pool: &PgPool) -> Result<(), Box<dyn std::error:
     .bind(coding_minutes.max(0))
     .bind(slack_time_secs.max(0))
     .bind(db_size_bytes.max(0))
-    .bind(updated as i64)
+    .bind(now_secs() as i64)
     .execute(pool)
     .await?;
     Ok(())

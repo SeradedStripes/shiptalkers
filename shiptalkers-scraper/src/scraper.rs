@@ -228,14 +228,8 @@ pub async fn run_scraper(
     db::postgres_db::load_locator_caches(&pool)
         .await
         .map_err(|e| format!("failed to load locator caches: {e}"))?;
-    db::postgres_db::load_consent_cache(&pool)
-        .await
-        .map_err(|e| format!("failed to load consent cache: {e}"))?;
     if let Err(e) = db::postgres_db::seed_message_count(&pool).await {
         tracing::warn!("Failed to seed message count: {}", e);
-    }
-    if let Err(e) = db::postgres_db::backfill_word_counts(&pool).await {
-        tracing::warn!("Failed to backfill word_counts: {}", e);
     }
     let sessionizer_changed = db::scores::sessionizer_changed(&pool)
         .await
@@ -270,7 +264,6 @@ pub async fn run_scraper(
         let (list_result, _) = tokio::join!(full_fetch(&list_pool, &pool), async {
             if !user_tokens.is_empty() {
                 scrape_all_messages(&settings, &pool).await;
-                backfill_consented_content(&settings, &pool).await;
             }
         });
         if let Err(e) = list_result {
@@ -290,131 +283,6 @@ pub async fn run_scraper(
             tracing::info!(
                 "Scrape cycle took {:.0}s (longer than 30m), starting next cycle immediately",
                 elapsed.as_secs_f64()
-            );
-        }
-    }
-}
-
-async fn backfill_consented_content(settings: &settings::RuntimeSettings, pool: &sqlx::PgPool) {
-    let pending = match db::postgres_db::pending_consent_channels(pool).await {
-        Ok(pending) => pending,
-        Err(e) => {
-            tracing::warn!("Failed to load consent content backfills: {}", e);
-            return;
-        }
-    };
-    if pending.is_empty() {
-        return;
-    }
-    let tokens = settings.get_list("SLACK_USER_TOKENS");
-    let Some(token) = tokens.first() else {
-        return;
-    };
-    let client = slack::SlackClient::new(
-        token.clone(),
-        Duration::from_millis(settings.get_u64("SLACK_REQUEST_DELAY_MS")),
-        settings.get_u64("SLACK_MAX_INFLIGHT") as usize,
-    );
-    let mut channels: HashMap<String, std::collections::HashSet<i32>> = HashMap::new();
-    let mut resume_at: HashMap<String, u64> = HashMap::new();
-    let mut complete: HashMap<i32, bool> = HashMap::new();
-    for (identity_id, channel_id, latest_message_ts) in pending {
-        channels
-            .entry(channel_id.clone())
-            .or_default()
-            .insert(identity_id);
-        resume_at
-            .entry(channel_id)
-            .and_modify(|current| *current = (*current).min(latest_message_ts))
-            .or_insert(latest_message_ts);
-        complete.entry(identity_id).or_insert(true);
-    }
-
-    for (channel_id, identities) in channels {
-        let pool_for_page = pool.clone();
-        let channel_for_page = channel_id.clone();
-        let identities_for_page: Vec<i32> = identities.iter().copied().collect();
-        let identities_for_callback = identities_for_page.clone();
-        let failed = Arc::new(AtomicBool::new(false));
-        let failed_for_page = failed.clone();
-        let latest = resume_at
-            .get(&channel_id)
-            .copied()
-            .filter(|&timestamp| timestamp > 0)
-            .map(db::postgres_db::micros_to_slack_ts);
-        let result = client
-            .stream_channel_history_before(&channel_id, None, latest.as_deref(), move |page| {
-                let pool = pool_for_page.clone();
-                let channel_id = channel_for_page.clone();
-                let identities = identities_for_callback.clone();
-                let failed = failed_for_page.clone();
-                Box::pin(async move {
-                    if failed.load(Ordering::Relaxed) {
-                        return Ok(());
-                    }
-                    let oldest = page
-                        .iter()
-                        .map(|message| db::postgres_db::slack_ts_to_micros(&message.ts))
-                        .min();
-                    let rows: Vec<db::postgres_db::SlackMessageRow> = page
-                        .iter()
-                        .map(|message| db::postgres_db::SlackMessageRow {
-                            user_id: message.user.clone(),
-                            channel_id: message.channel.clone(),
-                            message_ts: db::postgres_db::slack_ts_to_micros(&message.ts),
-                            char_count: message.text.chars().count() as i32,
-                            thread_ts: message
-                                .thread_ts
-                                .as_deref()
-                                .map(db::postgres_db::slack_ts_to_micros),
-                            text: message.text.clone(),
-                        })
-                        .collect();
-                    db::postgres_db::insert_messages(&pool, &rows)
-                        .await
-                        .map_err(|e| e.to_string())?;
-                    if let Some(oldest) = oldest {
-                        db::postgres_db::save_consent_backfill_progress(
-                            &pool,
-                            &identities,
-                            &channel_id,
-                            oldest,
-                        )
-                        .await
-                        .map_err(|e| e.to_string())?;
-                    }
-                    Ok(())
-                })
-            })
-            .await;
-        if result.is_err() || failed.load(Ordering::Relaxed) {
-            for identity_id in &identities_for_page {
-                complete.insert(*identity_id, false);
-            }
-            continue;
-        }
-        if let Err(e) =
-            db::postgres_db::complete_consent_backfill(pool, &identities_for_page, &channel_id)
-                .await
-        {
-            tracing::warn!(
-                "Failed to complete consent backfill in {}: {}",
-                channel_id,
-                e
-            );
-            for identity_id in &identities_for_page {
-                complete.insert(*identity_id, false);
-            }
-        }
-    }
-    for (identity_id, succeeded) in complete {
-        if succeeded
-            && let Err(e) = db::postgres_db::mark_content_backfilled(pool, identity_id).await
-        {
-            tracing::warn!(
-                "Failed to mark content backfill complete for {}: {}",
-                identity_id,
-                e
             );
         }
     }
@@ -849,35 +717,6 @@ fn reaction_rows_from(
     rows
 }
 
-fn word_count_rows_from(
-    messages: &[slack::SlackMessage],
-    channel_id: &str,
-) -> Vec<db::postgres_db::WordCountRow> {
-    let mut rows = Vec::new();
-    for m in messages {
-        let message_ts = db::postgres_db::slack_ts_to_micros(&m.ts);
-        let lower = m.text.to_lowercase();
-        let mut counts: std::collections::HashMap<&str, u64> = std::collections::HashMap::new();
-        for word in lower
-            .split(|c: char| !c.is_ascii_lowercase())
-            .filter(|w| w.len() > 1)
-        {
-            *counts.entry(word).or_insert(0) += 1;
-        }
-        for (word, count) in counts {
-            rows.push(db::postgres_db::WordCountRow {
-                word: word.to_string(),
-                user_id: m.user.clone(),
-                channel_id: channel_id.to_string(),
-                message_ts,
-                count,
-                inserted_at: 0,
-            });
-        }
-    }
-    rows
-}
-
 async fn upsert_bot_users(
     pool: &sqlx::PgPool,
     messages: &[slack::SlackMessage],
@@ -988,7 +827,6 @@ async fn process_channel_page(
                 .thread_ts
                 .as_deref()
                 .map(db::postgres_db::slack_ts_to_micros),
-            text: m.text.clone(),
         })
         .collect();
 
@@ -1005,13 +843,6 @@ async fn process_channel_page(
     let reaction_rows = reaction_rows_from(&page, channel_id);
     if !reaction_rows.is_empty() {
         db::postgres_db::insert_reactions(pool, &reaction_rows)
-            .await
-            .map_err(|e| e.to_string())?;
-    }
-
-    let word_rows = word_count_rows_from(&page, channel_id);
-    if !word_rows.is_empty() {
-        db::postgres_db::insert_word_counts(pool, &word_rows)
             .await
             .map_err(|e| e.to_string())?;
     }
@@ -1051,7 +882,6 @@ async fn process_thread_page(
                     .thread_ts
                     .as_deref()
                     .map(db::postgres_db::slack_ts_to_micros),
-                text: m.text.clone(),
             })
             .collect();
         inserted = db::postgres_db::insert_messages(pool, &rows)
@@ -1086,13 +916,6 @@ async fn process_thread_page(
     let reply_reactions = reaction_rows_from(&page, channel_id);
     if !reply_reactions.is_empty() {
         db::postgres_db::insert_reactions(pool, &reply_reactions)
-            .await
-            .map_err(|e| e.to_string())?;
-    }
-
-    let reply_words = word_count_rows_from(&page, channel_id);
-    if !reply_words.is_empty() {
-        db::postgres_db::insert_word_counts(pool, &reply_words)
             .await
             .map_err(|e| e.to_string())?;
     }

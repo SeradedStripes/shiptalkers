@@ -59,7 +59,6 @@ async fn stats_routes_match() {
         "/stats/anonymous-channel-id",
         "/search",
         "/boards/channels",
-        "/boards/words",
         "/boards/talkers?q=1234",
         "/boards/talkers?q=ZachLatta",
         "/boards/users/",

@@ -39,7 +39,6 @@ pub struct SlackMessageRow {
     pub message_ts: u64,
     pub char_count: i32,
     pub thread_ts: Option<u64>,
-    pub text: String,
 }
 
 #[derive(Debug, Clone)]
@@ -70,152 +69,6 @@ static IDENTITY_CACHE: std::sync::OnceLock<std::sync::Mutex<HashMap<String, i32>
     std::sync::OnceLock::new();
 static CHANNEL_CACHE: std::sync::OnceLock<std::sync::Mutex<HashMap<String, i32>>> =
     std::sync::OnceLock::new();
-static CONSENT_CACHE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<i32>>> =
-    std::sync::OnceLock::new();
-static CONSENT_CACHE_REFRESHED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
-pub async fn load_consent_cache(pool: &PgPool) -> Result<(), Box<dyn std::error::Error>> {
-    let ids: Vec<i32> = sqlx::query_scalar(
-        "SELECT identity_id FROM slack_consents WHERE consented_at IS NOT NULL AND revoked_at IS NULL",
-    )
-    .fetch_all(pool)
-    .await?;
-    *CONSENT_CACHE
-        .get_or_init(Default::default)
-        .lock()
-        .map_err(|_| "consent cache poisoned")? = ids.into_iter().collect();
-    Ok(())
-}
-
-pub async fn pending_consent_channels(
-    pool: &PgPool,
-) -> Result<Vec<(i32, String, u64)>, Box<dyn std::error::Error>> {
-    let rows: Vec<(i32, String, i64)> = sqlx::query_as(
-        "SELECT i.internal_id, c.channel_id,
-                COALESCE(MAX(p.latest_message_ts), 0) AS latest_message_ts
-         FROM slack_consents consent
-         JOIN slack_identities i ON i.internal_id = consent.identity_id
-         JOIN slack_messages m ON m.identity_id = i.internal_id
-         JOIN slack_channels c ON c.internal_id = m.channel_id
-         LEFT JOIN consent_backfill_progress p
-           ON p.identity_id = i.internal_id AND p.channel_id = c.channel_id
-         WHERE consent.revoked_at IS NULL AND consent.content_backfilled_at IS NULL
-           AND COALESCE(p.completed, 0) = 0
-         GROUP BY i.internal_id, c.channel_id
-         ORDER BY i.internal_id, c.channel_id",
-    )
-    .fetch_all(pool)
-    .await?;
-    Ok(rows
-        .into_iter()
-        .map(|(identity_id, channel_id, timestamp)| {
-            (identity_id, channel_id, timestamp.max(0) as u64)
-        })
-        .collect())
-}
-
-pub async fn save_consent_backfill_progress(
-    pool: &PgPool,
-    identity_ids: &[i32],
-    channel_id: &str,
-    latest_message_ts: u64,
-) -> Result<(), Box<dyn std::error::Error>> {
-    if identity_ids.is_empty() {
-        return Ok(());
-    }
-    for identity_id in identity_ids {
-        sqlx::query(
-            "INSERT INTO consent_backfill_progress
-                 (identity_id, channel_id, latest_message_ts, completed)
-             VALUES ($1, $2, $3, 0)
-             ON CONFLICT (identity_id, channel_id) DO UPDATE SET
-                 latest_message_ts = EXCLUDED.latest_message_ts",
-        )
-        .bind(identity_id)
-        .bind(channel_id)
-        .bind(latest_message_ts as i64)
-        .execute(pool)
-        .await?;
-    }
-    Ok(())
-}
-
-pub async fn complete_consent_backfill(
-    pool: &PgPool,
-    identity_ids: &[i32],
-    channel_id: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
-    if identity_ids.is_empty() {
-        return Ok(());
-    }
-    sqlx::query(
-        "UPDATE consent_backfill_progress
-         SET completed = 1
-         WHERE channel_id = $1 AND identity_id = ANY($2)",
-    )
-    .bind(channel_id)
-    .bind(identity_ids)
-    .execute(pool)
-    .await?;
-    Ok(())
-}
-
-pub async fn mark_content_backfilled(
-    pool: &PgPool,
-    identity_id: i32,
-) -> Result<(), Box<dyn std::error::Error>> {
-    sqlx::query(
-        "UPDATE slack_consents SET content_backfilled_at = NOW()
-         WHERE identity_id = $1 AND revoked_at IS NULL",
-    )
-    .bind(identity_id)
-    .execute(pool)
-    .await?;
-    Ok(())
-}
-
-async fn refresh_consent_cache(pool: &PgPool) -> Result<(), Box<dyn std::error::Error>> {
-    let now = crate::db::postgres_db::now_secs();
-    let previous = CONSENT_CACHE_REFRESHED.load(std::sync::atomic::Ordering::Relaxed);
-    if now.saturating_sub(previous) < 300 {
-        return Ok(());
-    }
-    if CONSENT_CACHE_REFRESHED
-        .compare_exchange(
-            previous,
-            now,
-            std::sync::atomic::Ordering::AcqRel,
-            std::sync::atomic::Ordering::Relaxed,
-        )
-        .is_err()
-    {
-        return Ok(());
-    }
-    let ids: Vec<i32> = sqlx::query_scalar(
-        "SELECT identity_id FROM slack_consents WHERE consented_at IS NOT NULL AND revoked_at IS NULL",
-    )
-    .fetch_all(pool)
-    .await
-    .inspect_err(|_| {
-        CONSENT_CACHE_REFRESHED.store(previous, std::sync::atomic::Ordering::Release);
-    })?;
-    CONSENT_CACHE
-        .get_or_init(Default::default)
-        .lock()
-        .map_err(|_| "consent cache poisoned")?
-        .clear();
-    CONSENT_CACHE
-        .get_or_init(Default::default)
-        .lock()
-        .map_err(|_| "consent cache poisoned")?
-        .extend(ids);
-    Ok(())
-}
-
-fn stores_content(consented: bool) -> bool {
-    consented
-}
-
 pub async fn load_locator_caches(pool: &PgPool) -> Result<(), Box<dyn std::error::Error>> {
     let identities: Vec<(String, i32)> =
         sqlx::query_as("SELECT ship_talkers_id, internal_id FROM slack_identities")
@@ -280,87 +133,11 @@ pub fn parse_date(s: &str) -> Option<time::Date> {
     time::Date::from_calendar_date(year, time::Month::try_from(month).ok()?, day).ok()
 }
 
-#[derive(Debug, Clone)]
-pub struct WordCountRow {
-    pub word: String,
-    pub user_id: String,
-    pub channel_id: String,
-    pub message_ts: u64,
-    pub count: u64,
-    pub inserted_at: u64,
-}
-
 pub fn now_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
-}
-
-/// Builds word_counts for every existing slack_messages row once, so the Top
-/// Words board is all-time on first deploy. New inserts keep it in sync
-/// from then on. Completion is recorded in `backfill_meta`, so the full-table
-/// scan runs exactly once and never again on later restarts; a non-empty
-/// `word_counts` counts as done too.
-pub async fn backfill_word_counts(pool: &PgPool) -> Result<(), Box<dyn std::error::Error>> {
-    if word_counts_backfilled(pool).await {
-        return Ok(());
-    }
-    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM word_counts")
-        .fetch_one(pool)
-        .await
-        .unwrap_or(0);
-    if count > 0 {
-        mark_word_counts_backfilled(pool).await?;
-        return Ok(());
-    }
-    tracing::info!("Backfilling word_counts from slack_messages...");
-    sqlx::query(
-        "INSERT INTO word_counts (word, user_id, channel_id, message_ts, count, inserted_at)
-         SELECT word, user_id, channel_id, message_ts, count(*), $1::bigint
-          FROM (
-              SELECT u.user_id, c.channel_id, m.message_ts,
-                     (regexp_matches(lower(content.text), '[a-z]+', 'g'))[1] AS word
-              FROM slack_messages m
-              JOIN slack_identities i ON i.internal_id = m.identity_id
-              JOIN users u ON u.ship_talkers_id = i.ship_talkers_id
-              JOIN slack_channels c ON c.internal_id = m.channel_id
-              JOIN slack_message_contents content
-                ON content.channel_id = m.channel_id AND content.message_ts = m.message_ts
-         ) t
-         WHERE length(word) > 1
-         GROUP BY word, user_id, channel_id, message_ts",
-    )
-    .bind(now_secs() as i64)
-    .execute(pool)
-    .await?;
-    mark_word_counts_backfilled(pool).await?;
-    tracing::info!("word_counts backfill complete");
-    Ok(())
-}
-
-/// Whether the word_counts one-time backfill has already completed, read from
-/// `backfill_meta`. A transient DB failure falls back to false, which only
-/// re-attempts the backfill.
-async fn word_counts_backfilled(pool: &PgPool) -> bool {
-    sqlx::query_scalar::<_, i16>("SELECT done FROM backfill_meta WHERE name = 'word_counts'")
-        .fetch_optional(pool)
-        .await
-        .ok()
-        .flatten()
-        .map(|done| done == 1)
-        .unwrap_or(false)
-}
-
-/// Records that the word_counts backfill is complete.
-async fn mark_word_counts_backfilled(pool: &PgPool) -> Result<(), Box<dyn std::error::Error>> {
-    sqlx::query(
-        "INSERT INTO backfill_meta (name, done) VALUES ('word_counts', 1)
-         ON CONFLICT (name) DO UPDATE SET done = EXCLUDED.done",
-    )
-    .execute(pool)
-    .await?;
-    Ok(())
 }
 
 pub async fn insert_messages(
@@ -370,7 +147,6 @@ pub async fn insert_messages(
     if messages.is_empty() {
         return Ok(0);
     }
-    refresh_consent_cache(pool).await?;
     let count = messages.len() as u64;
     for chunk in messages.chunks(INSERT_CHUNK) {
         let mut sql = String::from(
@@ -381,40 +157,17 @@ pub async fn insert_messages(
             " ON CONFLICT (channel_id, message_ts) DO UPDATE SET identity_id = EXCLUDED.identity_id, char_count = EXCLUDED.char_count, thread_ts = EXCLUDED.thread_ts",
         );
         let mut q = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()));
-        let mut contents = Vec::new();
         for msg in chunk {
             let identity_id = locator_id(pool, &msg.user_id, false).await?;
             let channel_id = locator_id(pool, &msg.channel_id, true).await?;
-            let consented = CONSENT_CACHE
-                .get_or_init(Default::default)
-                .lock()
-                .map_err(|_| "consent cache poisoned")?
-                .contains(&identity_id);
             q = q
                 .bind(identity_id)
                 .bind(channel_id)
                 .bind(msg.message_ts as i64)
                 .bind(msg.char_count)
                 .bind(msg.thread_ts.map(|ts| ts as i64));
-            if stores_content(consented) {
-                contents.push((channel_id, msg.message_ts as i64, msg.text.as_str()));
-            }
         }
         q.execute(pool).await?;
-        for content_chunk in contents.chunks(INSERT_CHUNK) {
-            let mut content_sql = String::from(
-                "INSERT INTO slack_message_contents (channel_id, message_ts, text) VALUES ",
-            );
-            content_sql.push_str(&placeholders(content_chunk.len(), 3));
-            content_sql.push_str(
-                " ON CONFLICT (channel_id, message_ts) DO UPDATE SET text = EXCLUDED.text",
-            );
-            let mut content_query = sqlx::query(sqlx::AssertSqlSafe(content_sql.as_str()));
-            for (channel_id, message_ts, text) in content_chunk {
-                content_query = content_query.bind(channel_id).bind(message_ts).bind(text);
-            }
-            content_query.execute(pool).await?;
-        }
     }
     Ok(count)
 }
@@ -465,56 +218,6 @@ pub async fn insert_reactions(
     }
     tx.commit().await?;
     Ok(rows.len() as u64)
-}
-
-pub async fn insert_word_counts(
-    pool: &PgPool,
-    rows: &[WordCountRow],
-) -> Result<u64, Box<dyn std::error::Error>> {
-    if rows.is_empty() {
-        return Ok(0);
-    }
-    let now = now_secs();
-    let count = rows.len() as u64;
-    for chunk in rows.chunks(INSERT_CHUNK) {
-        let mut sql = String::from(
-            "INSERT INTO word_counts (word, user_id, channel_id, message_ts, count, inserted_at)
-             SELECT v.word, v.user_id, v.channel_id, v.message_ts, v.count, v.inserted_at
-             FROM (VALUES ",
-        );
-        sql.push_str(&placeholders(chunk.len(), 6));
-        sql.push_str(
-            ") AS v(word, user_id, channel_id, message_ts, count, inserted_at)
-             WHERE EXISTS (
-                 SELECT 1 FROM users u
-                  JOIN slack_identities i ON i.ship_talkers_id = u.ship_talkers_id
-                 JOIN slack_consents consent ON consent.identity_id = i.internal_id
-                 WHERE u.user_id = v.user_id AND consent.revoked_at IS NULL
-             )",
-        );
-        sql.push_str(
-            " ON CONFLICT (word, channel_id, message_ts) DO UPDATE SET count = EXCLUDED.count, user_id = EXCLUDED.user_id, inserted_at = EXCLUDED.inserted_at \
-             WHERE word_counts.count IS DISTINCT FROM EXCLUDED.count",
-        );
-        let mut q = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()));
-        for row in chunk {
-            q = q
-                .bind(&row.word)
-                .bind(&row.user_id)
-                .bind(&row.channel_id)
-                .bind(row.message_ts as i64)
-                .bind(row.count as i64)
-                .bind(
-                    (if row.inserted_at == 0 {
-                        now
-                    } else {
-                        row.inserted_at
-                    }) as i64,
-                );
-        }
-        q.execute(pool).await?;
-    }
-    Ok(count)
 }
 
 pub async fn get_known_channel_ids(
@@ -941,15 +644,4 @@ pub async fn clear_sweep_resume(pool: &PgPool) -> Result<(), Box<dyn std::error:
     .execute(pool)
     .await?;
     Ok(())
-}
-
-#[cfg(test)]
-mod consent_tests {
-    use super::stores_content;
-
-    #[test]
-    fn content_requires_consent() {
-        assert!(!stores_content(false));
-        assert!(stores_content(true));
-    }
 }

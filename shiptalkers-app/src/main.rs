@@ -40,26 +40,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .as_ref()
         .map(|p| std::sync::Arc::new(db::postgres_db::AuthDb::new(p.clone())));
 
-    if let Some(auth_db) = &auth_db {
-        auth_db
-            .load_consents()
-            .await
-            .map_err(|e| format!("failed to load Slack consents: {e}"))?;
-    }
-
     if let Some(pool) = &pool {
-        {
-            let pool_for_words = pool.clone();
-            tokio::spawn(async move {
-                loop {
-                    if let Err(e) = db::refresh::refresh_word_totals(&pool_for_words).await {
-                        tracing::warn!("Failed to refresh word totals: {}", e);
-                    }
-                    tokio::time::sleep(std::time::Duration::from_secs(30 * 60)).await;
-                }
-            });
-        }
-
         {
             let pool_for_stats = pool.clone();
             tokio::spawn(async move {

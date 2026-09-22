@@ -614,7 +614,6 @@ pub struct BoardParams {
 enum BoardKind {
     Users,
     Channels,
-    Words,
 }
 
 pub async fn get_boards(
@@ -693,19 +692,10 @@ pub async fn get_boards(
             ),
             BoardKind::Users,
         ),
-        "words" => (
-            "SELECT word AS id, cnt::bigint AS value, CAST(NULL AS BIGINT) AS extra, rank \
-             FROM ( \
-                 SELECT word, cnt, row_number() OVER (ORDER BY cnt DESC) AS rank \
-                 FROM word_totals \
-             )"
-            .to_string(),
-            BoardKind::Words,
-        ),
         _ => {
             return error_response(
                 StatusCode::NOT_FOUND,
-                "unknown category; use talkers, coders, channels, combined, or words",
+                "unknown category; use talkers, coders, channels, or combined",
             );
         }
     };
@@ -737,13 +727,6 @@ pub async fn get_boards(
                              WHERE lower(c.name) LIKE '%{eq}%' \
                              ORDER BY (lower(c.name) = '{eq}') DESC, lb.rank, lower(c.name) \
                              LIMIT 1"
-                        )
-                    }
-                    BoardKind::Words => {
-                        let eq = super::sql_escape(&qq.to_lowercase());
-                        format!(
-                            "SELECT id FROM ({inner}) WHERE id = '{eq}' OR id LIKE '{eq}%' \
-                             ORDER BY (id = '{eq}') DESC LIMIT 1"
                         )
                     }
                 };
@@ -828,7 +811,6 @@ async fn fetch_merged_names(
                 names.insert(id, name);
             }
         }
-        BoardKind::Words => {}
     }
     names
 }

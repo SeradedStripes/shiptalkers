@@ -498,51 +498,10 @@ async fn handle_message(
         return;
     };
 
-    if is_consent_command(&text, "opt in") {
-        if postgres_db::slack_user_has_consent(pool, &sender)
-            .await
-            .unwrap_or(false)
-        {
-            return;
-        }
-        match postgres_db::grant_slack_consent(pool, &sender).await {
-            Ok(()) => {
-                let reply = "You are opted in. Your user has been marked for scraping, and we will gradually backfill your messages.";
-                if let Err(e) = post_reply(client, &bot_token, &msg.channel, &msg.ts, reply).await {
-                    tracing::error!("Stats bot: failed to post opt-in reply: {}", e);
-                }
-            }
-            Err(e) => tracing::error!("Stats bot: failed to record opt-in: {}", e),
-        }
-        return;
-    }
-
-    if is_consent_command(&text, "opt out") {
-        match postgres_db::revoke_slack_consent(pool, &sender).await {
-            Ok(()) => {
-                let reply = "You are now Opted Out.";
-                if let Err(e) = post_reply(client, &bot_token, &msg.channel, &msg.ts, reply).await {
-                    tracing::error!("Stats bot: failed to post opt-out reply: {}", e);
-                }
-            }
-            Err(e) => tracing::error!("Stats bot: failed to record opt-out: {}", e),
-        }
-        return;
-    }
-
     let Some(range) = time_range::parse_time_range_at(&text, now_unix()) else {
         return;
     };
     let user = extract_mentioned_user(&text).unwrap_or_else(|| sender.clone());
-    if !postgres_db::slack_user_has_consent(pool, &user)
-        .await
-        .unwrap_or(false)
-    {
-        let reply = "We recommend opting in for more accurate stats. Type \"Opt In\" in the channel root to opt in.";
-        if let Err(e) = post_reply(client, &bot_token, &msg.channel, &msg.ts, reply).await {
-            tracing::error!("Stats bot: failed to post opt-in recommendation: {}", e);
-        }
-    }
     tracing::info!(
         "Stats bot: stats request for {} (from {}) in {} ({:?})",
         user,
@@ -619,13 +578,6 @@ async fn handle_message(
     {
         tracing::error!("Stats bot: failed to upload stats image: {}", e);
     }
-}
-
-fn is_consent_command(text: &str, command: &str) -> bool {
-    text.split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .eq_ignore_ascii_case(command)
 }
 
 async fn query_stats(
@@ -949,48 +901,5 @@ fn fmt_span(secs: u64) -> String {
         format!("{}m", mins)
     } else {
         format!("{}s", secs)
-    }
-}
-
-async fn post_reply(
-    client: &Client,
-    bot_token: &str,
-    channel: &str,
-    thread_ts: &str,
-    text: &str,
-) -> Result<(), String> {
-    let response = client
-        .post("https://slack.com/api/chat.postMessage")
-        .header("Authorization", format!("Bearer {}", bot_token))
-        .json(&serde_json::json!({
-            "channel": channel,
-            "text": text,
-            "thread_ts": thread_ts,
-        }))
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
-    let status = response.status();
-    let body = response.text().await.unwrap_or_default();
-    let parsed: PostMessageResponse = serde_json::from_str(&body)
-        .map_err(|e| format!("chat.postMessage returned bad JSON ({status}, {body:?}): {e}"))?;
-    if !parsed.ok {
-        return Err(format!(
-            "Slack API error: {} ({})",
-            parsed.error.unwrap_or_default(),
-            status
-        ));
-    }
-    Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::is_consent_command;
-
-    #[test]
-    fn recognizes_opt_out_command() {
-        assert!(is_consent_command("  OPT   OUT ", "opt out"));
-        assert!(!is_consent_command("opt out please", "opt out"));
     }
 }
