@@ -25,14 +25,18 @@
         <div class="card">
             <h2>Slack message consent</h2>
             {% if signed_in %}
-            <p class="status">Opt in to content storage for future messages, or revoke consent and remove stored content.</p>
+            {% if consented %}
+            <p class="status connected">Opted in: future messages may be stored for scraping.</p>
+            {% else %}
+            <p class="status">Opted out: future messages will not be stored for scraping.</p>
+            {% endif %}
             <form action="/link/consent" method="post" style="display: inline;">
                 <input type="hidden" name="csrf" value="{{ csrf_token }}">
                 <button type="submit" class="btn">Opt in</button>
             </form>
             <form action="/link/consent/revoke" method="post" style="display: inline;">
                 <input type="hidden" name="csrf" value="{{ csrf_token }}">
-                <button type="submit" class="btn">Revoke</button>
+                <button type="submit" class="btn">Opt out</button>
             </form>
             {% else %}
             <p class="status">Sign in to manage message consent.</p>

@@ -498,12 +498,7 @@ async fn handle_message(
         return;
     };
 
-    if text
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .eq_ignore_ascii_case("opt in")
-    {
+    if is_consent_command(&text, "opt in") {
         if postgres_db::slack_user_has_consent(pool, &sender)
             .await
             .unwrap_or(false)
@@ -518,6 +513,19 @@ async fn handle_message(
                 }
             }
             Err(e) => tracing::error!("Stats bot: failed to record opt-in: {}", e),
+        }
+        return;
+    }
+
+    if is_consent_command(&text, "opt out") {
+        match postgres_db::revoke_slack_consent(pool, &sender).await {
+            Ok(()) => {
+                let reply = "You are now Opted Out.";
+                if let Err(e) = post_reply(client, &bot_token, &msg.channel, &msg.ts, reply).await {
+                    tracing::error!("Stats bot: failed to post opt-out reply: {}", e);
+                }
+            }
+            Err(e) => tracing::error!("Stats bot: failed to record opt-out: {}", e),
         }
         return;
     }
@@ -611,6 +619,13 @@ async fn handle_message(
     {
         tracing::error!("Stats bot: failed to upload stats image: {}", e);
     }
+}
+
+fn is_consent_command(text: &str, command: &str) -> bool {
+    text.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .eq_ignore_ascii_case(command)
 }
 
 async fn query_stats(
@@ -967,4 +982,15 @@ async fn post_reply(
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_consent_command;
+
+    #[test]
+    fn recognizes_opt_out_command() {
+        assert!(is_consent_command("  OPT   OUT ", "opt out"));
+        assert!(!is_consent_command("opt out please", "opt out"));
+    }
 }

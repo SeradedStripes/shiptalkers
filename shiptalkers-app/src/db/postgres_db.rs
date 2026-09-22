@@ -50,6 +50,23 @@ pub async fn slack_user_has_consent(pool: &PgPool, slack_id: &str) -> Result<boo
     .map_err(|e| e.to_string())
 }
 
+pub async fn revoke_slack_consent(pool: &PgPool, slack_id: &str) -> Result<(), String> {
+    let ship_talkers_id = ship_talkers_lib::base36::encode(slack_id.as_bytes());
+    sqlx::query(
+        "UPDATE slack_consents c
+         SET revoked_at = NOW()
+         FROM slack_identities i
+         WHERE c.identity_id = i.internal_id
+           AND i.ship_talkers_id = $1
+           AND c.revoked_at IS NULL",
+    )
+    .bind(ship_talkers_id)
+    .execute(pool)
+    .await
+    .map(|_| ())
+    .map_err(|e| e.to_string())
+}
+
 pub async fn insert_new_channels(
     pool: &PgPool,
     channels: &[SlackChannelRow],
@@ -127,38 +144,10 @@ impl AuthDb {
 
     pub async fn revoke_consent(&self, slack_id: &str) -> Result<(), String> {
         let identity_id = self.identity_id(slack_id).await?;
-        let Some(identity_id) = identity_id else {
-            return Ok(());
-        };
-        let mut tx = self.pool.begin().await.map_err(|e| e.to_string())?;
-        sqlx::query("UPDATE slack_consents SET revoked_at = NOW() WHERE identity_id = $1 AND revoked_at IS NULL")
-            .bind(identity_id).execute(&mut *tx).await.map_err(|e| e.to_string())?;
-        sqlx::query(
-            "DELETE FROM slack_message_contents c USING slack_messages m
-             WHERE c.channel_id = m.channel_id AND c.message_ts = m.message_ts AND m.identity_id = $1",
-        )
-        .bind(identity_id)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| e.to_string())?;
-        sqlx::query(
-            "DELETE FROM word_counts w USING users u, slack_identities i
-             WHERE w.user_id = u.user_id AND u.ship_talkers_id = i.ship_talkers_id AND i.internal_id = $1",
-        )
-        .bind(identity_id)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| e.to_string())?;
-        sqlx::query("DELETE FROM word_totals")
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| e.to_string())?;
-        sqlx::query("UPDATE word_refresh_meta SET watermark = 0 WHERE id = 1")
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| e.to_string())?;
-        tx.commit().await.map_err(|e| e.to_string())?;
-        self.consented.write().await.remove(&identity_id);
+        revoke_slack_consent(&self.pool, slack_id).await?;
+        if let Some(identity_id) = identity_id {
+            self.consented.write().await.remove(&identity_id);
+        }
         Ok(())
     }
 

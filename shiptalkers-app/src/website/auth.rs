@@ -111,6 +111,12 @@ async fn link_html(
             .unwrap_or(false),
         _ => false,
     };
+    let consented = match (&session, state.pool.as_ref()) {
+        (Some(s), Some(pool)) => crate::db::postgres_db::slack_user_has_consent(pool, &s.slack_id)
+            .await
+            .unwrap_or(false),
+        _ => false,
+    };
     let name = match (&session, state.pool()) {
         (Some(s), Ok(pool)) => {
             let merged_name: String = sqlx::query_scalar::<_, Option<String>>(
@@ -158,6 +164,7 @@ async fn link_html(
             .map(|s| s.slack_id.clone())
             .unwrap_or_default(),
         hackatime_connected,
+        consented,
         api_keys,
         grants,
         new_api_key: new_api_key.unwrap_or_default(),
@@ -330,6 +337,7 @@ struct LinkTemplate {
     name: String,
     slack_id: String,
     hackatime_connected: bool,
+    consented: bool,
     api_keys: Vec<ApiKeyView>,
     grants: Vec<ApiGrantView>,
     new_api_key: String,
