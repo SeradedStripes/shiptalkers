@@ -1414,16 +1414,22 @@ async fn scrape_one_channel(
     }
     let thread_parents: Vec<String> = all_thread_parents
         .into_iter()
-        .filter(|thread_ts| match stored_activity.get(thread_ts) {
-            Some((fully_scraped, reply_count, latest_reply_ts)) if *fully_scraped => {
-                match current_activity.get(thread_ts) {
-                    Some((current_count, current_latest)) => {
-                        *reply_count != *current_count || *latest_reply_ts != *current_latest
-                    }
-                    None => false,
-                }
+        .filter(|thread_ts| {
+            if matches!(current_activity.get(thread_ts), Some((reply_count, _)) if *reply_count == 0)
+            {
+                return false;
             }
-            _ => true,
+            match stored_activity.get(thread_ts) {
+                Some((fully_scraped, reply_count, latest_reply_ts)) if *fully_scraped => {
+                    match current_activity.get(thread_ts) {
+                        Some((current_count, current_latest)) => {
+                            *reply_count != *current_count || *latest_reply_ts != *current_latest
+                        }
+                        None => false,
+                    }
+                }
+                _ => true,
+            }
         })
         .collect();
 
