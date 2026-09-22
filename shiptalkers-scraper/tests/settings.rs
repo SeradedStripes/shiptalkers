@@ -14,8 +14,8 @@ fn env(values: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
 fn unset_keys_get_defaults() {
     let s = RuntimeSettings::from_env(env(&[]));
     assert_eq!(s.get("SLACK_REQUEST_DELAY_MS"), "1200");
-    assert_eq!(s.get("SLACK_MAX_INFLIGHT"), "4");
-    assert_eq!(s.get("SLACK_CHANNEL_CONCURRENCY"), "4");
+    assert_eq!(s.get("SLACK_MAX_INFLIGHT"), "8");
+    assert_eq!(s.get("SLACK_CHANNEL_CONCURRENCY"), "8");
     assert_eq!(s.get("SLACK_THREAD_RESCAN_HOURS"), "720");
     assert_eq!(s.get("SLACK_THREAD_RESCAN_INTERVAL_HOURS"), "24");
     assert_eq!(s.get("SLACK_USER_SYNC_DELAY_MS"), "3000");
