@@ -1416,6 +1416,7 @@ async fn scrape_one_channel(
         .into_iter()
         .filter(|thread_ts| {
             if matches!(current_activity.get(thread_ts), Some((reply_count, _)) if *reply_count == 0)
+                || matches!(stored_activity.get(thread_ts), Some((_, reply_count, _)) if *reply_count == 0)
             {
                 return false;
             }
