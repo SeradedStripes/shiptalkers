@@ -1124,6 +1124,23 @@ pub fn fmt_total_time(secs: u64) -> String {
     parts.join(" ")
 }
 
+pub fn channel_display_name(name: &str, is_private: i16, is_archived: i16) -> String {
+    let mut labels = Vec::new();
+    if is_private == 1 {
+        labels.push("[PRIVATE]");
+    }
+    if is_archived == 1 {
+        labels.push("[ARCHIVED]");
+    }
+    if labels.is_empty() {
+        name.to_string()
+    } else if name.is_empty() {
+        labels.join(" ")
+    } else {
+        format!("{} {}", labels.join(" "), name)
+    }
+}
+
 pub fn fmt_hour(hour: u8) -> String {
     let ampm = if hour < 12 { "AM" } else { "PM" };
     let mut hour = hour % 12;

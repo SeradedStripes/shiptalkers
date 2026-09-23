@@ -43,8 +43,8 @@ pub(super) async fn get_search(
     let channels = match (pool, query.trim().is_empty()) {
         (Some(pool), false) => {
             let pattern = format!("%{}%", query.trim());
-            super::sqlx::query_as::<_, (String, String, String)>(
-                "SELECT channel_id, name, COALESCE(ship_talkers_id, channel_id) FROM slack_channels
+            super::sqlx::query_as::<_, (String, String, String, i16, i16)>(
+                "SELECT channel_id, name, COALESCE(ship_talkers_id, channel_id), is_private, is_archived FROM slack_channels
                  WHERE name ILIKE $1
                  ORDER BY name
                  LIMIT 25",
@@ -54,8 +54,8 @@ pub(super) async fn get_search(
             .await
             .unwrap_or_default()
             .into_iter()
-            .map(|(channel_id, name, url_id)| SearchResult {
-                merged_name: name,
+            .map(|(channel_id, name, url_id, is_private, is_archived)| SearchResult {
+                merged_name: super::channel_display_name(&name, is_private, is_archived),
                 pfp: String::new(),
                 user_id: channel_id,
                 url_id,

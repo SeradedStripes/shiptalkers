@@ -278,15 +278,24 @@ async fn render_channel_stats(
     let ch = state.pool()?;
     let signed_in = super::signed_in(state, headers);
 
-    let channel_name: String = super::sqlx::query_scalar::<_, Option<String>>(
-        "SELECT name FROM slack_channels WHERE channel_id = $1",
+    let channel_meta: Option<(String, i16, i16)> = super::sqlx::query_as::<_, (String, i16, i16)>(
+        "SELECT name, is_private, is_archived FROM slack_channels WHERE channel_id = $1",
     )
     .bind(channel_id)
-    .fetch_one(ch)
+    .fetch_optional(ch)
     .await
     .ok()
-    .flatten()
-    .unwrap_or_default();
+    .flatten();
+
+    let (channel_name, _, _) = channel_meta
+        .map(|(name, is_private, is_archived)| {
+            (
+                super::channel_display_name(&name, is_private, is_archived),
+                is_private,
+                is_archived,
+            )
+        })
+        .unwrap_or_default();
 
     let total_messages: u64 =
         super::sqlx::query_scalar::<_, i64>("SELECT count(*) FROM slack_messages m JOIN slack_channels c ON c.internal_id = m.channel_id WHERE c.channel_id = $1")

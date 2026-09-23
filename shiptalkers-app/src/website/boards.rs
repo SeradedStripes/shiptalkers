@@ -331,7 +331,7 @@ async fn board_entries(
     let ids: Vec<String> = rows.iter().map(|r| r.id.clone()).collect();
     let names: HashMap<String, (String, String, String)> = match source {
         BoardSource::Users => super::sqlx::query_as::<_, (String, String, String, String)>("SELECT user_id, merged_name, pfp, COALESCE(ship_talkers_id, user_id) FROM users WHERE user_id = ANY($1)").bind(&ids).fetch_all(ch).await.unwrap_or_default().into_iter().map(|(id, name, pfp, url)| (id, (name, pfp, url))).collect(),
-        BoardSource::Channels => super::sqlx::query_as::<_, (String, String, String)>("SELECT channel_id, name, COALESCE(ship_talkers_id, channel_id) FROM slack_channels WHERE channel_id = ANY($1)").bind(&ids).fetch_all(ch).await.unwrap_or_default().into_iter().map(|(id, name, url)| (id, (name, String::new(), url))).collect(),
+        BoardSource::Channels => super::sqlx::query_as::<_, (String, String, String, i16, i16)>("SELECT channel_id, name, COALESCE(ship_talkers_id, channel_id), is_private, is_archived FROM slack_channels WHERE channel_id = ANY($1)").bind(&ids).fetch_all(ch).await.unwrap_or_default().into_iter().map(|(id, name, url, is_private, is_archived)| (id, (super::channel_display_name(&name, is_private, is_archived), String::new(), url))).collect(),
     };
     rows.into_iter()
         .map(|r| {

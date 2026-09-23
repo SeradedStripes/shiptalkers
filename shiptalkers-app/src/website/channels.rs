@@ -46,7 +46,7 @@ async fn render_channels_board(
     let page_count = ((total.max(0) as u64).saturating_add(DIRECTORY_PAGE_SIZE as u64 - 1)
         / DIRECTORY_PAGE_SIZE as u64)
         .max(1);
-    let mut records: Vec<(String, String, String)> = super::sqlx::query_as("SELECT channel_id, COALESCE(ship_talkers_id, channel_id), name FROM slack_channels ORDER BY COALESCE(ship_talkers_id, channel_id), channel_id LIMIT $1 OFFSET $2").bind(if search_mode { 6 } else { DIRECTORY_PAGE_SIZE + 1 }).bind(row_offset.min(i64::MAX as u64) as i64).fetch_all(ch).await.unwrap_or_default();
+    let mut records: Vec<(String, String, String, i16, i16)> = super::sqlx::query_as("SELECT channel_id, COALESCE(ship_talkers_id, channel_id), name, is_private, is_archived FROM slack_channels ORDER BY COALESCE(ship_talkers_id, channel_id), channel_id LIMIT $1 OFFSET $2").bind(if search_mode { 6 } else { DIRECTORY_PAGE_SIZE + 1 }).bind(row_offset.min(i64::MAX as u64) as i64).fetch_all(ch).await.unwrap_or_default();
     if !query.trim().is_empty() && target.is_none() {
         records.clear();
     }
@@ -59,22 +59,28 @@ async fn render_channels_board(
     let rows: Vec<BoardEntry> = records
         .into_iter()
         .enumerate()
-        .map(|(index, (channel_id, ship_talkers_id, name))| BoardEntry {
-            user_id: channel_id.clone(),
-            url_id: ship_talkers_id.clone(),
-            merged_name: if name.is_empty() {
-                ship_talkers_id.clone()
-            } else {
-                name
+        .map(
+            |(index, (channel_id, ship_talkers_id, name, is_private, is_archived))| BoardEntry {
+                user_id: channel_id.clone(),
+                url_id: ship_talkers_id.clone(),
+                merged_name: super::channel_display_name(
+                    if name.is_empty() {
+                        &ship_talkers_id
+                    } else {
+                        &name
+                    },
+                    is_private,
+                    is_archived,
+                ),
+                pfp: String::new(),
+                value: String::new(),
+                extra: String::new(),
+                linked: true,
+                rank: row_offset + index as u64 + 1,
+                label: ship_talkers_id,
+                highlight: target.as_ref().is_some_and(|(_, id)| id == &channel_id),
             },
-            pfp: String::new(),
-            value: String::new(),
-            extra: String::new(),
-            linked: true,
-            rank: row_offset + index as u64 + 1,
-            label: ship_talkers_id,
-            highlight: target.as_ref().is_some_and(|(_, id)| id == &channel_id),
-        })
+        )
         .collect();
     let template = BoardCategoryTemplate {
         title: "All Channels".into(),
