@@ -14,6 +14,27 @@ use std::time::{Duration, Instant};
 const SCORE_RECOMPUTE_INTERVAL: Duration = Duration::from_secs(60 * 60);
 static MESSAGE_SCRAPE_LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> =
     std::sync::OnceLock::new();
+static PRIVATE_CHANNEL_REFRESHES: std::sync::OnceLock<Mutex<HashMap<String, Instant>>> =
+    std::sync::OnceLock::new();
+const PRIVATE_CHANNEL_REFRESH_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
+
+fn private_channels_need_refresh(token: &str) -> bool {
+    let refreshes = PRIVATE_CHANNEL_REFRESHES.get_or_init(|| Mutex::new(HashMap::new()));
+    refreshes
+        .lock()
+        .unwrap()
+        .get(token)
+        .is_none_or(|last| last.elapsed() >= PRIVATE_CHANNEL_REFRESH_INTERVAL)
+}
+
+fn mark_private_channels_refreshed(tokens: &[String]) {
+    let refreshes = PRIVATE_CHANNEL_REFRESHES.get_or_init(|| Mutex::new(HashMap::new()));
+    let now = Instant::now();
+    let mut refreshes = refreshes.lock().unwrap();
+    for token in tokens {
+        refreshes.insert(token.clone(), now);
+    }
+}
 
 async fn recompute_stale_scores(pool: &sqlx::PgPool, force_full: bool, reason: &str) {
     let (channels, users) = tokio::join!(
@@ -251,16 +272,26 @@ pub async fn run_scraper(
         let request_delay = Duration::from_millis(settings.get_u64("SLACK_REQUEST_DELAY_MS"));
         let max_inflight = settings.get_u64("SLACK_MAX_INFLIGHT") as usize;
         let bot_tokens = settings.get_list("SLACK_BOT_TOKENS");
-        // lists accept any token, so fall back to user tokens for the archive sweep
         let list_pool = slack::SlackClientPool::new(bot_tokens, request_delay, max_inflight);
         let oauth_tokens = db::postgres_db::get_slack_oauth_tokens(&pool)
             .await
             .unwrap_or_default();
-        if !oauth_tokens.is_empty() {
-            let oauth_pool =
-                slack::SlackClientPool::new(oauth_tokens.clone(), request_delay, max_inflight);
+        let private_refresh_tokens: Vec<String> = oauth_tokens
+            .iter()
+            .filter(|token| private_channels_need_refresh(token))
+            .cloned()
+            .collect();
+        if !private_refresh_tokens.is_empty() {
+            let oauth_pool = slack::SlackClientPool::new(
+                private_refresh_tokens.clone(),
+                request_delay,
+                max_inflight,
+            );
             match oauth_pool.fetch_accessible_channels().await {
-                Ok(channels) => insert_page(pool.clone(), channels).await,
+                Ok(channels) => {
+                    insert_page(pool.clone(), channels).await;
+                    mark_private_channels_refreshed(&private_refresh_tokens);
+                }
                 Err(e) => tracing::warn!("Failed to fetch OAuth channel access: {}", e),
             }
         }

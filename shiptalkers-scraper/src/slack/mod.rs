@@ -640,7 +640,10 @@ impl SlackClientPool {
             let client = self.client_for_page(page_count);
 
             let mut params = vec![
-                ("types".to_string(), "public_channel".to_string()),
+                (
+                    "types".to_string(),
+                    "public_channel,private_channel".to_string(),
+                ),
                 ("limit".to_string(), "1000".to_string()),
             ];
             if let Some(ref c) = cursor {
@@ -704,16 +707,13 @@ impl SlackClientPool {
             let mut cursor: Option<String> = None;
             loop {
                 let mut params = vec![
-                    (
-                        "types".to_string(),
-                        "public_channel,private_channel".to_string(),
-                    ),
+                    ("types".to_string(), "private_channel".to_string()),
                     ("limit".to_string(), "1000".to_string()),
                 ];
                 if let Some(cursor) = &cursor {
                     params.push(("cursor".to_string(), cursor.clone()));
                 }
-                let response = client.get("conversations.list", &params).await?;
+                let response = client.get("users.conversations", &params).await?;
                 if let Some(items) = response.get("channels").and_then(|v| v.as_array()) {
                     for channel in items {
                         let Some(id) = channel.get("id").and_then(|v| v.as_str()) else {
