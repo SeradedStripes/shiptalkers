@@ -4,6 +4,7 @@ use std::sync::{Arc, RwLock};
 pub const SETTING_KEYS: &[&str] = &[
     "DATABASE_URL",
     "HEALTH_PORT",
+    "MAX_SCRAPING_PER_MIN",
     "SLACK_BOT_TOKENS",
     "SLACK_CHANNEL_CONCURRENCY",
     "SLACK_INCREMENTAL_BUDGET_SECS",
@@ -17,6 +18,7 @@ pub const SETTING_KEYS: &[&str] = &[
 fn default_value(key: &str) -> &str {
     match key {
         "HEALTH_PORT" => "3001",
+        "MAX_SCRAPING_PER_MIN" => "250",
         "SLACK_REQUEST_DELAY_MS" => "1200",
         "SLACK_MAX_INFLIGHT" => "8",
         "SLACK_CHANNEL_CONCURRENCY" => "8",

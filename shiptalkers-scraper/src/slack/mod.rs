@@ -178,6 +178,7 @@ struct SharedLimiters {
 }
 
 static SHARED_LIMITERS: OnceLock<Mutex<HashMap<String, Arc<SharedLimiters>>>> = OnceLock::new();
+static MESSAGE_SCRAPING_LIMITER: OnceLock<Arc<RateLimiter>> = OnceLock::new();
 
 fn shared_limiters_for(token: &str) -> Arc<SharedLimiters> {
     let registry = SHARED_LIMITERS.get_or_init(|| Mutex::new(HashMap::new()));
@@ -192,6 +193,19 @@ fn shared_limiters_for(token: &str) -> Arc<SharedLimiters> {
         .clone()
 }
 
+fn message_scraping_limiter() -> Arc<RateLimiter> {
+    MESSAGE_SCRAPING_LIMITER
+        .get_or_init(|| {
+            let requests_per_minute = std::env::var("MAX_SCRAPING_PER_MIN")
+                .ok()
+                .and_then(|value| value.parse::<f64>().ok())
+                .filter(|value| *value > 0.0)
+                .unwrap_or(250.0);
+            Arc::new(RateLimiter::new(requests_per_minute / 60.0, 1.0))
+        })
+        .clone()
+}
+
 #[derive(Clone)]
 pub struct SlackClient {
     client: Client,
@@ -200,6 +214,7 @@ pub struct SlackClient {
     delay_between_requests: Duration,
     max_inflight: usize,
     limiters: Arc<SharedLimiters>,
+    message_scraping_limiter: Arc<RateLimiter>,
 }
 
 impl SlackClient {
@@ -215,6 +230,7 @@ impl SlackClient {
             delay_between_requests,
             max_inflight,
             limiters,
+            message_scraping_limiter: message_scraping_limiter(),
         }
     }
 
@@ -237,6 +253,9 @@ impl SlackClient {
 
         loop {
             limiter.acquire().await;
+            if matches!(method, "conversations.history" | "conversations.replies") {
+                self.message_scraping_limiter.acquire().await;
+            }
 
             let response = self
                 .client
