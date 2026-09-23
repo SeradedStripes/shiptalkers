@@ -6,6 +6,7 @@ pub const INSERT_CHUNK: usize = 5_000;
 pub struct SlackChannelRow {
     pub channel_id: String,
     pub name: String,
+    pub is_private: u8,
     pub is_archived: u8,
     pub num_members: u64,
     pub created_at: u64,
@@ -100,11 +101,11 @@ pub async fn insert_new_channels_rows(
     let count = channels.len() as u64;
     for chunk in channels.chunks(INSERT_CHUNK) {
         let mut sql = String::from(
-            "INSERT INTO slack_channels (ship_talkers_id, channel_id, name, is_archived, num_members, created_at) VALUES ",
+            "INSERT INTO slack_channels (ship_talkers_id, channel_id, name, is_private, is_archived, num_members, created_at) VALUES ",
         );
-        sql.push_str(&placeholders(chunk.len(), 6));
+        sql.push_str(&placeholders(chunk.len(), 7));
         sql.push_str(
-            " ON CONFLICT (channel_id) DO UPDATE SET name = EXCLUDED.name, is_archived = EXCLUDED.is_archived, num_members = EXCLUDED.num_members, created_at = GREATEST(slack_channels.created_at, EXCLUDED.created_at)",
+            " ON CONFLICT (channel_id) DO UPDATE SET name = EXCLUDED.name, is_private = EXCLUDED.is_private, is_archived = EXCLUDED.is_archived, num_members = EXCLUDED.num_members, created_at = GREATEST(slack_channels.created_at, EXCLUDED.created_at)",
         );
         let mut q = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()));
         for ch in chunk {
@@ -112,6 +113,7 @@ pub async fn insert_new_channels_rows(
                 .bind(crate::base36::encode(ch.channel_id.as_bytes()))
                 .bind(&ch.channel_id)
                 .bind(&ch.name)
+                .bind(ch.is_private as i16)
                 .bind(ch.is_archived as i16)
                 .bind(ch.num_members as i64)
                 .bind(ch.created_at as i64);

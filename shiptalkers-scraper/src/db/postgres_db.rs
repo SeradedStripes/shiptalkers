@@ -8,13 +8,66 @@ pub use ship_talkers_lib::db::{
     placeholders, upsert_users,
 };
 
-pub async fn get_slack_oauth_tokens(pool: &PgPool) -> Result<Vec<String>, sqlx::Error> {
-    sqlx::query_scalar(
-        "SELECT access_token FROM slack_oauth_tokens
+#[derive(Clone)]
+pub struct SlackOAuthToken {
+    pub slack_id: String,
+    pub access_token: String,
+}
+
+pub async fn get_slack_oauth_tokens(pool: &PgPool) -> Result<Vec<SlackOAuthToken>, sqlx::Error> {
+    sqlx::query_as::<_, (String, String)>(
+        "SELECT slack_id, access_token FROM slack_oauth_tokens
          WHERE disabled_at IS NULL ORDER BY slack_id",
     )
     .fetch_all(pool)
     .await
+    .map(|rows| {
+        rows.into_iter()
+            .map(|(slack_id, access_token)| SlackOAuthToken {
+                slack_id,
+                access_token,
+            })
+            .collect()
+    })
+}
+
+pub async fn replace_private_channel_access(
+    pool: &PgPool,
+    slack_id: &str,
+    channel_ids: &[String],
+) -> Result<(), sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("DELETE FROM slack_oauth_channel_access WHERE slack_id = $1")
+        .bind(slack_id)
+        .execute(&mut *tx)
+        .await?;
+    for channel_id in channel_ids {
+        sqlx::query(
+            "INSERT INTO slack_oauth_channel_access (slack_id, channel_id)
+             VALUES ($1, $2) ON CONFLICT (slack_id, channel_id) DO UPDATE SET refreshed_at = now()",
+        )
+        .bind(slack_id)
+        .bind(channel_id)
+        .execute(&mut *tx)
+        .await?;
+    }
+    tx.commit().await
+}
+
+pub async fn get_private_channel_access(
+    pool: &PgPool,
+) -> Result<Vec<(String, String)>, sqlx::Error> {
+    sqlx::query_as(
+        "SELECT slack_id, channel_id FROM slack_oauth_channel_access ORDER BY channel_id, slack_id",
+    )
+    .fetch_all(pool)
+    .await
+}
+
+pub async fn get_private_channel_ids(pool: &PgPool) -> Result<Vec<String>, sqlx::Error> {
+    sqlx::query_scalar("SELECT channel_id FROM slack_channels WHERE is_private = 1")
+        .fetch_all(pool)
+        .await
 }
 
 /// Reconciles the maintained `message_count` with the real row count.

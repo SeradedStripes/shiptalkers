@@ -40,6 +40,7 @@ pub struct SlackMessage {
 pub struct SlackChannel {
     pub id: String,
     pub name: String,
+    pub is_private: bool,
     pub is_archived: bool,
     pub num_members: u64,
     pub created_at: u64,
@@ -659,6 +660,10 @@ impl SlackClientPool {
                         page_channels.push(SlackChannel {
                             id: id.as_str().unwrap_or_default().to_string(),
                             name: name.as_str().unwrap_or_default().to_string(),
+                            is_private: ch
+                                .get("is_private")
+                                .and_then(|v| v.as_bool())
+                                .unwrap_or(false),
                             is_archived: ch
                                 .get("is_archived")
                                 .and_then(|v| v.as_bool())
@@ -699,11 +704,12 @@ impl SlackClientPool {
         Ok(total)
     }
 
-    pub async fn fetch_accessible_channels(
+    pub async fn fetch_private_channels_by_token(
         &self,
-    ) -> Result<Vec<SlackChannel>, Box<dyn std::error::Error + Send + Sync>> {
-        let mut channels = Vec::new();
+    ) -> Result<Vec<Vec<SlackChannel>>, Box<dyn std::error::Error + Send + Sync>> {
+        let mut channels_by_token = Vec::new();
         for client in &self.clients {
+            let mut channels = Vec::new();
             let mut cursor: Option<String> = None;
             loop {
                 let mut params = vec![
@@ -725,6 +731,10 @@ impl SlackClientPool {
                         channels.push(SlackChannel {
                             id: id.to_string(),
                             name: name.to_string(),
+                            is_private: channel
+                                .get("is_private")
+                                .and_then(|v| v.as_bool())
+                                .unwrap_or(true),
                             is_archived: channel
                                 .get("is_archived")
                                 .and_then(|v| v.as_bool())
@@ -750,10 +760,11 @@ impl SlackClientPool {
                     break;
                 }
             }
+            channels.sort_by(|a, b| a.id.cmp(&b.id));
+            channels.dedup_by(|a, b| a.id == b.id);
+            channels_by_token.push(channels);
         }
-        channels.sort_by(|a, b| a.id.cmp(&b.id));
-        channels.dedup_by(|a, b| a.id == b.id);
-        Ok(channels)
+        Ok(channels_by_token)
     }
 
     pub async fn fetch_users<F>(

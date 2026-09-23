@@ -73,6 +73,7 @@ pub fn insert_page(
             .map(|ch| db::postgres_db::SlackChannelRow {
                 channel_id: ch.id.clone(),
                 name: ch.name.clone(),
+                is_private: u8::from(ch.is_private),
                 is_archived: u8::from(ch.is_archived),
                 num_members: ch.num_members,
                 created_at: ch.created_at,
@@ -276,21 +277,42 @@ pub async fn run_scraper(
         let oauth_tokens = db::postgres_db::get_slack_oauth_tokens(&pool)
             .await
             .unwrap_or_default();
-        let private_refresh_tokens: Vec<String> = oauth_tokens
+        let private_refresh_tokens: Vec<db::postgres_db::SlackOAuthToken> = oauth_tokens
             .iter()
-            .filter(|token| private_channels_need_refresh(token))
+            .filter(|token| private_channels_need_refresh(&token.slack_id))
             .cloned()
             .collect();
         if !private_refresh_tokens.is_empty() {
             let oauth_pool = slack::SlackClientPool::new(
-                private_refresh_tokens.clone(),
+                private_refresh_tokens
+                    .iter()
+                    .map(|token| token.access_token.clone())
+                    .collect(),
                 request_delay,
                 max_inflight,
             );
-            match oauth_pool.fetch_accessible_channels().await {
-                Ok(channels) => {
-                    insert_page(pool.clone(), channels).await;
-                    mark_private_channels_refreshed(&private_refresh_tokens);
+            match oauth_pool.fetch_private_channels_by_token().await {
+                Ok(channels_by_token) => {
+                    let mut refreshed = Vec::new();
+                    for (token, channels) in private_refresh_tokens.iter().zip(channels_by_token) {
+                        let channel_ids = channels
+                            .iter()
+                            .map(|channel| channel.id.clone())
+                            .collect::<Vec<_>>();
+                        if let Err(e) = db::postgres_db::replace_private_channel_access(
+                            &pool,
+                            &token.slack_id,
+                            &channel_ids,
+                        )
+                        .await
+                        {
+                            tracing::warn!("Failed to save private channel access: {}", e);
+                            continue;
+                        }
+                        insert_page(pool.clone(), channels).await;
+                        refreshed.push(token.slack_id.clone());
+                    }
+                    mark_private_channels_refreshed(&refreshed);
                 }
                 Err(e) => tracing::warn!("Failed to fetch OAuth channel access: {}", e),
             }
@@ -340,7 +362,7 @@ pub async fn scrape_incremental_messages(
 async fn scrape_all_messages(
     settings: &settings::RuntimeSettings,
     pool: &sqlx::PgPool,
-    user_tokens: Vec<String>,
+    user_tokens: Vec<db::postgres_db::SlackOAuthToken>,
 ) {
     scrape_messages(settings, pool, false, user_tokens).await;
 }
@@ -349,7 +371,7 @@ async fn scrape_messages(
     settings: &settings::RuntimeSettings,
     pool: &sqlx::PgPool,
     incremental_only: bool,
-    user_tokens: Vec<String>,
+    user_tokens: Vec<db::postgres_db::SlackOAuthToken>,
 ) {
     let _guard = MESSAGE_SCRAPE_LOCK
         .get_or_init(|| tokio::sync::Mutex::new(()))
@@ -362,6 +384,12 @@ async fn scrape_messages(
             return;
         }
     };
+    let private_access = db::postgres_db::get_private_channel_access(pool)
+        .await
+        .unwrap_or_default();
+    let private_channel_ids = db::postgres_db::get_private_channel_ids(pool)
+        .await
+        .unwrap_or_default();
 
     if let Err(e) = db::postgres_db::backfill_scraped_channels(pool).await {
         tracing::warn!("Failed to backfill scraped channels: {}", e);
@@ -438,6 +466,12 @@ async fn scrape_messages(
             pool,
             &check_channels,
             &user_tokens,
+            &channel_assignments(
+                &check_channels,
+                &user_tokens,
+                &private_access,
+                &private_channel_ids,
+            ),
             touched_users.clone(),
             touched_channels.clone(),
             start,
@@ -462,6 +496,12 @@ async fn scrape_messages(
             pool,
             &new_channels,
             &user_tokens,
+            &channel_assignments(
+                &new_channels,
+                &user_tokens,
+                &private_access,
+                &private_channel_ids,
+            ),
             touched_users.clone(),
             touched_channels.clone(),
             0,
@@ -474,12 +514,46 @@ async fn scrape_messages(
     tracing::info!("Message scrape pass complete");
 }
 
+fn channel_assignments(
+    channels: &[String],
+    tokens: &[db::postgres_db::SlackOAuthToken],
+    private_access: &[(String, String)],
+    private_channel_ids: &[String],
+) -> Vec<Vec<usize>> {
+    let private_ids: std::collections::HashSet<&String> = private_channel_ids.iter().collect();
+    let mut access: HashMap<&str, Vec<usize>> = HashMap::new();
+    for (token_id, channel_id) in private_access {
+        if let Some(index) = tokens.iter().position(|token| token.slack_id == *token_id) {
+            access.entry(channel_id.as_str()).or_default().push(index);
+        }
+    }
+
+    let mut assignments = vec![Vec::new(); tokens.len()];
+    for (channel_index, channel_id) in channels.iter().enumerate() {
+        let eligible = if private_ids.contains(channel_id) {
+            access.get(channel_id.as_str()).cloned().unwrap_or_default()
+        } else {
+            (0..tokens.len()).collect()
+        };
+        if let Some(token_index) = eligible
+            .into_iter()
+            .min_by_key(|index| assignments[*index].len())
+        {
+            assignments[token_index].push(channel_index);
+        } else {
+            tracing::warn!("No OAuth token can access private channel {}", channel_id);
+        }
+    }
+    assignments
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn scrape_channel_list(
     settings: &settings::RuntimeSettings,
     pool: &sqlx::PgPool,
     channels: &[String],
-    user_tokens: &[String],
+    user_tokens: &[db::postgres_db::SlackOAuthToken],
+    assignments: &[Vec<usize>],
     touched_users: Arc<Mutex<std::collections::HashSet<String>>>,
     touched_channels: Arc<Mutex<std::collections::HashSet<String>>>,
     resume_from: usize,
@@ -541,9 +615,9 @@ async fn scrape_channel_list(
     }
 
     let mut workers = Vec::new();
-    let next = Arc::new(AtomicUsize::new(resume_from));
     for (token_idx, token) in user_tokens.iter().enumerate() {
-        let client = slack::SlackClient::new(token.clone(), request_delay, max_inflight);
+        let client =
+            slack::SlackClient::new(token.access_token.clone(), request_delay, max_inflight);
 
         let (tx, rx) = tokio::sync::mpsc::channel::<usize>(512);
         let ctx = ShardCtx {
@@ -561,9 +635,18 @@ async fn scrape_channel_list(
             deadline,
             touched_users: touched_users.clone(),
             touched_channels: touched_channels.clone(),
+            assigned: Arc::new(
+                assignments
+                    .get(token_idx)
+                    .cloned()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|idx| *idx >= resume_from)
+                    .collect(),
+            ),
         };
         let pool = pool.clone();
-        let next = next.clone();
+        let next = Arc::new(AtomicUsize::new(0));
         let channels = Arc::new(channels.to_vec());
         workers.push(tokio::spawn(async move {
             scrape_shard(&client, &pool, channels, next, ctx, rx).await;
@@ -597,6 +680,7 @@ struct ShardCtx {
     tx: tokio::sync::mpsc::Sender<usize>,
     touched_users: Arc<Mutex<std::collections::HashSet<String>>>,
     touched_channels: Arc<Mutex<std::collections::HashSet<String>>>,
+    assigned: Arc<Vec<usize>>,
 }
 
 /// Tracks the position of the incremental channel sweep across passes so the
@@ -674,7 +758,7 @@ async fn scrape_shard(
     ctx: ShardCtx,
     rx: tokio::sync::mpsc::Receiver<usize>,
 ) {
-    if channels.is_empty() {
+    if ctx.assigned.is_empty() {
         tracing::info!("[token {}] No channels to scrape", ctx.token_idx);
         return;
     }
@@ -733,10 +817,11 @@ async fn scrape_shard(
                 {
                     break;
                 }
-                let idx = next.fetch_add(1, Ordering::Relaxed);
-                if idx >= channels.len() {
+                let position = next.fetch_add(1, Ordering::Relaxed);
+                if position >= ctx.assigned.len() {
                     break;
                 }
+                let idx = ctx.assigned[position];
                 let channel_id = channels[idx].clone();
                 scrape_one_channel(&client, &pool, channel_id, idx + 1, &ctx).await;
                 if let Some(sweep) = &ctx.sweep {
