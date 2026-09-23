@@ -12,7 +12,6 @@ pub const SETTING_KEYS: &[&str] = &[
     "SLACK_THREAD_RESCAN_HOURS",
     "SLACK_THREAD_RESCAN_INTERVAL_HOURS",
     "SLACK_USER_SYNC_DELAY_MS",
-    "SLACK_USER_TOKENS",
 ];
 
 fn default_value(key: &str) -> &str {
@@ -32,7 +31,7 @@ fn default_value(key: &str) -> &str {
 /// Keys that hold comma-separated lists. These also accept numbered variants
 /// (`SLACK_BOT_TOKENS_1`, `SLACK_BOT_TOKENS_2`, ...) so long tokens can be
 /// added as short separate lines instead of one giant line.
-const LIST_KEYS: &[&str] = &["SLACK_BOT_TOKENS", "SLACK_USER_TOKENS"];
+const LIST_KEYS: &[&str] = &["SLACK_BOT_TOKENS"];
 const MAX_LIST_VARIANTS: u32 = 64;
 
 /// Settings read from environment variables at startup, with defaults for keys

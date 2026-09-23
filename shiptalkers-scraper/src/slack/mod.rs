@@ -696,6 +696,66 @@ impl SlackClientPool {
         Ok(total)
     }
 
+    pub async fn fetch_accessible_channels(
+        &self,
+    ) -> Result<Vec<SlackChannel>, Box<dyn std::error::Error + Send + Sync>> {
+        let mut channels = Vec::new();
+        for client in &self.clients {
+            let mut cursor: Option<String> = None;
+            loop {
+                let mut params = vec![
+                    (
+                        "types".to_string(),
+                        "public_channel,private_channel".to_string(),
+                    ),
+                    ("limit".to_string(), "1000".to_string()),
+                ];
+                if let Some(cursor) = &cursor {
+                    params.push(("cursor".to_string(), cursor.clone()));
+                }
+                let response = client.get("conversations.list", &params).await?;
+                if let Some(items) = response.get("channels").and_then(|v| v.as_array()) {
+                    for channel in items {
+                        let Some(id) = channel.get("id").and_then(|v| v.as_str()) else {
+                            continue;
+                        };
+                        let Some(name) = channel.get("name").and_then(|v| v.as_str()) else {
+                            continue;
+                        };
+                        channels.push(SlackChannel {
+                            id: id.to_string(),
+                            name: name.to_string(),
+                            is_archived: channel
+                                .get("is_archived")
+                                .and_then(|v| v.as_bool())
+                                .unwrap_or(false),
+                            num_members: channel
+                                .get("num_members")
+                                .and_then(|v| v.as_u64())
+                                .unwrap_or(0),
+                            created_at: channel
+                                .get("created")
+                                .and_then(|v| v.as_u64())
+                                .unwrap_or(0),
+                        });
+                    }
+                }
+                cursor = response
+                    .get("response_metadata")
+                    .and_then(|m| m.get("next_cursor"))
+                    .and_then(|c| c.as_str())
+                    .filter(|c| !c.is_empty())
+                    .map(str::to_string);
+                if cursor.is_none() {
+                    break;
+                }
+            }
+        }
+        channels.sort_by(|a, b| a.id.cmp(&b.id));
+        channels.dedup_by(|a, b| a.id == b.id);
+        Ok(channels)
+    }
+
     pub async fn fetch_users<F>(
         &self,
         mut on_page: F,

@@ -11,6 +11,8 @@ const HCA_TOKEN_URL: &str = "https://auth.hackclub.com/oauth/token";
 const HCA_ME_URL: &str = "https://auth.hackclub.com/api/v1/me";
 const HACKATIME_AUTHORIZE_URL: &str = "https://hackatime.hackclub.com/oauth/authorize";
 const HACKATIME_TOKEN_URL: &str = "https://hackatime.hackclub.com/oauth/token";
+const SLACK_AUTHORIZE_URL: &str = "https://slack.com/oauth/v2/authorize";
+const SLACK_TOKEN_URL: &str = "https://slack.com/api/oauth.v2.access";
 
 #[derive(Clone)]
 pub struct AuthConfig {
@@ -18,6 +20,8 @@ pub struct AuthConfig {
     pub hca_client_secret: String,
     pub hackatime_client_id: String,
     pub hackatime_client_secret: String,
+    pub slack_client_id: String,
+    pub slack_client_secret: String,
     pub base_url: String,
     pub session_secret: String,
 }
@@ -31,6 +35,27 @@ pub struct Session {
 #[derive(Deserialize)]
 struct TokenResponse {
     access_token: String,
+}
+
+#[derive(Deserialize)]
+pub struct SlackTokenResponse {
+    pub ok: bool,
+    pub access_token: Option<String>,
+    pub scope: Option<String>,
+    pub team: Option<SlackTeam>,
+    pub authed_user: Option<SlackAuthedUser>,
+    pub error: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct SlackTeam {
+    pub id: String,
+}
+
+#[derive(Deserialize)]
+pub struct SlackAuthedUser {
+    pub id: String,
+    pub access_token: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -106,6 +131,43 @@ pub fn hackatime_authorize_url(config: &AuthConfig, state: &str) -> String {
         "{HACKATIME_AUTHORIZE_URL}?client_id={}&redirect_uri={}&response_type=code&scope=profile+read&state={}",
         config.hackatime_client_id, redirect, state
     )
+}
+
+pub fn slack_authorize_url(config: &AuthConfig, state: &str) -> String {
+    let redirect = format!("{}/auth/slack/callback", config.base_url);
+    format!(
+        "{SLACK_AUTHORIZE_URL}?client_id={}&redirect_uri={}&user_scope=channels:read,channels:history,groups:read,groups:history&state={}",
+        config.slack_client_id, redirect, state
+    )
+}
+
+pub async fn exchange_slack_code(
+    client: &reqwest::Client,
+    config: &AuthConfig,
+    code: &str,
+) -> Result<SlackTokenResponse, String> {
+    let redirect = format!("{}/auth/slack/callback", config.base_url);
+    let response = client
+        .post(SLACK_TOKEN_URL)
+        .form(&[
+            ("client_id", config.slack_client_id.as_str()),
+            ("client_secret", config.slack_client_secret.as_str()),
+            ("redirect_uri", redirect.as_str()),
+            ("code", code),
+        ])
+        .send()
+        .await
+        .map_err(|e| e.to_string())?
+        .json::<SlackTokenResponse>()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !response.ok {
+        return Err(response
+            .error
+            .clone()
+            .unwrap_or_else(|| "Slack OAuth failed".into()));
+    }
+    Ok(response)
 }
 
 pub async fn exchange_hca_code(

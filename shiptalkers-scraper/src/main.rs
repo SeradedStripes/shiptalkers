@@ -40,9 +40,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     let has_bot_tokens = !settings.get_list("SLACK_BOT_TOKENS").is_empty();
-    let has_user_tokens = !settings.get_list("SLACK_USER_TOKENS").is_empty();
-
-    if has_bot_tokens || has_user_tokens {
+    if has_bot_tokens {
         let pool_for_scraper = pool.clone();
         let settings_for_scraper = settings.clone();
         tokio::spawn(async move {
@@ -86,7 +84,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     } else {
         tracing::warn!(
-            "No Slack tokens set (SLACK_BOT_TOKENS/SLACK_USER_TOKENS), \
+            "No Slack tokens set (SLACK_BOT_TOKENS), \
              skipping Slack API entirely"
         );
     }

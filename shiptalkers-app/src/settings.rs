@@ -6,6 +6,8 @@ pub const SETTING_KEYS: &[&str] = &[
     "DATABASE_URL",
     "HACKATIME_CLIENT_ID",
     "HACKATIME_CLIENT_SECRET",
+    "SLACK_CLIENT_ID",
+    "SLACK_CLIENT_SECRET",
     "HCA_CLIENT_ID",
     "HCA_CLIENT_SECRET",
     "HOST",
@@ -113,6 +115,8 @@ impl RuntimeSettings {
             hca_client_secret: self.get("HCA_CLIENT_SECRET"),
             hackatime_client_id: self.get("HACKATIME_CLIENT_ID"),
             hackatime_client_secret: self.get("HACKATIME_CLIENT_SECRET"),
+            slack_client_id: self.get("SLACK_CLIENT_ID"),
+            slack_client_secret: self.get("SLACK_CLIENT_SECRET"),
             base_url: self.get("BASE_URL"),
             session_secret: self.get("SESSION_SECRET"),
         }

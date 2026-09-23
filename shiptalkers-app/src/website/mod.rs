@@ -373,6 +373,9 @@ pub fn router(
         .route("/pfp/{id}", get(main_page::get_pfp))
         .route("/auth/hackclub/login", get(auth::auth_hackclub_login))
         .route("/auth/hackclub/callback", get(auth::auth_hackclub_callback))
+        .route("/auth/slack/login", get(auth::auth_slack_login))
+        .route("/auth/slack/callback", get(auth::auth_slack_callback))
+        .route("/auth/slack/disconnect", get(auth::auth_slack_disconnect))
         .route("/auth/hackatime/login", get(auth::auth_hackatime_login))
         .route(
             "/auth/hackatime/callback",

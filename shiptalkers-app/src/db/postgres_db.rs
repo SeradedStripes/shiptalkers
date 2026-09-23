@@ -62,6 +62,52 @@ impl AuthDb {
             .await
             .is_ok_and(|row| row.is_some())
     }
+
+    pub async fn has_slack_oauth_token(&self, slack_id: &str) -> bool {
+        sqlx::query_scalar::<_, i32>(
+            "SELECT 1 FROM slack_oauth_tokens WHERE slack_id = $1 AND disabled_at IS NULL",
+        )
+        .bind(slack_id)
+        .fetch_optional(&self.pool)
+        .await
+        .is_ok_and(|row| row.is_some())
+    }
+
+    pub async fn upsert_slack_oauth_token(
+        &self,
+        slack_id: &str,
+        team_id: &str,
+        access_token: &str,
+        scopes: &str,
+    ) -> Result<(), String> {
+        sqlx::query(
+            "INSERT INTO slack_oauth_tokens (slack_id, team_id, access_token, scopes)
+             VALUES ($1, $2, $3, $4)
+             ON CONFLICT (slack_id) DO UPDATE SET team_id = EXCLUDED.team_id,
+             access_token = EXCLUDED.access_token, scopes = EXCLUDED.scopes,
+             updated_at = now(), disabled_at = NULL",
+        )
+        .bind(slack_id)
+        .bind(team_id)
+        .bind(access_token)
+        .bind(scopes)
+        .execute(&self.pool)
+        .await
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+    }
+
+    pub async fn disable_slack_oauth_token(&self, slack_id: &str) -> Result<(), String> {
+        sqlx::query(
+            "UPDATE slack_oauth_tokens SET disabled_at = now(), updated_at = now()
+             WHERE slack_id = $1",
+        )
+        .bind(slack_id)
+        .execute(&self.pool)
+        .await
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+    }
 }
 
 /// A stored API key's public metadata. The secret itself is never persisted.

@@ -16,6 +16,7 @@ use super::AppState;
 const SESSION_COOKIE: &str = "st_session";
 const CSRF_COOKIE: &str = "st_csrf";
 const STATE_COOKIE: &str = "st_state";
+const SLACK_STATE_COOKIE: &str = "st_slack_state";
 /// How long the session and CSRF cookies stay valid.
 const SESSION_MAX_AGE_SECS: i64 = 180 * 24 * 60 * 60;
 
@@ -147,6 +148,10 @@ async fn link_html(
             .unwrap_or_default(),
         _ => Vec::new(),
     };
+    let slack_connected = match (&session, state.auth_db()) {
+        (Some(s), Ok(db)) => db.has_slack_oauth_token(&s.slack_id).await,
+        _ => false,
+    };
     let config = auth_config(state);
     let csrf_token = csrf_token_for(headers, &config).unwrap_or_default();
     let template = LinkTemplate {
@@ -160,6 +165,7 @@ async fn link_html(
         hackatime_connected,
         api_keys,
         grants,
+        slack_connected,
         new_api_key: new_api_key.unwrap_or_default(),
         page_load_ms: format!("{}ms", started.elapsed().as_millis()),
     };
@@ -282,6 +288,7 @@ struct LinkTemplate {
     hackatime_connected: bool,
     api_keys: Vec<ApiKeyView>,
     grants: Vec<ApiGrantView>,
+    slack_connected: bool,
     new_api_key: String,
     page_load_ms: String,
 }
@@ -302,6 +309,97 @@ fn grant_view(grant: ApiGrantRow) -> ApiGrantView {
         key_id: grant.key_id,
         created: fmt_day(grant.created_at),
     }
+}
+
+pub async fn auth_slack_login(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, StatusCode> {
+    if session_from_request(&headers, &auth_config(&state)).is_none() {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let state_val = auth::random_state();
+    let location = auth::slack_authorize_url(&auth_config(&state), &state_val);
+    let mut response = Redirect::to(&location).into_response();
+    response.headers_mut().insert(
+        SET_COOKIE,
+        set_cookie(SLACK_STATE_COOKIE, &state_val, Some(600)),
+    );
+    Ok(response)
+}
+
+#[derive(Deserialize)]
+pub struct SlackCallbackParams {
+    code: Option<String>,
+    state: Option<String>,
+    error: Option<String>,
+}
+
+pub async fn auth_slack_callback(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<SlackCallbackParams>,
+) -> Result<impl IntoResponse, StatusCode> {
+    if params.error.is_some() {
+        return Ok(Redirect::to("/link").into_response());
+    }
+    let (Some(code), Some(callback_state)) = (params.code, params.state) else {
+        return Err(StatusCode::BAD_REQUEST);
+    };
+    if cookies(&headers).get(SLACK_STATE_COOKIE) != Some(&callback_state) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let session =
+        session_from_request(&headers, &auth_config(&state)).ok_or(StatusCode::UNAUTHORIZED)?;
+    let token = auth::exchange_slack_code(&state.http, &auth_config(&state), &code)
+        .await
+        .map_err(|e| {
+            tracing::warn!("Slack OAuth exchange failed: {}", e);
+            StatusCode::BAD_REQUEST
+        })?;
+    let Some(user) = token.authed_user else {
+        return Err(StatusCode::BAD_REQUEST);
+    };
+    if user.id != session.slack_id {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    let access_token = user
+        .access_token
+        .or(token.access_token)
+        .ok_or(StatusCode::BAD_REQUEST)?;
+    state
+        .auth_db()?
+        .upsert_slack_oauth_token(
+            &session.slack_id,
+            token
+                .team
+                .as_ref()
+                .map(|team| team.id.as_str())
+                .unwrap_or_default(),
+            &access_token,
+            token.scope.as_deref().unwrap_or_default(),
+        )
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let mut response = Redirect::to("/link").into_response();
+    response
+        .headers_mut()
+        .append(SET_COOKIE, clear_cookie(SLACK_STATE_COOKIE));
+    Ok(response)
+}
+
+pub async fn auth_slack_disconnect(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Redirect, StatusCode> {
+    let session =
+        session_from_request(&headers, &auth_config(&state)).ok_or(StatusCode::UNAUTHORIZED)?;
+    state
+        .auth_db()?
+        .disable_slack_oauth_token(&session.slack_id)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Redirect::to("/link"))
 }
 
 pub async fn auth_hackclub_login(

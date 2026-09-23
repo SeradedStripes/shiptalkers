@@ -8,6 +8,15 @@ pub use ship_talkers_lib::db::{
     placeholders, upsert_users,
 };
 
+pub async fn get_slack_oauth_tokens(pool: &PgPool) -> Result<Vec<String>, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT access_token FROM slack_oauth_tokens
+         WHERE disabled_at IS NULL ORDER BY slack_id",
+    )
+    .fetch_all(pool)
+    .await
+}
+
 /// Reconciles the maintained `message_count` with the real row count.
 pub async fn seed_message_count(pool: &PgPool) -> Result<(), Box<dyn std::error::Error>> {
     if let Some(total) =

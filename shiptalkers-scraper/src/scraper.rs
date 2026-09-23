@@ -251,19 +251,24 @@ pub async fn run_scraper(
         let request_delay = Duration::from_millis(settings.get_u64("SLACK_REQUEST_DELAY_MS"));
         let max_inflight = settings.get_u64("SLACK_MAX_INFLIGHT") as usize;
         let bot_tokens = settings.get_list("SLACK_BOT_TOKENS");
-        let user_tokens = settings.get_list("SLACK_USER_TOKENS");
         // lists accept any token, so fall back to user tokens for the archive sweep
-        let list_tokens = if bot_tokens.is_empty() {
-            user_tokens.clone()
-        } else {
-            bot_tokens
-        };
-        let list_pool = slack::SlackClientPool::new(list_tokens, request_delay, max_inflight);
+        let list_pool = slack::SlackClientPool::new(bot_tokens, request_delay, max_inflight);
+        let oauth_tokens = db::postgres_db::get_slack_oauth_tokens(&pool)
+            .await
+            .unwrap_or_default();
+        if !oauth_tokens.is_empty() {
+            let oauth_pool =
+                slack::SlackClientPool::new(oauth_tokens.clone(), request_delay, max_inflight);
+            match oauth_pool.fetch_accessible_channels().await {
+                Ok(channels) => insert_page(pool.clone(), channels).await,
+                Err(e) => tracing::warn!("Failed to fetch OAuth channel access: {}", e),
+            }
+        }
 
         // List and message passes have separate rate budgets, so run them in parallel
         let (list_result, _) = tokio::join!(full_fetch(&list_pool, &pool), async {
-            if !user_tokens.is_empty() {
-                scrape_all_messages(&settings, &pool).await;
+            if !oauth_tokens.is_empty() {
+                scrape_all_messages(&settings, &pool, oauth_tokens).await;
             }
         });
         if let Err(e) = list_result {
@@ -292,17 +297,28 @@ pub async fn scrape_incremental_messages(
     settings: &settings::RuntimeSettings,
     pool: &sqlx::PgPool,
 ) {
-    scrape_messages(settings, pool, true).await;
+    let user_tokens = db::postgres_db::get_slack_oauth_tokens(pool)
+        .await
+        .unwrap_or_default();
+    if user_tokens.is_empty() {
+        return;
+    }
+    scrape_messages(settings, pool, true, user_tokens).await;
 }
 
-async fn scrape_all_messages(settings: &settings::RuntimeSettings, pool: &sqlx::PgPool) {
-    scrape_messages(settings, pool, false).await;
+async fn scrape_all_messages(
+    settings: &settings::RuntimeSettings,
+    pool: &sqlx::PgPool,
+    user_tokens: Vec<String>,
+) {
+    scrape_messages(settings, pool, false, user_tokens).await;
 }
 
 async fn scrape_messages(
     settings: &settings::RuntimeSettings,
     pool: &sqlx::PgPool,
     incremental_only: bool,
+    user_tokens: Vec<String>,
 ) {
     let _guard = MESSAGE_SCRAPE_LOCK
         .get_or_init(|| tokio::sync::Mutex::new(()))
@@ -390,6 +406,7 @@ async fn scrape_messages(
             settings,
             pool,
             &check_channels,
+            &user_tokens,
             touched_users.clone(),
             touched_channels.clone(),
             start,
@@ -413,6 +430,7 @@ async fn scrape_messages(
             settings,
             pool,
             &new_channels,
+            &user_tokens,
             touched_users.clone(),
             touched_channels.clone(),
             0,
@@ -425,10 +443,12 @@ async fn scrape_messages(
     tracing::info!("Message scrape pass complete");
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn scrape_channel_list(
     settings: &settings::RuntimeSettings,
     pool: &sqlx::PgPool,
     channels: &[String],
+    user_tokens: &[String],
     touched_users: Arc<Mutex<std::collections::HashSet<String>>>,
     touched_channels: Arc<Mutex<std::collections::HashSet<String>>>,
     resume_from: usize,
@@ -440,7 +460,6 @@ async fn scrape_channel_list(
     let channel_concurrency = settings.get_u64("SLACK_CHANNEL_CONCURRENCY") as usize;
     let thread_rescan_window_hours = settings.get_u64("SLACK_THREAD_RESCAN_HOURS");
     let thread_rescan_interval_hours = settings.get_u64("SLACK_THREAD_RESCAN_INTERVAL_HOURS");
-    let user_tokens = settings.get_list("SLACK_USER_TOKENS");
     tracing::info!(
         "Scraping {} channels with {} token(s)...",
         channels.len(),

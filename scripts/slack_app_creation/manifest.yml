@@ -9,6 +9,8 @@ oauth_config:
     user:
       - channels:read
       - channels:history
+      - groups:read
+      - groups:history
     bot:
       - files:read
       - app_mentions:read

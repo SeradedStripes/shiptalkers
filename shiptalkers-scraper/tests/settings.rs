@@ -38,25 +38,16 @@ fn get_u64_parses_or_zero() {
 }
 
 #[test]
-fn get_list_splits_trims_and_drops_empties() {
-    let s = RuntimeSettings::from_env(env(&[("SLACK_USER_TOKENS", " a , b ,, c ")]));
-    assert_eq!(s.get_list("SLACK_USER_TOKENS"), vec!["a", "b", "c"]);
-    assert_eq!(s.get_list("SLACK_BOT_TOKENS"), Vec::<String>::new());
-}
-
-#[test]
 fn get_list_merges_numbered_variants() {
     let s = RuntimeSettings::from_env(env(&[
         ("SLACK_BOT_TOKENS", "xoxb-0"),
         ("SLACK_BOT_TOKENS_1", "xoxb-1"),
         ("SLACK_BOT_TOKENS_2", " xoxb-2 ,"),
-        ("SLACK_USER_TOKENS_3", "xoxp-3"),
     ]));
     assert_eq!(
         s.get_list("SLACK_BOT_TOKENS"),
         vec!["xoxb-0", "xoxb-1", "xoxb-2"]
     );
-    assert_eq!(s.get_list("SLACK_USER_TOKENS"), vec!["xoxp-3"]);
 }
 
 #[test]
