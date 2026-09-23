@@ -447,6 +447,7 @@ async fn scrape_channel_list(
         user_tokens.len()
     );
     let total = Arc::new(AtomicU64::new(0));
+    let history_processed = Arc::new(AtomicU64::new(0));
     let processed = Arc::new(AtomicU64::new(0));
     let done = Arc::new(AtomicBool::new(false));
     let num_channels = channels.len();
@@ -454,6 +455,7 @@ async fn scrape_channel_list(
 
     {
         let total = total.clone();
+        let history_processed = history_processed.clone();
         let processed = processed.clone();
         let done = done.clone();
         tokio::spawn(async move {
@@ -464,17 +466,20 @@ async fn scrape_channel_list(
                 if done.load(Ordering::Relaxed) {
                     break;
                 }
-                let p = processed.load(Ordering::Relaxed);
+                let history = history_processed.load(Ordering::Relaxed);
+                let completed = processed.load(Ordering::Relaxed);
                 let m = total.load(Ordering::Relaxed);
                 if m > last_msgs {
                     let dt = last_report.elapsed().as_secs_f64().max(0.001);
                     let rate = (m - last_msgs) as f64 / dt;
-                    let pct = p as f64 / num_channels as f64 * 100.0;
+                    let pct = history as f64 / num_channels as f64 * 100.0;
                     tracing::info!(
-                        "Progress: {}/{} channels ({:.1}%), {} msgs inserted this run ({:.0} msg/s)",
-                        p,
+                        "Progress: {}/{} channel histories ({:.1}%), {}/{} channels fully done, {} msgs inserted this run ({:.0} msg/s)",
+                        history,
                         num_channels,
                         pct,
+                        completed,
+                        num_channels,
                         m,
                         rate
                     );
@@ -499,6 +504,7 @@ async fn scrape_channel_list(
             thread_rescan_window_hours,
             thread_rescan_interval_hours,
             total: total.clone(),
+            history_processed: history_processed.clone(),
             processed: processed.clone(),
             sweep: sweep.clone(),
             tx,
@@ -534,6 +540,7 @@ struct ShardCtx {
     thread_rescan_window_hours: u64,
     thread_rescan_interval_hours: u64,
     total: Arc<AtomicU64>,
+    history_processed: Arc<AtomicU64>,
     processed: Arc<AtomicU64>,
     sweep: Option<ScrapeSweep>,
     deadline: Option<Instant>,
@@ -935,6 +942,7 @@ async fn scrape_one_channel(
     let total_channels = ctx.total_channels;
     let max_inflight = ctx.max_inflight;
     let total = ctx.total.clone();
+    let history_processed = ctx.history_processed.clone();
     let processed = ctx.processed.clone();
     let tx = ctx.tx.clone();
     let start = std::time::Instant::now();
@@ -1040,6 +1048,7 @@ async fn scrape_one_channel(
                     );
                 }
                 processed.fetch_add(1, Ordering::Relaxed);
+                history_processed.fetch_add(1, Ordering::Relaxed);
                 let _ = tx.send(idx).await;
                 return;
             }
@@ -1054,6 +1063,8 @@ async fn scrape_one_channel(
             return;
         }
     };
+
+    history_processed.fetch_add(1, Ordering::Relaxed);
 
     let acc = Arc::try_unwrap(accum)
         .map(|m| m.into_inner().unwrap_or_default())
