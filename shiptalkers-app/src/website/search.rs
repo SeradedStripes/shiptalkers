@@ -35,6 +35,7 @@ pub(super) async fn get_search(
                 user_id,
                 url_id,
                 deactivated: is_deleted == 1,
+                status: String::new(),
             })
             .collect()
         }
@@ -55,11 +56,12 @@ pub(super) async fn get_search(
             .unwrap_or_default()
             .into_iter()
             .map(|(channel_id, name, url_id, is_private, is_archived)| SearchResult {
-                merged_name: super::channel_display_name(&name, is_private, is_archived),
+                merged_name: name,
                 pfp: String::new(),
                 user_id: channel_id,
                 url_id,
                 deactivated: false,
+                status: super::channel_status(is_private, is_archived),
             })
             .collect()
         }

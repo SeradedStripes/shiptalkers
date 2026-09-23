@@ -329,13 +329,13 @@ async fn board_entries(
     format_extra: Option<fn(u64) -> String>,
 ) -> Vec<BoardEntry> {
     let ids: Vec<String> = rows.iter().map(|r| r.id.clone()).collect();
-    let names: HashMap<String, (String, String, String)> = match source {
-        BoardSource::Users => super::sqlx::query_as::<_, (String, String, String, String)>("SELECT user_id, merged_name, pfp, COALESCE(ship_talkers_id, user_id) FROM users WHERE user_id = ANY($1)").bind(&ids).fetch_all(ch).await.unwrap_or_default().into_iter().map(|(id, name, pfp, url)| (id, (name, pfp, url))).collect(),
-        BoardSource::Channels => super::sqlx::query_as::<_, (String, String, String, i16, i16)>("SELECT channel_id, name, COALESCE(ship_talkers_id, channel_id), is_private, is_archived FROM slack_channels WHERE channel_id = ANY($1)").bind(&ids).fetch_all(ch).await.unwrap_or_default().into_iter().map(|(id, name, url, is_private, is_archived)| (id, (super::channel_display_name(&name, is_private, is_archived), String::new(), url))).collect(),
+    let names: HashMap<String, (String, String, String, String)> = match source {
+        BoardSource::Users => super::sqlx::query_as::<_, (String, String, String, String)>("SELECT user_id, merged_name, pfp, COALESCE(ship_talkers_id, user_id) FROM users WHERE user_id = ANY($1)").bind(&ids).fetch_all(ch).await.unwrap_or_default().into_iter().map(|(id, name, pfp, url)| (id, (name, pfp, url, String::new()))).collect(),
+        BoardSource::Channels => super::sqlx::query_as::<_, (String, String, String, i16, i16)>("SELECT channel_id, name, COALESCE(ship_talkers_id, channel_id), is_private, is_archived FROM slack_channels WHERE channel_id = ANY($1)").bind(&ids).fetch_all(ch).await.unwrap_or_default().into_iter().map(|(id, name, url, is_private, is_archived)| (id, (name, String::new(), url, super::channel_status(is_private, is_archived)))).collect(),
     };
     rows.into_iter()
         .map(|r| {
-            let (name, pfp, url) = names.get(&r.id).cloned().unwrap_or_default();
+            let (name, pfp, url, status) = names.get(&r.id).cloned().unwrap_or_default();
             BoardEntry {
                 user_id: r.id.clone(),
                 url_id: if url.is_empty() {
@@ -355,6 +355,7 @@ async fn board_entries(
                 rank: r.rank,
                 label: r.rank.to_string(),
                 highlight: r.highlight,
+                status,
             }
         })
         .collect()

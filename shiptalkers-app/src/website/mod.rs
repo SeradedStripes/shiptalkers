@@ -171,6 +171,7 @@ pub struct ChannelStats {
 #[template(path = "channel.html")]
 pub struct ChannelTemplate {
     pub channel_name: String,
+    pub channel_status: String,
     pub channel_id: String,
     pub total_messages: String,
     pub active_users: String,
@@ -296,6 +297,7 @@ pub struct BoardEntry {
     pub rank: u64,
     pub label: String,
     pub highlight: bool,
+    pub status: String,
 }
 
 pub struct SearchResult {
@@ -304,6 +306,7 @@ pub struct SearchResult {
     pub user_id: String,
     pub url_id: String,
     pub deactivated: bool,
+    pub status: String,
 }
 
 pub struct UserStats {
@@ -858,6 +861,7 @@ async fn legacy_users_board(
                 rank: row_offset + index as u64 + 1,
                 label: ship_talkers_id,
                 highlight,
+                status: String::new(),
             }
         })
         .collect();
@@ -963,6 +967,7 @@ async fn legacy_channels_board(
                 rank: row_offset + index as u64 + 1,
                 label: ship_talkers_id,
                 highlight,
+                status: String::new(),
             }
         })
         .collect();
@@ -1070,6 +1075,7 @@ async fn board_entries(
                 rank: r.rank,
                 label: r.rank.to_string(),
                 highlight: r.highlight,
+                status: String::new(),
             }
         })
         .collect()
@@ -1139,6 +1145,17 @@ pub fn channel_display_name(name: &str, is_private: i16, is_archived: i16) -> St
     } else {
         format!("{} {}", labels.join(" "), name)
     }
+}
+
+pub fn channel_status(is_private: i16, is_archived: i16) -> String {
+    let mut labels = Vec::new();
+    if is_private == 1 {
+        labels.push("[PRIVATE]");
+    }
+    if is_archived == 1 {
+        labels.push("[ARCHIVED]");
+    }
+    labels.join(" ")
 }
 
 pub fn fmt_hour(hour: u8) -> String {

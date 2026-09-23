@@ -287,15 +287,11 @@ async fn render_channel_stats(
     .ok()
     .flatten();
 
-    let (channel_name, _, _) = channel_meta
+    let (channel_name, channel_status) = channel_meta
         .map(|(name, is_private, is_archived)| {
-            (
-                super::channel_display_name(&name, is_private, is_archived),
-                is_private,
-                is_archived,
-            )
+            (name, super::channel_status(is_private, is_archived))
         })
-        .unwrap_or_default();
+        .unwrap_or_else(|| (String::new(), String::new()));
 
     let total_messages: u64 =
         super::sqlx::query_scalar::<_, i64>("SELECT count(*) FROM slack_messages m JOIN slack_channels c ON c.internal_id = m.channel_id WHERE c.channel_id = $1")
@@ -393,6 +389,7 @@ async fn render_channel_stats(
         } else {
             channel_name
         },
+        channel_status,
         channel_id: channel_id.to_string(),
         total_messages: super::fmt_thousands(total_messages),
         active_users: super::fmt_thousands(active_users),

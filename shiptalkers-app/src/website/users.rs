@@ -76,6 +76,7 @@ async fn render_users_board(
                 rank: row_offset + index as u64 + 1,
                 label: ship_talkers_id,
                 highlight,
+                status: String::new(),
             }
         })
         .collect();

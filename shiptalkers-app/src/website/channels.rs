@@ -63,15 +63,11 @@ async fn render_channels_board(
             |(index, (channel_id, ship_talkers_id, name, is_private, is_archived))| BoardEntry {
                 user_id: channel_id.clone(),
                 url_id: ship_talkers_id.clone(),
-                merged_name: super::channel_display_name(
-                    if name.is_empty() {
-                        &ship_talkers_id
-                    } else {
-                        &name
-                    },
-                    is_private,
-                    is_archived,
-                ),
+                merged_name: if name.is_empty() {
+                    ship_talkers_id.clone()
+                } else {
+                    name
+                },
                 pfp: String::new(),
                 value: String::new(),
                 extra: String::new(),
@@ -79,6 +75,7 @@ async fn render_channels_board(
                 rank: row_offset + index as u64 + 1,
                 label: ship_talkers_id,
                 highlight: target.as_ref().is_some_and(|(_, id)| id == &channel_id),
+                status: super::channel_status(is_private, is_archived),
             },
         )
         .collect();

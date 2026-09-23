@@ -40,7 +40,7 @@
                 </thead>
                 <tbody>
                     {% for c in channels %}
-                    <tr><td><a href="/stats/{{ c.url_id }}">{{ c.merged_name }}</a></td><td>{{ c.user_id }}</td></tr>
+                    <tr><td><a href="/stats/{{ c.url_id }}">{{ c.merged_name }}{% if !c.status.is_empty() %} <span class="deactivated">{{ c.status }}</span>{% endif %}</a></td><td>{{ c.user_id }}</td></tr>
                     {% endfor %}
                 </tbody>
             </table>

@@ -55,12 +55,12 @@
                     <tr{% if e.highlight %} class="highlighted"{% endif %}>
                         {% if numbered %}
                         <td>{{ e.label }}</td>
-                        <td><span class="user-cell">{% if !e.pfp.is_empty() %}<img class="avatar" src="{{ e.pfp }}" alt="">{% endif %}{% if e.linked %}<a href="/stats/{{ e.url_id }}">{{ e.merged_name }}</a>{% else %}{{ e.merged_name }}{% endif %}</span></td>
+                        <td><span class="user-cell">{% if !e.pfp.is_empty() %}<img class="avatar" src="{{ e.pfp }}" alt="">{% endif %}{% if e.linked %}<a href="/stats/{{ e.url_id }}">{{ e.merged_name }}{% if !e.status.is_empty() %} <span class="deactivated">{{ e.status }}</span>{% endif %}</a>{% else %}{{ e.merged_name }}{% if !e.status.is_empty() %} <span class="deactivated">{{ e.status }}</span>{% endif %}{% endif %}</span></td>
                         {% else %}
                         <td>{{ e.rank }}</td>
                         <td>{{ e.label }}</td>
                         {% if show_pfp %}<td>{% if !e.pfp.is_empty() %}<img class="avatar" src="{{ e.pfp }}" alt="">{% endif %}</td>{% endif %}
-                        <td><span class="user-cell">{% if e.linked %}<a href="/stats/{{ e.url_id }}">{{ e.merged_name }}</a>{% else %}{{ e.merged_name }}{% endif %}</span></td>
+                        <td><span class="user-cell">{% if e.linked %}<a href="/stats/{{ e.url_id }}">{{ e.merged_name }}{% if !e.status.is_empty() %} <span class="deactivated">{{ e.status }}</span>{% endif %}</a>{% else %}{{ e.merged_name }}{% if !e.status.is_empty() %} <span class="deactivated">{{ e.status }}</span>{% endif %}{% endif %}</span></td>
                         {% endif %}
                         {% if numbered %}<td>{{ e.value }}</td>{% endif %}
                         {% if numbered && extra_unit.is_some() %}
