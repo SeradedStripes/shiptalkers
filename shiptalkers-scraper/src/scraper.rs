@@ -279,7 +279,7 @@ pub async fn run_scraper(
             .unwrap_or_default();
         let private_refresh_tokens: Vec<db::postgres_db::SlackOAuthToken> = oauth_tokens
             .iter()
-            .filter(|token| private_channels_need_refresh(&token.slack_id))
+            .filter(|token| private_channels_need_refresh(&token.access_token))
             .cloned()
             .collect();
         if !private_refresh_tokens.is_empty() {
@@ -309,8 +309,13 @@ pub async fn run_scraper(
                             tracing::warn!("Failed to save private channel access: {}", e);
                             continue;
                         }
+                        tracing::info!(
+                            "Refreshed {} private channels for OAuth user {}",
+                            channel_ids.len(),
+                            token.slack_id
+                        );
                         insert_page(pool.clone(), channels).await;
-                        refreshed.push(token.slack_id.clone());
+                        refreshed.push(token.access_token.clone());
                     }
                     mark_private_channels_refreshed(&refreshed);
                 }

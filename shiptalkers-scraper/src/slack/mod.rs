@@ -675,25 +675,27 @@ impl SlackClientPool {
             let mut page_channels = Vec::new();
             if let Some(channels_arr) = resp.get("channels").and_then(|v| v.as_array()) {
                 for ch in channels_arr {
-                    if let (Some(id), Some(name)) = (ch.get("id"), ch.get("name")) {
-                        page_channels.push(SlackChannel {
-                            id: id.as_str().unwrap_or_default().to_string(),
-                            name: name.as_str().unwrap_or_default().to_string(),
-                            is_private: ch
-                                .get("is_private")
-                                .and_then(|v| v.as_bool())
-                                .unwrap_or(false),
-                            is_archived: ch
-                                .get("is_archived")
-                                .and_then(|v| v.as_bool())
-                                .unwrap_or(false),
-                            num_members: ch
-                                .get("num_members")
-                                .and_then(|v| v.as_u64())
-                                .unwrap_or(0),
-                            created_at: ch.get("created").and_then(|v| v.as_u64()).unwrap_or(0),
-                        });
-                    }
+                    let Some(id) = ch.get("id").and_then(|v| v.as_str()) else {
+                        continue;
+                    };
+                    page_channels.push(SlackChannel {
+                        id: id.to_string(),
+                        name: ch
+                            .get("name")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or_default()
+                            .to_string(),
+                        is_private: ch
+                            .get("is_private")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false),
+                        is_archived: ch
+                            .get("is_archived")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false),
+                        num_members: ch.get("num_members").and_then(|v| v.as_u64()).unwrap_or(0),
+                        created_at: ch.get("created").and_then(|v| v.as_u64()).unwrap_or(0),
+                    });
                 }
             }
 
@@ -744,9 +746,10 @@ impl SlackClientPool {
                         let Some(id) = channel.get("id").and_then(|v| v.as_str()) else {
                             continue;
                         };
-                        let Some(name) = channel.get("name").and_then(|v| v.as_str()) else {
-                            continue;
-                        };
+                        let name = channel
+                            .get("name")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or_default();
                         channels.push(SlackChannel {
                             id: id.to_string(),
                             name: name.to_string(),
