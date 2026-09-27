@@ -877,6 +877,8 @@ async fn upload_image(
         ));
     }
 
+    // Slack publishes the completed file message asynchronously.
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     let star_message = "While you're here! Would you consider starring <https://github.com/SeradedStripes/shiptalkers|the ShipTalkers repository on GitHub>? It would really help the Stardance project payout, and it's genuinely appreciated.";
     let response = client
         .post("https://slack.com/api/chat.postMessage")
