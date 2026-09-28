@@ -236,9 +236,14 @@ impl SlackClient {
 
     fn limiter_for(&self, method: &str) -> Arc<RateLimiter> {
         let rate = 1.0 / self.delay_between_requests.as_secs_f64().max(0.001);
+        let burst = if matches!(method, "conversations.history" | "conversations.replies") {
+            1.0
+        } else {
+            self.max_inflight as f64
+        };
         let mut map = self.limiters.by_method.lock().unwrap();
         map.entry(method.to_string())
-            .or_insert_with(|| Arc::new(RateLimiter::new(rate, self.max_inflight as f64)))
+            .or_insert_with(|| Arc::new(RateLimiter::new(rate, burst)))
             .clone()
     }
 
@@ -272,9 +277,7 @@ impl SlackClient {
                     .and_then(|v| v.to_str().ok())
                     .and_then(|v| v.parse::<f64>().ok())
                     .unwrap_or(5.0);
-                let backoff = (retry_after.ceil().max(1.0) as u64)
-                    .saturating_mul(2u64.saturating_pow(retry_count));
-                let wait = backoff;
+                let wait = retry_after.ceil().max(1.0) as u64;
                 tracing::warn!(
                     "Rate limited on {}, attempt {}, waiting {}s (retry_after={}s)",
                     method,
@@ -283,6 +286,11 @@ impl SlackClient {
                     retry_after
                 );
                 limiter.cooldown(Duration::from_secs(wait)).await;
+                if matches!(method, "conversations.history" | "conversations.replies") {
+                    self.message_scraping_limiter
+                        .cooldown(Duration::from_secs(wait))
+                        .await;
+                }
                 if retry_count >= MAX_RATE_LIMIT_RETRIES {
                     return Err(
                         format!("rate limited on {method} after {retry_count} retries").into(),
@@ -301,9 +309,7 @@ impl SlackClient {
                         .get("retry_after")
                         .and_then(|v| v.as_f64())
                         .unwrap_or(5.0);
-                    let backoff = (retry_after.ceil().max(1.0) as u64)
-                        .saturating_mul(2u64.saturating_pow(retry_count));
-                    let wait = backoff;
+                    let wait = retry_after.ceil().max(1.0) as u64;
                     tracing::warn!(
                         "Rate limited on {}, attempt {}, waiting {}s (retry_after={}s)",
                         method,
@@ -312,6 +318,11 @@ impl SlackClient {
                         retry_after
                     );
                     limiter.cooldown(Duration::from_secs(wait)).await;
+                    if matches!(method, "conversations.history" | "conversations.replies") {
+                        self.message_scraping_limiter
+                            .cooldown(Duration::from_secs(wait))
+                            .await;
+                    }
                     if retry_count >= MAX_RATE_LIMIT_RETRIES {
                         return Err(format!(
                             "rate limited on {method} after {retry_count} retries"
