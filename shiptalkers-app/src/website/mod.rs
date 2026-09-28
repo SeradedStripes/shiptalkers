@@ -201,6 +201,23 @@ pub struct BoardsTemplate {
 }
 
 #[derive(Template)]
+#[template(path = "boards_linked.html")]
+pub struct LinkedBoardsTemplate {
+    pub rows: Vec<LinkedBoardRow>,
+    pub signed_in: bool,
+    pub page_load_ms: String,
+}
+
+pub struct LinkedBoardRow {
+    pub shiptalkers_id: String,
+    pub hackatime: bool,
+    pub hackatime_date: String,
+    pub slack: bool,
+    pub slack_date: String,
+    pub slack_token_no: String,
+}
+
+#[derive(Template)]
 #[template(path = "docs/overview.html")]
 pub struct ApiDocsOverview {
     pub signed_in: bool,
@@ -338,6 +355,7 @@ pub fn router(
         .route("/stats", get(stats::get_stats_page))
         .route("/stats/{id}", get(stats::get_stats_for_id))
         .route("/boards", get(boards::get_boards))
+        .route("/boards/linked", get(boards::get_linked_boards))
         .route("/boards/users", get(users::get_users_board))
         .route("/boards/users/", get(users::get_users_board))
         .route("/boards/channels/", get(channels::get_channels_board))

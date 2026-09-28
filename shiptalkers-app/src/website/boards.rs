@@ -1,7 +1,7 @@
 use super::{
     AppState, BoardCategoryTemplate, BoardEntry, BoardsTemplate, EXCLUDE_BOTS_DELETED_SCORE,
-    EXCLUDE_BOTS_DELETED_SLACK_ID, PgPool, RankedRow, State, StatusCode, fmt_duration, fmt_minutes,
-    fmt_thousands, signed_in, sql_escape,
+    EXCLUDE_BOTS_DELETED_SLACK_ID, LinkedBoardRow, LinkedBoardsTemplate, PgPool, RankedRow, State,
+    StatusCode, fmt_duration, fmt_minutes, fmt_thousands, signed_in, sql_escape,
 };
 use askama::Template;
 use axum::extract::{Path, Query};
@@ -16,6 +16,80 @@ pub(super) async fn get_boards(
 ) -> Result<Html<String>, StatusCode> {
     let started = Instant::now();
     let template = BoardsTemplate {
+        signed_in: signed_in(&state, &headers),
+        page_load_ms: format!("{}ms", started.elapsed().as_millis()),
+    };
+    let html = template
+        .render()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Html(html))
+}
+
+pub(super) async fn get_linked_boards(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Html<String>, StatusCode> {
+    let started = Instant::now();
+    let pool = state.pool()?;
+    let records: Vec<(
+        String,
+        bool,
+        Option<String>,
+        bool,
+        Option<String>,
+        Option<i64>,
+    )> = super::sqlx::query_as(
+        "SELECT COALESCE(u.ship_talkers_id, u.user_id),
+                COALESCE(h.access_token != '', false),
+                to_char(h.connected_at AT TIME ZONE 'UTC', 'YYYY-MM-DD'),
+                s.slack_id IS NOT NULL,
+                to_char(s.connected_at AT TIME ZONE 'UTC', 'YYYY-MM-DD'),
+                s.token_no
+         FROM users u
+         LEFT JOIN hackatime_connections h ON h.slack_id = u.user_id
+         LEFT JOIN (
+             SELECT slack_id, connected_at,
+                    row_number() OVER (ORDER BY slack_id) - 1 AS token_no
+             FROM slack_oauth_tokens
+             WHERE disabled_at IS NULL
+         ) s ON s.slack_id = u.user_id
+         WHERE h.access_token != '' OR s.slack_id IS NOT NULL
+         ORDER BY COALESCE(u.ship_talkers_id, u.user_id), u.user_id",
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
+    let rows = records
+        .into_iter()
+        .map(
+            |(shiptalkers_id, hackatime, hackatime_date, slack, slack_date, slack_token_no)| {
+                LinkedBoardRow {
+                    shiptalkers_id,
+                    hackatime,
+                    hackatime_date: if hackatime {
+                        hackatime_date.unwrap_or_else(|| "-".into())
+                    } else {
+                        "-".into()
+                    },
+                    slack,
+                    slack_date: if slack {
+                        slack_date.unwrap_or_else(|| "-".into())
+                    } else {
+                        "-".into()
+                    },
+                    slack_token_no: if slack {
+                        slack_token_no
+                            .map(|token_no| token_no.to_string())
+                            .unwrap_or_else(|| "-".into())
+                    } else {
+                        "-".into()
+                    },
+                }
+            },
+        )
+        .collect();
+    let template = LinkedBoardsTemplate {
+        rows,
         signed_in: signed_in(&state, &headers),
         page_load_ms: format!("{}ms", started.elapsed().as_millis()),
     };
