@@ -10,7 +10,13 @@
     {% include "header.html" %}
     <div class="container">
         <h1><span class="live"></span>Linked Accounts</h1>
+        <nav class="pagination" aria-label="Pagination">
+            {% if has_previous %}<a class="btn" href="/boards/linked?page={{ page - 1 }}&amp;filter={{ filter }}{% if !query.is_empty() %}&amp;q={{ query }}{% endif %}">Previous</a>{% else %}<span class="btn disabled">Previous</span>{% endif %}
+            <span>Page {{ page }} of {{ page_count }}</span>
+            {% if has_next %}<a class="btn" href="/boards/linked?page={{ page + 1 }}&amp;filter={{ filter }}{% if !query.is_empty() %}&amp;q={{ query }}{% endif %}">Next</a>{% else %}<span class="btn disabled">Next</span>{% endif %}
+        </nav>
         <form class="search" method="get" action="/boards/linked">
+            <input type="search" name="q" placeholder="Search users or ShipTalkers ID..." value="{{ query }}">
             <label for="linked-filter">Filter:</label>
             <select id="linked-filter" name="filter" onchange="this.form.submit()">
                 <option value="all"{% if filter == "all" %} selected{% endif %}>All linked accounts</option>
@@ -35,7 +41,7 @@
                 <tbody>
                     {% for row in rows %}
                     <tr>
-                        <td>{{ loop.index }}</td>
+                        <td>{{ row.rank }}</td>
                         <td><a href="/stats/{{ row.shiptalkers_id }}">{{ row.shiptalkers_id }}</a></td>
                         <td>{{ row.hackatime }}</td>
                         <td>{{ row.hackatime_date }}</td>
@@ -47,6 +53,11 @@
                 </tbody>
             </table>
         </div>
+        <nav class="pagination" aria-label="Pagination">
+            {% if has_previous %}<a class="btn" href="/boards/linked?page={{ page - 1 }}&amp;filter={{ filter }}{% if !query.is_empty() %}&amp;q={{ query }}{% endif %}">Previous</a>{% else %}<span class="btn disabled">Previous</span>{% endif %}
+            <span>Page {{ page }} of {{ page_count }}</span>
+            {% if has_next %}<a class="btn" href="/boards/linked?page={{ page + 1 }}&amp;filter={{ filter }}{% if !query.is_empty() %}&amp;q={{ query }}{% endif %}">Next</a>{% else %}<span class="btn disabled">Next</span>{% endif %}
+        </nav>
     </div>
     {% include "footer.html" %}
 </body>

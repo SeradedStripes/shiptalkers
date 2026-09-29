@@ -40,6 +40,32 @@ pub(super) async fn get_linked_boards(
         _ => "all",
     }
     .to_string();
+    let query = params.get("q").cloned().unwrap_or_default();
+    let pattern = format!("%{}%", query.trim());
+    let requested_page = params
+        .get("page")
+        .and_then(|page| page.parse::<u64>().ok())
+        .filter(|page| *page > 0)
+        .unwrap_or(1);
+    let total: i64 = super::sqlx::query_scalar(
+        "SELECT count(*) FROM users u
+         LEFT JOIN hackatime_connections h ON h.slack_id = u.user_id
+         LEFT JOIN slack_oauth_tokens s ON s.slack_id = u.user_id AND s.disabled_at IS NULL
+         WHERE (($1 = 'all' AND (h.access_token != '' OR s.slack_id IS NOT NULL))
+            OR ($1 = 'slack' AND s.slack_id IS NOT NULL)
+            OR ($1 = 'hackatime' AND h.access_token != ''))
+           AND (COALESCE(u.ship_talkers_id, u.user_id) ILIKE $2
+                OR u.user_id ILIKE $2 OR COALESCE(u.merged_name, '') ILIKE $2)",
+    )
+    .bind(&filter)
+    .bind(&pattern)
+    .fetch_one(pool)
+    .await
+    .unwrap_or(0);
+    let page_count = (total.max(0) as u64)
+        .div_ceil(super::DIRECTORY_PAGE_SIZE as u64)
+        .max(1);
+    let page = requested_page.min(page_count);
     let records: Vec<(
         String,
         bool,
@@ -62,20 +88,33 @@ pub(super) async fn get_linked_boards(
              FROM slack_oauth_tokens
              WHERE disabled_at IS NULL
          ) s ON s.slack_id = u.user_id
-         WHERE ($1 = 'all' AND (h.access_token != '' OR s.slack_id IS NOT NULL))
+         WHERE (($1 = 'all' AND (h.access_token != '' OR s.slack_id IS NOT NULL))
             OR ($1 = 'slack' AND s.slack_id IS NOT NULL)
-            OR ($1 = 'hackatime' AND h.access_token != '')
-         ORDER BY COALESCE(u.ship_talkers_id, u.user_id), u.user_id",
+            OR ($1 = 'hackatime' AND h.access_token != ''))
+         AND (COALESCE(u.ship_talkers_id, u.user_id) ILIKE $2
+              OR u.user_id ILIKE $2 OR COALESCE(u.merged_name, '') ILIKE $2)
+         GROUP BY COALESCE(u.ship_talkers_id, u.user_id), u.user_id,
+                  h.access_token, h.connected_at, s.slack_id, s.connected_at, s.token_no
+         ORDER BY COALESCE(u.ship_talkers_id, u.user_id), u.user_id
+         LIMIT $3 OFFSET $4",
     )
     .bind(&filter)
+    .bind(&pattern)
+    .bind(super::DIRECTORY_PAGE_SIZE)
+    .bind((page - 1) as i64 * super::DIRECTORY_PAGE_SIZE)
     .fetch_all(pool)
     .await
     .unwrap_or_default();
     let rows = records
         .into_iter()
+        .enumerate()
         .map(
-            |(shiptalkers_id, hackatime, hackatime_date, slack, slack_date, slack_token_no)| {
+            |(
+                index,
+                (shiptalkers_id, hackatime, hackatime_date, slack, slack_date, slack_token_no),
+            )| {
                 LinkedBoardRow {
+                    rank: (page - 1) * super::DIRECTORY_PAGE_SIZE as u64 + index as u64 + 1,
                     shiptalkers_id,
                     hackatime,
                     hackatime_date: if hackatime {
@@ -103,6 +142,11 @@ pub(super) async fn get_linked_boards(
     let template = LinkedBoardsTemplate {
         rows,
         filter,
+        query,
+        has_previous: page > 1,
+        has_next: page < page_count,
+        page,
+        page_count,
         signed_in: signed_in(&state, &headers),
         page_load_ms: format!("{}ms", started.elapsed().as_millis()),
     };
@@ -158,6 +202,27 @@ pub(super) async fn get_private_channels_board(
     let pool = state.pool()?;
     let query = params.get("q").cloned().unwrap_or_default();
     let token_filter = params.get("token").cloned().unwrap_or_default();
+    let token_rows: Vec<(String, i64)> = super::sqlx::query_as(
+        "SELECT slack_id, row_number() OVER (ORDER BY slack_id) - 1
+         FROM slack_oauth_tokens WHERE disabled_at IS NULL ORDER BY slack_id",
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
+    let token_key = if token_filter.is_empty() {
+        String::new()
+    } else {
+        token_filter
+            .parse::<i64>()
+            .ok()
+            .and_then(|id| {
+                token_rows
+                    .iter()
+                    .find(|(_, token_no)| *token_no == id)
+                    .map(|(slack_id, _)| slack_id.clone())
+            })
+            .unwrap_or_else(|| "__invalid_token__".into())
+    };
     let pattern = format!("%{}%", query.trim());
     let requested_page = params
         .get("page")
@@ -174,11 +239,11 @@ pub(super) async fn get_private_channels_board(
            AND ($2 = '' OR EXISTS (
                SELECT 1 FROM slack_oauth_channel_access a
                JOIN token_numbers t ON t.slack_id = a.slack_id
-               WHERE a.channel_id = c.channel_id AND t.token_no = $2::bigint
+               WHERE a.channel_id = c.channel_id AND t.slack_id = $2
            ))",
     )
     .bind(&pattern)
-    .bind(&token_filter)
+    .bind(&token_key)
     .fetch_one(pool)
     .await
     .unwrap_or(0);
@@ -200,14 +265,14 @@ pub(super) async fn get_private_channels_board(
            AND ($2 = '' OR EXISTS (
                SELECT 1 FROM slack_oauth_channel_access a2
                JOIN token_numbers t2 ON t2.slack_id = a2.slack_id
-               WHERE a2.channel_id = c.channel_id AND t2.token_no = $2::bigint
+               WHERE a2.channel_id = c.channel_id AND t2.slack_id = $2
            ))
          GROUP BY c.name, c.channel_id
          ORDER BY c.name, c.channel_id
          LIMIT $2 OFFSET $3",
     )
     .bind(&pattern)
-    .bind(&token_filter)
+    .bind(&token_key)
     .bind(super::DIRECTORY_PAGE_SIZE)
     .bind((page - 1) as i64 * super::DIRECTORY_PAGE_SIZE)
     .fetch_all(pool)
@@ -223,18 +288,14 @@ pub(super) async fn get_private_channels_board(
             token_ids,
         })
         .collect();
-    let token_options: Vec<i64> = super::sqlx::query_scalar(
-        "SELECT row_number() OVER (ORDER BY slack_id) - 1
-         FROM slack_oauth_tokens WHERE disabled_at IS NULL ORDER BY slack_id",
-    )
-    .fetch_all(pool)
-    .await
-    .unwrap_or_default();
     let template = PrivateChannelsTemplate {
         rows,
         query,
         token_filter,
-        token_options: token_options.into_iter().map(|id| id.to_string()).collect(),
+        token_options: token_rows
+            .into_iter()
+            .map(|(_, id)| id.to_string())
+            .collect(),
         has_previous: page > 1,
         has_next: page < page_count,
         page,

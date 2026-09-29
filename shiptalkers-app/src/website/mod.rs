@@ -210,6 +210,11 @@ pub struct BoardsTemplate {
 pub struct LinkedBoardsTemplate {
     pub rows: Vec<LinkedBoardRow>,
     pub filter: String,
+    pub query: String,
+    pub has_previous: bool,
+    pub has_next: bool,
+    pub page: u64,
+    pub page_count: u64,
     pub signed_in: bool,
     pub page_load_ms: String,
 }
@@ -229,6 +234,7 @@ pub struct BlacklistedChannelRow {
 }
 
 pub struct LinkedBoardRow {
+    pub rank: u64,
     pub shiptalkers_id: String,
     pub hackatime: bool,
     pub hackatime_date: String,
