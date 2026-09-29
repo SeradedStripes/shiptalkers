@@ -5,10 +5,12 @@ use crate::db::postgres_db;
 use crate::settings::RuntimeSettings;
 
 const HELP: &str = r#"Available commands:
+======================
 blacklist <channel_id>
 whitelist <channel_id>
-help
-Multiple IDs may be comma-separated: blacklist C123, C456"#;
+----------------------
+Multiple IDs may be comma-separated: blacklist C123, C456
+======================"#;
 const NOT_ADMIN: &str = "You're not an admin silly <3";
 
 #[derive(Debug, Deserialize)]
