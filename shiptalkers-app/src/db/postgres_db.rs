@@ -10,7 +10,8 @@ use sha2::{Digest, Sha256};
 
 pub use ship_talkers_lib::db::{
     BlacklistedChannelRow, SlackChannelRow, SlackUserRow, blacklist_channel, connect,
-    get_blacklisted_channel_ids, insert_new_channels_rows, migrate, placeholders, upsert_users,
+    get_blacklisted_channel_ids, insert_new_channels_rows, migrate, placeholders,
+    unblacklist_channel, upsert_users,
 };
 
 pub async fn insert_new_channels(

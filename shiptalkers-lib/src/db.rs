@@ -56,7 +56,7 @@ pub async fn get_blacklisted_channel_ids(
 pub async fn blacklist_channel(
     pool: &PgPool,
     slack_channel_id: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let ship_talkers_id = crate::base36::encode(slack_channel_id.as_bytes());
     let mut tx = pool.begin().await?;
     sqlx::query(
@@ -105,6 +105,17 @@ pub async fn blacklist_channel(
         .execute(&mut *tx)
         .await?;
     tx.commit().await?;
+    Ok(())
+}
+
+pub async fn unblacklist_channel(
+    pool: &PgPool,
+    slack_channel_id: &str,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    sqlx::query("DELETE FROM blacklisted_channels WHERE slack_channel_id = $1")
+        .bind(slack_channel_id)
+        .execute(pool)
+        .await?;
     Ok(())
 }
 

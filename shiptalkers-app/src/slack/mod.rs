@@ -1,3 +1,4 @@
+mod admin;
 mod socket;
 pub(crate) mod time_range;
 

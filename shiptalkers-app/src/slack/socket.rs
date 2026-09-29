@@ -10,6 +10,7 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 use crate::bot_image;
 use crate::db::postgres_db::{self, SlackChannelRow, SlackUserRow};
 use crate::settings::RuntimeSettings;
+use crate::slack::admin;
 use crate::slack::time_range::{self, TimeRange, now_unix};
 use crate::sqlx;
 
@@ -542,6 +543,20 @@ async fn handle_message(
 
     let sender = msg.user.unwrap_or_default();
     let text = msg.text.unwrap_or_default();
+
+    if admin::handle_message(
+        client,
+        pool,
+        settings,
+        &msg.channel,
+        &msg.ts,
+        &sender,
+        &text,
+    )
+    .await
+    {
+        return;
+    }
 
     if text.trim().eq_ignore_ascii_case("opt out") {
         set_pending_opt_out(&msg.channel, &msg.ts, &sender);
