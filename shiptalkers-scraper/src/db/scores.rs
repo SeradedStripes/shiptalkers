@@ -393,13 +393,13 @@ async fn recompute_channel_scores_chunk(
     let sessions: Vec<(String, i64)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "WITH
          msg AS (
-             SELECT m.channel_id, m.message_ts / 1000000 AS ts,
+             SELECT c.channel_id, m.message_ts / 1000000 AS ts,
                     sum(m.char_count) AS chars,
                     count(*) AS msgs
              FROM slack_messages m
              JOIN slack_channels c ON c.internal_id = m.channel_id
              WHERE c.channel_id = ANY($1) AND {exclude_bots_deleted}
-             GROUP BY m.channel_id, ts
+              GROUP BY c.channel_id, ts
          ),
          flagged AS (
              SELECT channel_id, ts, chars, msgs,
