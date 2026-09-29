@@ -16,6 +16,7 @@ pub const SETTING_KEYS: &[&str] = &[
     "SLACK_APP_TOKENS",
     "SLACK_BOT_TOKENS",
     "SLACK_MAIN_CHANNEL",
+    "SHIPTALKERS_ADMIN_SLACKID",
 ];
 
 fn default_value(key: &str) -> &str {
@@ -30,7 +31,11 @@ fn default_value(key: &str) -> &str {
 /// Keys that hold comma-separated lists. These also accept numbered variants
 /// (`SLACK_BOT_TOKENS_1`, `SLACK_BOT_TOKENS_2`, ...) so long tokens can be
 /// added as short separate lines instead of one giant line.
-const LIST_KEYS: &[&str] = &["SLACK_APP_TOKENS", "SLACK_BOT_TOKENS"];
+const LIST_KEYS: &[&str] = &[
+    "SLACK_APP_TOKENS",
+    "SLACK_BOT_TOKENS",
+    "SHIPTALKERS_ADMIN_SLACKID",
+];
 const MAX_LIST_VARIANTS: u32 = 64;
 
 /// Settings read from environment variables at startup, with defaults for keys
@@ -92,7 +97,11 @@ impl RuntimeSettings {
         let read = self.inner.read().unwrap();
         let mut out = Vec::new();
         let mut push = |v: &str| {
-            for s in v.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+            for s in v
+                .split(',')
+                .map(|s| s.trim().trim_matches(['[', ']']))
+                .filter(|s| !s.is_empty())
+            {
                 if !out.contains(&s.to_string()) {
                     out.push(s.to_string());
                 }
@@ -107,6 +116,12 @@ impl RuntimeSettings {
             }
         }
         out
+    }
+
+    pub fn is_shiptalkers_admin(&self, slack_id: &str) -> bool {
+        self.get_list("SHIPTALKERS_ADMIN_SLACKID")
+            .iter()
+            .any(|admin_id| admin_id == slack_id)
     }
 
     pub fn auth_config(&self) -> crate::auth::AuthConfig {

@@ -102,6 +102,10 @@ impl AppState {
         self.pool.as_ref().ok_or(StatusCode::SERVICE_UNAVAILABLE)
     }
 
+    pub fn is_shiptalkers_admin(&self, slack_id: &str) -> bool {
+        self.settings.is_shiptalkers_admin(slack_id)
+    }
+
     fn auth_db(&self) -> Result<&std::sync::Arc<crate::db::postgres_db::AuthDb>, StatusCode> {
         self.auth_db.as_ref().ok_or(StatusCode::SERVICE_UNAVAILABLE)
     }
