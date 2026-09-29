@@ -300,6 +300,8 @@ const POPULATION_WAIT: &str =
 const RANGE_WAIT: &str = "The bot has not caught up to your coding and slack messages in that time range yet, please try again later";
 const OPT_OUT_CONFIRMATION: &str = "Are you sure you want to opt out? Respond \"yes\" to opt out";
 const OPT_OUT_SUCCESS: &str = "Opted out successfully";
+const OUTPUT_LINK: &str =
+    "https://hackclub.enterprise.slack.com/archives/C07TCQ45NTS/p1790691255153049";
 const PENDING_OPT_OUT_TTL_SECS: i64 = 600;
 
 static PENDING_OPT_OUTS: OnceLock<Mutex<HashMap<(String, String), (String, i64)>>> =
@@ -576,6 +578,16 @@ async fn handle_message(
             }
             Ok(false) => tracing::debug!("Slack user {} was already opted out", sender),
             Err(e) => tracing::error!("Failed to opt out Slack user {}: {}", sender, e),
+        }
+        return;
+    }
+
+    if text.trim().eq_ignore_ascii_case("output") {
+        if let Some(bot_token) = settings.get_list("SLACK_BOT_TOKENS").first().cloned()
+            && let Err(e) =
+                post_message(client, &bot_token, &msg.channel, &msg.ts, OUTPUT_LINK).await
+        {
+            tracing::error!("Stats bot: failed to post output link: {}", e);
         }
         return;
     }
