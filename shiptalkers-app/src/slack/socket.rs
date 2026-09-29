@@ -293,6 +293,7 @@ async fn serve_socket(
 
 const SEEN_TTL_SECS: i64 = 600;
 const SEEN_MAX: usize = 512;
+const CONSENT_NOTICE: &str = "You have been opted in by sending a message here, type \"opt out\" in the channel root to opt out. Please wait a while while we collect your message data.";
 
 /// Marks a (channel, ts) as handled. Returns true if this is the first time we have seen it, false for any redelivery. Prunes stale entries on insert.
 fn mark_seen(seen: &Mutex<VecDeque<(String, String, i64)>>, channel: &str, ts: &str) -> bool {
@@ -494,6 +495,23 @@ async fn handle_message(
 
     let sender = msg.user.unwrap_or_default();
     let text = msg.text.unwrap_or_default();
+
+    if text.trim().eq_ignore_ascii_case("opt out") {
+        match postgres_db::opt_out_slack_user(pool, &sender).await {
+            Ok(true) => tracing::info!("Slack user {} opted out", sender),
+            Ok(false) => tracing::debug!("Slack user {} was already opted out", sender),
+            Err(e) => tracing::error!("Failed to opt out Slack user {}: {}", sender, e),
+        }
+        return;
+    }
+
+    let first_consent = match postgres_db::opt_in_slack_user(pool, &sender, "slack_message").await {
+        Ok(first) => first,
+        Err(e) => {
+            tracing::error!("Failed to record consent for Slack user {}: {}", sender, e);
+            return;
+        }
+    };
     let Some(bot_token) = settings.get_list("SLACK_BOT_TOKENS").first().cloned() else {
         tracing::warn!("Stats bot: no bot tokens configured, skipping reply");
         return;
@@ -502,7 +520,15 @@ async fn handle_message(
     let range = match time_range::parse_time_range_at(&text, now_unix()) {
         Some(range) => range,
         None if is_bare_mention(&text) => TimeRange::AllTime,
-        None => return,
+        None => {
+            if first_consent
+                && let Err(e) =
+                    post_message(client, &bot_token, &msg.channel, &msg.ts, CONSENT_NOTICE).await
+            {
+                tracing::error!("Stats bot: failed to post consent notice: {}", e);
+            }
+            return;
+        }
     };
     let user = extract_mentioned_user(&text).unwrap_or_else(|| sender.clone());
     tracing::info!(
@@ -576,6 +602,7 @@ async fn handle_message(
         &msg.ts,
         png,
         &user_page_url,
+        first_consent,
     )
     .await
     {
@@ -812,6 +839,7 @@ async fn upload_image(
     thread_ts: &str,
     png: Vec<u8>,
     user_page_url: &str,
+    first_consent: bool,
 ) -> Result<(), String> {
     let response = client
         .post("https://slack.com/api/files.getUploadURLExternal")
@@ -853,7 +881,11 @@ async fn upload_image(
     }
 
     let files = serde_json::json!([{ "id": file_id }]).to_string();
-    let initial_comment = format!("Stats page: <{user_page_url}|View user stats>");
+    let initial_comment = if first_consent {
+        format!("{CONSENT_NOTICE}\nStats page: <{user_page_url}|View user stats>")
+    } else {
+        format!("Stats page: <{user_page_url}|View user stats>")
+    };
     let response = client
         .post("https://slack.com/api/files.completeUploadExternal")
         .header("Authorization", format!("Bearer {}", bot_token))
@@ -879,6 +911,38 @@ async fn upload_image(
         ));
     }
 
+    Ok(())
+}
+
+async fn post_message(
+    client: &Client,
+    bot_token: &str,
+    channel: &str,
+    thread_ts: &str,
+    text: &str,
+) -> Result<(), String> {
+    let response = client
+        .post("https://slack.com/api/chat.postMessage")
+        .header("Authorization", format!("Bearer {bot_token}"))
+        .form(&[
+            ("channel", channel),
+            ("thread_ts", thread_ts),
+            ("text", text),
+        ])
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+    let parsed: PostMessageResponse = serde_json::from_str(&body)
+        .map_err(|e| format!("chat.postMessage returned bad JSON ({status}, {body:?}): {e}"))?;
+    if !parsed.ok {
+        return Err(format!(
+            "Slack API error: {} ({})",
+            parsed.error.unwrap_or_default(),
+            status
+        ));
+    }
     Ok(())
 }
 

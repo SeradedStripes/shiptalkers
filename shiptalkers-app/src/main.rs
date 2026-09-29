@@ -34,6 +34,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tracing::info!("Connecting to Postgres...");
         let pool = db::postgres_db::connect(&database_url).await?;
         db::postgres_db::migrate(&pool).await?;
+        let main_channel = settings.get("SLACK_MAIN_CHANNEL");
+        if !main_channel.is_empty() {
+            match db::postgres_db::backfill_main_channel_consents(&pool, &main_channel).await {
+                Ok(count) if count > 0 => {
+                    tracing::info!("Auto-opted in {} main-channel users", count)
+                }
+                Ok(_) => {}
+                Err(e) => tracing::warn!("Failed to backfill main-channel consent: {}", e),
+            }
+        }
         Some(pool)
     };
     let auth_db = pool

@@ -14,11 +14,9 @@ use tokio::sync::Mutex;
 
 use crate::settings::RuntimeSettings;
 
-const EXCLUDE_BOTS_DELETED: &str = "NOT EXISTS (SELECT 1 FROM slack_identities bi JOIN users bu ON bu.ship_talkers_id = bi.ship_talkers_id WHERE bi.internal_id = m.identity_id AND (bu.is_bot = 1 OR bu.is_deleted = 1))";
-const EXCLUDE_BOTS_DELETED_SLACK_ID: &str =
-    "slack_id NOT IN (SELECT user_id FROM users WHERE is_bot = 1 OR is_deleted = 1)";
-const EXCLUDE_BOTS_DELETED_SCORE: &str =
-    "user_id NOT IN (SELECT user_id FROM users WHERE is_bot = 1 OR is_deleted = 1)";
+const EXCLUDE_BOTS_DELETED: &str = "NOT EXISTS (SELECT 1 FROM slack_identities bi JOIN users bu ON bu.ship_talkers_id = bi.ship_talkers_id WHERE bi.internal_id = m.identity_id AND (bu.is_bot = 1 OR bu.is_deleted = 1)) AND EXISTS (SELECT 1 FROM slack_identities ci JOIN slack_user_consents cc ON cc.ship_talkers_id = ci.ship_talkers_id WHERE ci.internal_id = m.identity_id AND cc.revoked_at IS NULL)";
+const EXCLUDE_BOTS_DELETED_SLACK_ID: &str = "slack_id NOT IN (SELECT user_id FROM users WHERE is_bot = 1 OR is_deleted = 1) AND slack_id IN (SELECT slack_user_id FROM slack_user_consents WHERE revoked_at IS NULL)";
+const EXCLUDE_BOTS_DELETED_SCORE: &str = "user_id NOT IN (SELECT user_id FROM users WHERE is_bot = 1 OR is_deleted = 1) AND user_id IN (SELECT slack_user_id FROM slack_user_consents WHERE revoked_at IS NULL)";
 
 pub mod api;
 pub mod auth;
@@ -691,7 +689,8 @@ async fn legacy_board_category(
             let inner = "SELECT channel_id AS id, total_time::bigint AS value, \
                  messages::bigint AS extra, \
                  row_number() OVER (ORDER BY total_time DESC) AS rank \
-                 FROM channel_scores";
+                 FROM channel_scores s
+                 WHERE EXISTS (SELECT 1 FROM slack_channels c JOIN slack_messages m ON m.channel_id = c.internal_id JOIN slack_identities i ON i.internal_id = m.identity_id JOIN slack_user_consents consent ON consent.ship_talkers_id = i.ship_talkers_id WHERE c.channel_id = s.channel_id AND consent.revoked_at IS NULL)";
             let eq = sql_escape(&q.to_lowercase());
             let resolve = format!(
                 "SELECT c.channel_id AS id FROM slack_channels AS c FINAL \

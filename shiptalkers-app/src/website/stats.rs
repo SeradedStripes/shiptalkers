@@ -71,7 +71,9 @@ async fn render_user_stats(
     let started = Instant::now();
     let ch = state.pool()?;
     let signed_in = super::signed_in(state, headers);
+
     let ship_talkers_id = ship_talkers_lib::base36::encode(slack_id.as_bytes());
+    let consented = crate::db::postgres_db::is_slack_user_consented(ch, slack_id).await;
 
     #[derive(Debug)]
     struct UserInfo {
@@ -158,19 +160,23 @@ async fn render_user_stats(
         channels: u64,
     }
 
-    let scores: Option<ScoreRow> = super::sqlx::query_as::<_, (i64, i64, i64)>(
-        "SELECT total_time, messages, channels
-         FROM user_scores WHERE user_id = $1",
-    )
-    .bind(slack_id)
-    .fetch_optional(ch)
-    .await
-    .unwrap_or(None)
-    .map(|(total_time, messages, channels)| ScoreRow {
-        total_time: total_time.max(0) as u64,
-        messages: messages.max(0) as u64,
-        channels: channels.max(0) as u64,
-    });
+    let scores: Option<ScoreRow> = if consented {
+        super::sqlx::query_as::<_, (i64, i64, i64)>(
+            "SELECT total_time, messages, channels
+             FROM user_scores WHERE user_id = $1",
+        )
+        .bind(slack_id)
+        .fetch_optional(ch)
+        .await
+        .unwrap_or(None)
+        .map(|(total_time, messages, channels)| ScoreRow {
+            total_time: total_time.max(0) as u64,
+            messages: messages.max(0) as u64,
+            channels: channels.max(0) as u64,
+        })
+    } else {
+        None
+    };
 
     let coding_minutes: u64 = super::sqlx::query_scalar::<_, i64>(
         "SELECT total_minutes FROM hackatime_connections WHERE slack_id = $1",
@@ -182,8 +188,9 @@ async fn render_user_stats(
     .unwrap_or(0)
     .max(0) as u64;
 
-    let counts: Vec<(String, i64)> = super::sqlx::query_as(
-        "SELECT c.channel_id, count(*) as messages
+    let counts: Vec<(String, i64)> = if consented {
+        super::sqlx::query_as(
+            "SELECT c.channel_id, count(*) as messages
          FROM slack_messages m
          JOIN slack_identities i ON i.internal_id = m.identity_id
          JOIN slack_channels c ON c.internal_id = m.channel_id
@@ -191,11 +198,14 @@ async fn render_user_stats(
          GROUP BY c.channel_id
          ORDER BY messages DESC
          LIMIT 5",
-    )
-    .bind(ship_talkers_id)
-    .fetch_all(ch)
-    .await
-    .unwrap_or_default();
+        )
+        .bind(ship_talkers_id)
+        .fetch_all(ch)
+        .await
+        .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
 
     let name_ids: Vec<String> = counts.iter().map(|(id, _)| id.clone()).collect();
     let channel_names: std::collections::HashMap<String, (String, String)> = if name_ids.is_empty()
@@ -230,10 +240,18 @@ async fn render_user_stats(
             messages: super::fmt_thousands(messages.max(0) as u64),
         })
         .collect();
+    let top_channels = if consented {
+        top_channels
+    } else {
+        vec![ChannelStats {
+            user_id: String::new(),
+            url_id: String::new(),
+            channel_name: "Not Opted In".into(),
+            messages: String::new(),
+        }]
+    };
 
     let total_messages = scores.as_ref().map(|s| s.messages).unwrap_or(0);
-    let found = total_messages > 0 || coding_minutes > 0 || !merged_name.is_empty();
-
     let slack_time = match scores.as_ref() {
         Some(s) if s.messages > 0 => super::fmt_minutes(s.total_time / 60),
         _ => "0hrs 0min".into(),
@@ -260,7 +278,7 @@ async fn render_user_stats(
         top_channels,
         show_coding_prompt: !is_bot && !is_deleted && coding_minutes == 0,
         signed_in,
-        found,
+        found: info.is_some(),
         page_load_ms: format!("{}ms", started.elapsed().as_millis()),
     };
     let html = template
@@ -294,7 +312,7 @@ async fn render_channel_stats(
         .unwrap_or_else(|| (String::new(), String::new()));
 
     let total_messages: u64 =
-        super::sqlx::query_scalar::<_, i64>("SELECT count(*) FROM slack_messages m JOIN slack_channels c ON c.internal_id = m.channel_id WHERE c.channel_id = $1")
+        super::sqlx::query_scalar::<_, i64>("SELECT count(*) FROM slack_messages m JOIN slack_channels c ON c.internal_id = m.channel_id JOIN slack_identities i ON i.internal_id = m.identity_id JOIN slack_user_consents consent ON consent.ship_talkers_id = i.ship_talkers_id WHERE c.channel_id = $1 AND consent.revoked_at IS NULL")
             .bind(channel_id)
             .fetch_one(ch)
             .await

@@ -358,6 +358,7 @@ struct UserStatsJson {
     pfp: String,
     is_bot: bool,
     is_deleted: bool,
+    slack_status: String,
     found: bool,
     scores: Option<ScoreJson>,
     coding_minutes: u64,
@@ -388,6 +389,7 @@ async fn load_user_stats(
     pool: &crate::sqlx::PgPool,
     slack_id: &str,
 ) -> Result<UserStatsJson, String> {
+    let consented = crate::db::postgres_db::is_slack_user_consented(pool, slack_id).await;
     let (merged_name, display_name, real_name, username, email, pfp_url, is_bot, is_deleted): (
         String,
         String,
@@ -420,27 +422,33 @@ async fn load_user_stats(
         active_hour: i16,
     }
 
-    let scores: Option<Scores> = sqlx::query_as::<_, (i64, i64, i64, i64, i64, i64, i64, i16)>(
-        "SELECT score, total_time, messages, sessions, longest,
-                days, channels, active_hour
-         FROM user_scores WHERE user_id = $1",
-    )
-    .bind(slack_id)
-    .fetch_optional(pool)
-    .await
-    .map_err(|e| e.to_string())?
-    .map(
-        |(score, total_time, messages, sessions, longest, days, channels, active_hour)| Scores {
-            score,
-            total_time,
-            messages,
-            sessions,
-            longest,
-            days,
-            channels,
-            active_hour,
-        },
-    );
+    let scores: Option<Scores> = if consented {
+        sqlx::query_as::<_, (i64, i64, i64, i64, i64, i64, i64, i16)>(
+            "SELECT score, total_time, messages, sessions, longest,
+                    days, channels, active_hour
+             FROM user_scores WHERE user_id = $1",
+        )
+        .bind(slack_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| e.to_string())?
+        .map(
+            |(score, total_time, messages, sessions, longest, days, channels, active_hour)| {
+                Scores {
+                    score,
+                    total_time,
+                    messages,
+                    sessions,
+                    longest,
+                    days,
+                    channels,
+                    active_hour,
+                }
+            },
+        )
+    } else {
+        None
+    };
 
     let coding_minutes: u64 = sqlx::query_scalar::<_, i64>(
         "SELECT total_minutes FROM hackatime_connections WHERE slack_id = $1",
@@ -453,8 +461,9 @@ async fn load_user_stats(
     .max(0) as u64;
     let ship_talkers_id = ship_talkers_lib::base36::encode(slack_id.as_bytes());
 
-    let counts: Vec<(String, i64)> = sqlx::query_as(
-        "SELECT c.channel_id, count(*) as messages
+    let counts: Vec<(String, i64)> = if consented {
+        sqlx::query_as(
+            "SELECT c.channel_id, count(*) as messages
          FROM slack_messages m
          JOIN slack_identities i ON i.internal_id = m.identity_id
          JOIN slack_channels c ON c.internal_id = m.channel_id
@@ -462,11 +471,14 @@ async fn load_user_stats(
          GROUP BY c.channel_id
          ORDER BY messages DESC
          LIMIT 10",
-    )
-    .bind(&ship_talkers_id)
-    .fetch_all(pool)
-    .await
-    .map_err(|e| e.to_string())?;
+        )
+        .bind(&ship_talkers_id)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| e.to_string())?
+    } else {
+        Vec::new()
+    };
 
     let name_ids: Vec<String> = counts.iter().map(|(id, _)| id.clone()).collect();
     let channel_names: std::collections::HashMap<String, String> = if name_ids.is_empty() {
@@ -483,7 +495,7 @@ async fn load_user_stats(
         .collect()
     };
 
-    let top_channels: Vec<TopChannelJson> = counts
+    let mut top_channels: Vec<TopChannelJson> = counts
         .into_iter()
         .map(|(channel_id, messages)| TopChannelJson {
             channel_id: channel_id.clone(),
@@ -494,6 +506,13 @@ async fn load_user_stats(
             messages,
         })
         .collect();
+    if !consented {
+        top_channels.push(TopChannelJson {
+            channel_id: String::new(),
+            channel_name: "Not Opted In".into(),
+            messages: 0,
+        });
+    }
 
     let total_messages = scores.as_ref().map(|s| s.messages).unwrap_or(0);
     let found = total_messages > 0 || coding_minutes > 0 || !merged_name.is_empty();
@@ -530,6 +549,11 @@ async fn load_user_stats(
         pfp: super::local_pfp(&ship_talkers_id, &pfp_url),
         is_bot,
         is_deleted,
+        slack_status: if consented {
+            "Opted In".into()
+        } else {
+            "Not Opted In".into()
+        },
         found,
         scores: scores.map(|s| ScoreJson {
             score: s.score,
@@ -666,7 +690,8 @@ pub async fn get_boards(
             "SELECT channel_id AS id, total_time::bigint AS value, \
              messages::bigint AS extra, \
              row_number() OVER (ORDER BY total_time DESC) AS rank \
-             FROM channel_scores"
+             FROM channel_scores s
+             WHERE EXISTS (SELECT 1 FROM slack_channels c JOIN slack_messages m ON m.channel_id = c.internal_id JOIN slack_identities i ON i.internal_id = m.identity_id JOIN slack_user_consents consent ON consent.ship_talkers_id = i.ship_talkers_id WHERE c.channel_id = s.channel_id AND consent.revoked_at IS NULL)"
                 .to_string(),
             BoardKind::Channels,
         ),
@@ -863,7 +888,7 @@ async fn load_channel_stats(
             .map_err(|e| e.to_string())?;
 
     let total_messages: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM slack_messages m JOIN slack_channels c ON c.internal_id = m.channel_id WHERE c.channel_id = $1")
+        sqlx::query_scalar("SELECT count(*) FROM slack_messages m JOIN slack_channels c ON c.internal_id = m.channel_id JOIN slack_identities i ON i.internal_id = m.identity_id JOIN slack_user_consents consent ON consent.ship_talkers_id = i.ship_talkers_id WHERE c.channel_id = $1 AND consent.revoked_at IS NULL")
             .bind(channel_id)
             .fetch_one(pool)
             .await
@@ -880,7 +905,7 @@ async fn load_channel_stats(
     .map_err(|e| e.to_string())?;
 
     let first_message_ts: i64 = sqlx::query_scalar::<_, Option<i64>>(
-        "SELECT min(m.message_ts) FROM slack_messages m JOIN slack_channels c ON c.internal_id = m.channel_id WHERE c.channel_id = $1",
+        "SELECT min(m.message_ts) FROM slack_messages m JOIN slack_channels c ON c.internal_id = m.channel_id JOIN slack_identities i ON i.internal_id = m.identity_id JOIN slack_user_consents consent ON consent.ship_talkers_id = i.ship_talkers_id WHERE c.channel_id = $1 AND consent.revoked_at IS NULL",
     )
     .bind(channel_id)
     .fetch_one(pool)
@@ -890,7 +915,7 @@ async fn load_channel_stats(
     .max(0);
 
     let last_message_ts: i64 = sqlx::query_scalar::<_, Option<i64>>(
-        "SELECT max(m.message_ts) FROM slack_messages m JOIN slack_channels c ON c.internal_id = m.channel_id WHERE c.channel_id = $1",
+        "SELECT max(m.message_ts) FROM slack_messages m JOIN slack_channels c ON c.internal_id = m.channel_id JOIN slack_identities i ON i.internal_id = m.identity_id JOIN slack_user_consents consent ON consent.ship_talkers_id = i.ship_talkers_id WHERE c.channel_id = $1 AND consent.revoked_at IS NULL",
     )
     .bind(channel_id)
     .fetch_one(pool)
@@ -1055,7 +1080,8 @@ pub async fn get_search(
     let pattern = format!("%{}%", q);
     let users: Vec<serde_json::Value> = sqlx::query_as::<_, (String, String, String, i16)>(
         "SELECT user_id, merged_name, pfp, is_deleted FROM users \
-         WHERE merged_name ILIKE $1 OR real_name ILIKE $1 OR username ILIKE $1 OR user_id ILIKE $1 \
+         WHERE (is_bot = 1 OR is_deleted = 1 OR user_id IN (SELECT slack_user_id FROM slack_user_consents WHERE revoked_at IS NULL)) \
+           AND (merged_name ILIKE $1 OR real_name ILIKE $1 OR username ILIKE $1 OR user_id ILIKE $1) \
          ORDER BY (merged_name ILIKE $1) DESC, merged_name, real_name \
          LIMIT 25",
     )
@@ -1075,8 +1101,9 @@ pub async fn get_search(
     .collect();
 
     let channels: Vec<serde_json::Value> = sqlx::query_as::<_, (String, String)>(
-        "SELECT channel_id, name FROM slack_channels \
-         WHERE name ILIKE $1 \
+         "SELECT channel_id, name FROM slack_channels c \
+          WHERE name ILIKE $1 \
+            AND EXISTS (SELECT 1 FROM slack_messages m JOIN slack_identities i ON i.internal_id = m.identity_id JOIN slack_user_consents consent ON consent.ship_talkers_id = i.ship_talkers_id WHERE m.channel_id = c.internal_id AND consent.revoked_at IS NULL) \
          ORDER BY name \
          LIMIT 25",
     )

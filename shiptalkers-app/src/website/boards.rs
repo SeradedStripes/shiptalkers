@@ -303,7 +303,7 @@ async fn render_board_category(
             )
         }
         "channels" => {
-            let inner = "SELECT channel_id AS id, total_time::bigint AS value, messages::bigint AS extra, row_number() OVER (ORDER BY total_time DESC) AS rank FROM channel_scores";
+            let inner = "SELECT s.channel_id AS id, s.total_time::bigint AS value, s.messages::bigint AS extra, row_number() OVER (ORDER BY s.total_time DESC) AS rank FROM channel_scores s WHERE EXISTS (SELECT 1 FROM slack_channels c JOIN slack_messages m ON m.channel_id = c.internal_id JOIN slack_identities i ON i.internal_id = m.identity_id JOIN slack_user_consents consent ON consent.ship_talkers_id = i.ship_talkers_id WHERE c.channel_id = s.channel_id AND consent.revoked_at IS NULL)";
             let eq = sql_escape(&q.to_lowercase());
             let resolve = format!(
                 "SELECT c.channel_id AS id FROM slack_channels AS c FINAL JOIN ({inner}) lb ON c.channel_id = lb.id WHERE lower(c.name) LIKE '%{eq}%' ORDER BY (lower(c.name) = '{eq}') DESC, lb.rank, lower(c.name) LIMIT 1"

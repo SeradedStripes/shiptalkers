@@ -119,7 +119,7 @@ async fn distinct_user_ids(pool: &PgPool) -> Result<Vec<String>, Box<dyn std::er
 }
 
 async fn distinct_channel_ids(pool: &PgPool) -> Result<Vec<String>, Box<dyn std::error::Error>> {
-    let rows: Vec<String> = sqlx::query_scalar("SELECT DISTINCT c.channel_id FROM slack_messages m JOIN slack_channels c ON c.internal_id = m.channel_id")
+    let rows: Vec<String> = sqlx::query_scalar("SELECT DISTINCT c.channel_id FROM slack_messages m JOIN slack_channels c ON c.internal_id = m.channel_id JOIN slack_identities i ON i.internal_id = m.identity_id JOIN slack_user_consents sc ON sc.ship_talkers_id = i.ship_talkers_id AND sc.revoked_at IS NULL")
         .fetch_all(pool)
         .await?;
     Ok(rows)
@@ -178,9 +178,10 @@ async fn recompute_user_scores_chunk(
                     sum(m.char_count) AS chars,
                     count(*) AS msgs
              FROM slack_messages m
-             JOIN slack_identities i ON i.internal_id = m.identity_id
-             JOIN users u ON u.ship_talkers_id = i.ship_talkers_id
-             WHERE u.user_id = ANY($1)
+              JOIN slack_identities i ON i.internal_id = m.identity_id
+              JOIN users u ON u.ship_talkers_id = i.ship_talkers_id
+              JOIN slack_user_consents sc ON sc.ship_talkers_id = i.ship_talkers_id AND sc.revoked_at IS NULL
+              WHERE u.user_id = ANY($1)
              GROUP BY u.user_id, ts
          ),
          flagged AS (
@@ -220,7 +221,8 @@ async fn recompute_user_scores_chunk(
           FROM slack_messages m
           JOIN slack_identities i ON i.internal_id = m.identity_id
              JOIN users u ON u.ship_talkers_id = i.ship_talkers_id
-          WHERE u.user_id = ANY($1)
+           JOIN slack_user_consents sc ON sc.ship_talkers_id = i.ship_talkers_id AND sc.revoked_at IS NULL
+           WHERE u.user_id = ANY($1)
           GROUP BY u.user_id",
     )
     .bind(ids)
@@ -256,7 +258,8 @@ async fn recompute_user_scores_chunk(
               FROM slack_messages m
               JOIN slack_identities i ON i.internal_id = m.identity_id
              JOIN users u ON u.ship_talkers_id = i.ship_talkers_id
-              WHERE u.user_id = ANY($1)
+              JOIN slack_user_consents sc ON sc.ship_talkers_id = i.ship_talkers_id AND sc.revoked_at IS NULL
+               WHERE u.user_id = ANY($1)
               GROUP BY u.user_id, hour
          ) h
          GROUP BY user_id",
@@ -381,7 +384,7 @@ async fn recompute_channel_scores_chunk(
     if ids.is_empty() {
         return Ok(0);
     }
-    let exclude_bots_deleted = "NOT EXISTS (SELECT 1 FROM slack_identities bi JOIN users bu ON bu.ship_talkers_id = bi.ship_talkers_id WHERE bi.internal_id = m.identity_id AND (bu.is_bot = 1 OR bu.is_deleted = 1))";
+    let exclude_bots_deleted = "NOT EXISTS (SELECT 1 FROM slack_identities bi JOIN users bu ON bu.ship_talkers_id = bi.ship_talkers_id WHERE bi.internal_id = m.identity_id AND (bu.is_bot = 1 OR bu.is_deleted = 1)) AND EXISTS (SELECT 1 FROM slack_identities ci JOIN slack_user_consents cc ON cc.ship_talkers_id = ci.ship_talkers_id WHERE ci.internal_id = m.identity_id AND cc.revoked_at IS NULL)";
     let boundary = crate::sessionize::SESSION_GAP_BOUNDARY_SECS;
     let rate = crate::sessionize::MESSAGE_TYPING_CHARS_PER_SEC;
     let overhead = crate::sessionize::MESSAGE_READ_OVERHEAD_SECS;

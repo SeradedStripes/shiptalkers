@@ -31,6 +31,125 @@ pub async fn insert_new_channels(
     insert_new_channels_rows(pool, &refs).await
 }
 
+pub async fn opt_in_slack_user(
+    pool: &PgPool,
+    slack_user_id: &str,
+    source: &str,
+) -> Result<bool, String> {
+    let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
+    let was_active: Option<i32> = sqlx::query_scalar(
+        "SELECT 1 FROM slack_user_consents
+         WHERE slack_user_id = $1 AND revoked_at IS NULL",
+    )
+    .bind(slack_user_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| e.to_string())?;
+    sqlx::query(
+        "INSERT INTO slack_user_consents (slack_user_id, ship_talkers_id, consent_source)
+         VALUES ($1, $3, $2)
+         ON CONFLICT (slack_user_id) DO UPDATE SET consented_at = now(),
+         revoked_at = NULL, consent_source = EXCLUDED.consent_source,
+         backfill_started_at = NULL, backfill_completed_at = NULL",
+    )
+    .bind(slack_user_id)
+    .bind(source)
+    .bind(ship_talkers_lib::base36::encode(slack_user_id.as_bytes()))
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| e.to_string())?;
+    if was_active.is_none() {
+        let ship_talkers_id = ship_talkers_lib::base36::encode(slack_user_id.as_bytes());
+        sqlx::query("DELETE FROM user_scores WHERE user_id = $1")
+            .bind(slack_user_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| e.to_string())?;
+        sqlx::query("DELETE FROM channel_scores")
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| e.to_string())?;
+        tracing::info!(
+            user = slack_user_id,
+            ship_talkers_id,
+            "queued consent backfill"
+        );
+    }
+    tx.commit().await.map_err(|e| e.to_string())?;
+    Ok(was_active.is_none())
+}
+
+pub async fn opt_out_slack_user(pool: &PgPool, slack_user_id: &str) -> Result<bool, String> {
+    let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
+    let result = sqlx::query(
+        "UPDATE slack_user_consents
+         SET revoked_at = now(), backfill_started_at = NULL,
+             backfill_completed_at = NULL
+         WHERE slack_user_id = $1 AND revoked_at IS NULL",
+    )
+    .bind(slack_user_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| e.to_string())?;
+    if result.rows_affected() > 0 {
+        sqlx::query("DELETE FROM user_scores WHERE user_id = $1")
+            .bind(slack_user_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| e.to_string())?;
+        sqlx::query("DELETE FROM channel_scores")
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    tx.commit().await.map_err(|e| e.to_string())?;
+    Ok(result.rows_affected() > 0)
+}
+
+pub async fn is_slack_user_consented(pool: &PgPool, slack_user_id: &str) -> bool {
+    sqlx::query_scalar::<_, i32>(
+        "SELECT 1 FROM slack_user_consents
+         WHERE slack_user_id = $1 AND revoked_at IS NULL",
+    )
+    .bind(slack_user_id)
+    .fetch_optional(pool)
+    .await
+    .is_ok_and(|row| row.is_some())
+}
+
+pub async fn backfill_main_channel_consents(
+    pool: &PgPool,
+    channel_id: &str,
+) -> Result<u64, String> {
+    let result = sqlx::query(
+        "INSERT INTO slack_user_consents
+             (slack_user_id, ship_talkers_id, consent_source)
+         SELECT DISTINCT u.user_id, u.ship_talkers_id, 'main_channel_backfill'
+         FROM slack_messages m
+         JOIN slack_identities i ON i.internal_id = m.identity_id
+         JOIN users u ON u.ship_talkers_id = i.ship_talkers_id
+         JOIN slack_channels c ON c.internal_id = m.channel_id
+         WHERE c.channel_id = $1 AND u.is_bot = 0
+         ON CONFLICT (slack_user_id) DO NOTHING",
+    )
+    .bind(channel_id)
+    .execute(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    let count = result.rows_affected();
+    if count > 0 {
+        sqlx::query("DELETE FROM user_scores WHERE user_id IN (SELECT slack_user_id FROM slack_user_consents WHERE consent_source = 'main_channel_backfill' AND revoked_at IS NULL)")
+            .execute(pool)
+            .await
+            .map_err(|e| e.to_string())?;
+        sqlx::query("DELETE FROM channel_scores")
+            .execute(pool)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(count)
+}
+
 /// Linked-user state backing OAuth sign-in and hackatime linking.
 #[derive(Clone)]
 pub struct AuthDb {

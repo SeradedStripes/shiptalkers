@@ -46,7 +46,7 @@ async fn render_channels_board(
     let page_count = ((total.max(0) as u64).saturating_add(DIRECTORY_PAGE_SIZE as u64 - 1)
         / DIRECTORY_PAGE_SIZE as u64)
         .max(1);
-    let mut records: Vec<(String, String, String, i16, i16)> = super::sqlx::query_as("SELECT channel_id, COALESCE(ship_talkers_id, channel_id), name, is_private, is_archived FROM slack_channels ORDER BY COALESCE(ship_talkers_id, channel_id), channel_id LIMIT $1 OFFSET $2").bind(if search_mode { 6 } else { DIRECTORY_PAGE_SIZE + 1 }).bind(row_offset.min(i64::MAX as u64) as i64).fetch_all(ch).await.unwrap_or_default();
+    let mut records: Vec<(String, String, String, i16, i16)> = super::sqlx::query_as("SELECT c.channel_id, COALESCE(c.ship_talkers_id, c.channel_id), c.name, c.is_private, c.is_archived FROM slack_channels c ORDER BY COALESCE(c.ship_talkers_id, c.channel_id), c.channel_id LIMIT $1 OFFSET $2").bind(if search_mode { 6 } else { DIRECTORY_PAGE_SIZE + 1 }).bind(row_offset.min(i64::MAX as u64) as i64).fetch_all(ch).await.unwrap_or_default();
     if !query.trim().is_empty() && target.is_none() {
         records.clear();
     }
