@@ -40,12 +40,18 @@ pub async fn handle_message(
 
     let response = match command {
         AdminCommand::Help => Ok(HELP.to_string()),
-        AdminCommand::Blacklist(channel_id) => postgres_db::blacklist_channel(pool, &channel_id)
-            .await
-            .map(|_| format!("Blacklisted channel {channel_id}")),
-        AdminCommand::Whitelist(channel_id) => postgres_db::unblacklist_channel(pool, &channel_id)
-            .await
-            .map(|_| format!("Whitelisted channel {channel_id}")),
+        AdminCommand::Blacklist(channel_id) => {
+            let channel_name = channel_name(pool, &channel_id).await;
+            postgres_db::blacklist_channel(pool, &channel_id)
+                .await
+                .map(|_| format!("Blacklisted channel: {channel_name} - {channel_id}"))
+        }
+        AdminCommand::Whitelist(channel_id) => {
+            let channel_name = channel_name(pool, &channel_id).await;
+            postgres_db::unblacklist_channel(pool, &channel_id)
+                .await
+                .map(|_| format!("Whitelisted channel: {channel_name} - {channel_id}"))
+        }
     };
 
     let message = match response {
@@ -79,6 +85,21 @@ fn parse_command(text: &str) -> Option<AdminCommand> {
         "whitelist" => Some(AdminCommand::Whitelist(tokens.next()?.to_string())),
         _ => None,
     }
+}
+
+async fn channel_name(pool: &crate::sqlx::PgPool, channel_id: &str) -> String {
+    crate::sqlx::query_scalar::<_, Option<String>>(
+        "SELECT COALESCE(
+             (SELECT channel_name FROM blacklisted_channels WHERE slack_channel_id = $1),
+             (SELECT name FROM slack_channels WHERE channel_id = $1),
+             ''
+         )",
+    )
+    .bind(channel_id)
+    .fetch_one(pool)
+    .await
+    .unwrap_or(None)
+    .unwrap_or_default()
 }
 
 async fn post_thread_message(
