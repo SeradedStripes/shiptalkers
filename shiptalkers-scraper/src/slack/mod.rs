@@ -247,6 +247,23 @@ impl SlackClient {
             .clone()
     }
 
+    pub async fn token_is_revoked(&self) -> bool {
+        match self.get("auth.test", &[]).await {
+            Ok(_) => false,
+            Err(error) => {
+                let error = error.to_string();
+                [
+                    "invalid_auth",
+                    "token_revoked",
+                    "account_inactive",
+                    "not_authed",
+                ]
+                .iter()
+                .any(|kind| error.contains(kind))
+            }
+        }
+    }
+
     async fn get(
         &self,
         method: &str,
@@ -645,6 +662,16 @@ impl SlackClientPool {
 
     fn client_for_page(&self, page: usize) -> &SlackClient {
         &self.clients[page % self.clients.len()]
+    }
+
+    pub async fn revoked_token_indices(&self) -> Vec<usize> {
+        let mut revoked = Vec::new();
+        for (index, client) in self.clients.iter().enumerate() {
+            if client.token_is_revoked().await {
+                revoked.push(index);
+            }
+        }
+        revoked
     }
 
     pub async fn fetch_channels_paginated<F>(

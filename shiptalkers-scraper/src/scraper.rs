@@ -277,6 +277,34 @@ pub async fn run_scraper(
         let oauth_tokens = db::postgres_db::get_slack_oauth_tokens(&pool)
             .await
             .unwrap_or_default();
+        let auth_pool = slack::SlackClientPool::new(
+            oauth_tokens
+                .iter()
+                .map(|token| token.access_token.clone())
+                .collect(),
+            request_delay,
+            max_inflight,
+        );
+        for index in auth_pool.revoked_token_indices().await.into_iter().rev() {
+            if let Some(token) = oauth_tokens.get(index) {
+                tracing::warn!(
+                    "Slack OAuth token revoked for {}, disabling it",
+                    token.slack_id
+                );
+                if let Err(error) =
+                    db::postgres_db::disable_slack_oauth_token(&pool, &token.slack_id).await
+                {
+                    tracing::warn!(
+                        "Failed to disable revoked Slack OAuth token for {}: {}",
+                        token.slack_id,
+                        error
+                    );
+                }
+            }
+        }
+        let oauth_tokens = db::postgres_db::get_slack_oauth_tokens(&pool)
+            .await
+            .unwrap_or_default();
         let private_refresh_tokens: Vec<db::postgres_db::SlackOAuthToken> = oauth_tokens
             .iter()
             .filter(|token| private_channels_need_refresh(&token.access_token))

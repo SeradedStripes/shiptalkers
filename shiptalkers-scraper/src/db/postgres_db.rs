@@ -31,6 +31,44 @@ pub async fn get_slack_oauth_tokens(pool: &PgPool) -> Result<Vec<SlackOAuthToken
     })
 }
 
+pub async fn disable_slack_oauth_token(
+    pool: &PgPool,
+    slack_id: &str,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let mut tx = pool.begin().await?;
+    sqlx::query(
+        "UPDATE slack_oauth_tokens SET disabled_at = now(), updated_at = now()
+         WHERE slack_id = $1",
+    )
+    .bind(slack_id)
+    .execute(&mut *tx)
+    .await?;
+    let result = sqlx::query(
+        "UPDATE slack_user_consents
+         SET oauth_active = false,
+             revoked_at = CASE
+                 WHEN manual_revoked_at IS NOT NULL THEN manual_revoked_at
+                 WHEN consent_source = 'slack_oauth' THEN now()
+                 ELSE revoked_at
+             END
+         WHERE slack_user_id = $1 AND oauth_active",
+    )
+    .bind(slack_id)
+    .execute(&mut *tx)
+    .await?;
+    if result.rows_affected() > 0 {
+        sqlx::query("DELETE FROM user_scores WHERE user_id = $1")
+            .bind(slack_id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM channel_scores")
+            .execute(&mut *tx)
+            .await?;
+    }
+    tx.commit().await?;
+    Ok(())
+}
+
 pub async fn replace_private_channel_access(
     pool: &PgPool,
     slack_id: &str,
