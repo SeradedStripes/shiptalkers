@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="refresh" content="300">
+    <title>Private Channels - Ship Talkers</title>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body class="boards board-directory">
+    {% include "header.html" %}
+    <div class="container">
+        <a href="/boards" class="back-link">Back to all boards</a>
+        <h1><span class="live"></span>Private Channels</h1>
+        {% include "directory_pagination.html" %}
+        <form class="search" method="get" action="{{ directory_path }}">
+            <input type="text" name="q" placeholder="Channel name or Slack ID..." value="{{ query }}">
+            <button type="submit">Search</button>
+        </form>
+        <div class="table-card">
+            <table>
+                <thead><tr><th>#</th><th>Channel Name</th><th>Slack ID</th><th>Scraping Token ID(s)</th></tr></thead>
+                <tbody>
+                {% if rows.is_empty() %}
+                    <tr><td colspan="4" class="empty">No private channels found</td></tr>
+                {% else %}
+                    {% for row in rows %}
+                    <tr><td>{{ row.rank }}</td><td>{{ row.name }}</td><td>{{ row.channel_id }}</td><td>{{ row.token_ids }}</td></tr>
+                    {% endfor %}
+                {% endif %}
+                </tbody>
+            </table>
+        </div>
+        {% include "directory_pagination.html" %}
+    </div>
+    {% include "footer.html" %}
+</body>
+</html>

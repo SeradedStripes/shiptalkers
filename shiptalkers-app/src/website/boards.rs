@@ -1,8 +1,8 @@
 use super::{
     AppState, BlacklistedChannelRow, BlacklistedChannelsTemplate, BoardCategoryTemplate,
     BoardEntry, BoardsTemplate, EXCLUDE_BOTS_DELETED_SCORE, EXCLUDE_BOTS_DELETED_SLACK_ID,
-    LinkedBoardRow, LinkedBoardsTemplate, PgPool, RankedRow, State, StatusCode, fmt_duration,
-    fmt_minutes, fmt_thousands, signed_in, sql_escape,
+    LinkedBoardRow, LinkedBoardsTemplate, PgPool, PrivateChannelRow, PrivateChannelsTemplate,
+    RankedRow, State, StatusCode, fmt_duration, fmt_minutes, fmt_thousands, signed_in, sql_escape,
 };
 use askama::Template;
 use axum::extract::{Path, Query};
@@ -18,6 +18,7 @@ pub(super) async fn get_boards(
     let started = Instant::now();
     let template = BoardsTemplate {
         signed_in: signed_in(&state, &headers),
+        is_admin: super::shiptalkers_admin_signed_in(&state, &headers),
         page_load_ms: format!("{}ms", started.elapsed().as_millis()),
     };
     let html = template
@@ -125,6 +126,84 @@ pub(super) async fn get_blacklisted_channels(
     let template = BlacklistedChannelsTemplate {
         rows,
         signed_in: signed_in(&state, &headers),
+        page_load_ms: format!("{}ms", started.elapsed().as_millis()),
+    };
+    Ok(Html(
+        template
+            .render()
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+    ))
+}
+
+pub(super) async fn get_private_channels_board(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<HashMap<String, String>>,
+) -> Result<Html<String>, StatusCode> {
+    if !super::shiptalkers_admin_signed_in(&state, &headers) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    let started = Instant::now();
+    let pool = state.pool()?;
+    let query = params.get("q").cloned().unwrap_or_default();
+    let pattern = format!("%{}%", query.trim());
+    let requested_page = params
+        .get("page")
+        .and_then(|page| page.parse::<u64>().ok())
+        .filter(|page| *page > 0)
+        .unwrap_or(1);
+    let total: i64 = super::sqlx::query_scalar(
+        "SELECT count(*) FROM slack_channels
+         WHERE is_private = 1 AND (name ILIKE $1 OR channel_id ILIKE $1)",
+    )
+    .bind(&pattern)
+    .fetch_one(pool)
+    .await
+    .unwrap_or(0);
+    let page_count = (total.max(0) as u64)
+        .div_ceil(super::DIRECTORY_PAGE_SIZE as u64)
+        .max(1);
+    let page = requested_page.min(page_count);
+    let records: Vec<(String, String, String)> = super::sqlx::query_as(
+        "WITH token_numbers AS (
+             SELECT slack_id, row_number() OVER (ORDER BY slack_id) - 1 AS token_no
+             FROM slack_oauth_tokens WHERE disabled_at IS NULL
+         )
+         SELECT c.name, c.channel_id,
+                COALESCE(string_agg(t.token_no::text, ',' ORDER BY t.token_no), '')
+         FROM slack_channels c
+         LEFT JOIN slack_oauth_channel_access a ON a.channel_id = c.channel_id
+         LEFT JOIN token_numbers t ON t.slack_id = a.slack_id
+         WHERE c.is_private = 1 AND (c.name ILIKE $1 OR c.channel_id ILIKE $1)
+         GROUP BY c.name, c.channel_id
+         ORDER BY c.name, c.channel_id
+         LIMIT $2 OFFSET $3",
+    )
+    .bind(&pattern)
+    .bind(super::DIRECTORY_PAGE_SIZE)
+    .bind((page - 1) as i64 * super::DIRECTORY_PAGE_SIZE)
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
+    let rows = records
+        .into_iter()
+        .enumerate()
+        .map(|(index, (name, channel_id, token_ids))| PrivateChannelRow {
+            rank: (page - 1) * super::DIRECTORY_PAGE_SIZE as u64 + index as u64 + 1,
+            name,
+            channel_id,
+            token_ids,
+        })
+        .collect();
+    let template = PrivateChannelsTemplate {
+        rows,
+        query,
+        has_previous: page > 1,
+        has_next: page < page_count,
+        page,
+        page_count,
+        directory_path: "/boards/private-channels".into(),
+        signed_in: true,
         page_load_ms: format!("{}ms", started.elapsed().as_millis()),
     };
     Ok(Html(

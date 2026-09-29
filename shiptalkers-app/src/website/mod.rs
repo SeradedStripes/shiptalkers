@@ -201,6 +201,7 @@ pub struct SearchTemplate {
 #[template(path = "boards.html")]
 pub struct BoardsTemplate {
     pub signed_in: bool,
+    pub is_admin: bool,
     pub page_load_ms: String,
 }
 
@@ -321,6 +322,27 @@ pub struct BoardCategoryTemplate {
     pub page_load_ms: String,
 }
 
+#[derive(Template)]
+#[template(path = "private_channels.html")]
+pub struct PrivateChannelsTemplate {
+    pub rows: Vec<PrivateChannelRow>,
+    pub query: String,
+    pub has_previous: bool,
+    pub has_next: bool,
+    pub page: u64,
+    pub page_count: u64,
+    pub directory_path: String,
+    pub signed_in: bool,
+    pub page_load_ms: String,
+}
+
+pub struct PrivateChannelRow {
+    pub rank: u64,
+    pub name: String,
+    pub channel_id: String,
+    pub token_ids: String,
+}
+
 pub struct BoardEntry {
     pub user_id: String,
     pub url_id: String,
@@ -374,6 +396,10 @@ pub fn router(
         .route("/stats/{id}", get(stats::get_stats_for_id))
         .route("/boards", get(boards::get_boards))
         .route("/boards/linked", get(boards::get_linked_boards))
+        .route(
+            "/boards/private-channels",
+            get(boards::get_private_channels_board),
+        )
         .route(
             "/boards/blacklisted-channels",
             get(boards::get_blacklisted_channels),
@@ -460,6 +486,11 @@ fn local_pfp(user_id: &str, pfp_url: &str) -> String {
 
 fn signed_in(state: &AppState, headers: &HeaderMap) -> bool {
     auth::session_from_request(headers, &state.settings.auth_config()).is_some()
+}
+
+pub(super) fn shiptalkers_admin_signed_in(state: &AppState, headers: &HeaderMap) -> bool {
+    auth::session_from_request(headers, &state.settings.auth_config())
+        .is_some_and(|session| state.is_shiptalkers_admin(&session.slack_id))
 }
 
 pub fn fmt_thousands(n: u64) -> String {
