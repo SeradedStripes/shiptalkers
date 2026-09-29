@@ -499,8 +499,10 @@ async fn handle_message(
         return;
     };
 
-    let Some(range) = time_range::parse_time_range_at(&text, now_unix()) else {
-        return;
+    let range = match time_range::parse_time_range_at(&text, now_unix()) {
+        Some(range) => range,
+        None if is_bare_mention(&text) => TimeRange::AllTime,
+        None => return,
     };
     let user = extract_mentioned_user(&text).unwrap_or_else(|| sender.clone());
     tracing::info!(
@@ -892,6 +894,17 @@ fn extract_mentioned_user(text: &str) -> Option<String> {
         return None;
     }
     Some(id.to_string())
+}
+
+fn is_bare_mention(text: &str) -> bool {
+    let text = text.trim();
+    let Some(start) = text.find("<@") else {
+        return false;
+    };
+    let Some(end) = text[start..].find('>') else {
+        return false;
+    };
+    start == 0 && end + 1 == text.len()
 }
 
 fn fmt_span(secs: u64) -> String {
