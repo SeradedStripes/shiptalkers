@@ -17,10 +17,26 @@ pub(super) struct StatsSnapshot {
     pub(super) coding_minutes: u64,
     pub(super) slack_time_secs: u64,
     pub(super) db_size_bytes: u64,
+    pub(super) opted_in_users: u64,
+    pub(super) non_opted_in_users: u64,
     pub(super) updated: u64,
 }
 
-type StatsMetaRow = (i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64);
+type StatsMetaRow = (
+    i64,
+    i64,
+    i64,
+    i64,
+    i64,
+    i64,
+    i64,
+    i64,
+    i64,
+    i64,
+    i64,
+    i64,
+    i64,
+);
 
 pub(super) async fn get_stats_page(
     State(state): State<AppState>,
@@ -457,6 +473,8 @@ async fn load_stats(state: &super::AppState, headers: &HeaderMap) -> super::Stat
             snapshot.slack_time_secs + snapshot.coding_minutes * 60,
         ),
         db_size_label,
+        opted_in_users: super::fmt_thousands(snapshot.opted_in_users),
+        non_opted_in_users: super::fmt_thousands(snapshot.non_opted_in_users),
         signed_in: super::signed_in(state, headers),
         page_load_ms: String::new(),
     }
@@ -475,12 +493,14 @@ pub(super) async fn compute_stats(state: &super::AppState) -> StatsSnapshot {
             coding_minutes: 0,
             slack_time_secs: 0,
             db_size_bytes: 0,
+            opted_in_users: 0,
+            non_opted_in_users: 0,
             updated: 0,
         };
     };
 
     let cached: Option<StatsMetaRow> = super::sqlx::query_as(
-        "SELECT total_messages, total_channels, archived_channels, total_users, hackatime_users, private_hackatime_users, no_hackatime_account_users, coding_minutes, slack_time_secs, db_size_bytes, updated
+        "SELECT total_messages, total_channels, archived_channels, total_users, hackatime_users, private_hackatime_users, no_hackatime_account_users, coding_minutes, slack_time_secs, db_size_bytes, opted_in_users, non_opted_in_users, updated
          FROM stats_meta WHERE id = 1",
     )
     .fetch_optional(ch)
@@ -500,6 +520,8 @@ pub(super) async fn compute_stats(state: &super::AppState) -> StatsSnapshot {
             coding_minutes,
             slack_time_secs,
             db_size_bytes,
+            opted_in_users,
+            non_opted_in_users,
             updated,
         )) => StatsSnapshot {
             total_messages: total_messages.max(0) as u64,
@@ -512,6 +534,8 @@ pub(super) async fn compute_stats(state: &super::AppState) -> StatsSnapshot {
             coding_minutes: coding_minutes.max(0) as u64,
             slack_time_secs: slack_time_secs.max(0) as u64,
             db_size_bytes: db_size_bytes.max(0) as u64,
+            opted_in_users: opted_in_users.max(0) as u64,
+            non_opted_in_users: non_opted_in_users.max(0) as u64,
             updated: updated.max(0) as u64,
         },
         None => {
@@ -584,6 +608,26 @@ pub(super) async fn compute_stats(state: &super::AppState) -> StatsSnapshot {
                 .flatten()
                 .unwrap_or(0)
                 .max(0);
+            let opted_in_users: i64 = super::sqlx::query_scalar(
+                "SELECT count(*) FROM users u
+                 JOIN slack_user_consents c ON c.slack_user_id = u.user_id
+                 WHERE c.revoked_at IS NULL",
+            )
+            .fetch_one(ch)
+            .await
+            .unwrap_or(0)
+            .max(0);
+            let non_opted_in_users: i64 = super::sqlx::query_scalar(
+                "SELECT count(*) FROM users u
+                 WHERE NOT EXISTS (
+                       SELECT 1 FROM slack_user_consents c
+                       WHERE c.slack_user_id = u.user_id AND c.revoked_at IS NULL
+                   )",
+            )
+            .fetch_one(ch)
+            .await
+            .unwrap_or(0)
+            .max(0);
             let db_size_bytes: i64 =
                 super::sqlx::query_scalar::<_, i64>("SELECT pg_database_size(current_database())")
                     .fetch_one(ch)
@@ -602,6 +646,8 @@ pub(super) async fn compute_stats(state: &super::AppState) -> StatsSnapshot {
                 coding_minutes: coding_minutes as u64,
                 slack_time_secs: slack_time_secs as u64,
                 db_size_bytes: db_size_bytes as u64,
+                opted_in_users: opted_in_users as u64,
+                non_opted_in_users: non_opted_in_users as u64,
                 updated: 0,
             }
         }

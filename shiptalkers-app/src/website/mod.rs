@@ -131,6 +131,8 @@ pub struct Stats {
     pub combined_hours: String,
     pub combined_time: String,
     pub db_size_label: String,
+    pub opted_in_users: String,
+    pub non_opted_in_users: String,
     pub signed_in: bool,
     pub page_load_ms: String,
 }

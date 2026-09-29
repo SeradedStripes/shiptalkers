@@ -66,10 +66,28 @@ pub async fn refresh_page_stats(pool: &PgPool) -> Result<(), Box<dyn std::error:
         .fetch_one(pool)
         .await
         .unwrap_or(0);
+    let opted_in_users: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM users u
+         JOIN slack_user_consents c ON c.slack_user_id = u.user_id
+         WHERE c.revoked_at IS NULL",
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap_or(0);
+    let non_opted_in_users: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM users u
+         WHERE NOT EXISTS (
+               SELECT 1 FROM slack_user_consents c
+               WHERE c.slack_user_id = u.user_id AND c.revoked_at IS NULL
+           )",
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap_or(0);
 
     sqlx::query(
-        "INSERT INTO stats_meta (id, total_messages, total_channels, archived_channels, total_users, hackatime_users, private_hackatime_users, no_hackatime_account_users, coding_minutes, slack_time_secs, db_size_bytes, updated)
-         VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+        "INSERT INTO stats_meta (id, total_messages, total_channels, archived_channels, total_users, hackatime_users, private_hackatime_users, no_hackatime_account_users, coding_minutes, slack_time_secs, db_size_bytes, opted_in_users, non_opted_in_users, updated)
+         VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
          ON CONFLICT (id) DO UPDATE SET
            total_messages = EXCLUDED.total_messages,
            total_channels = EXCLUDED.total_channels,
@@ -81,6 +99,8 @@ pub async fn refresh_page_stats(pool: &PgPool) -> Result<(), Box<dyn std::error:
            coding_minutes = EXCLUDED.coding_minutes,
            slack_time_secs = EXCLUDED.slack_time_secs,
            db_size_bytes = EXCLUDED.db_size_bytes,
+           opted_in_users = EXCLUDED.opted_in_users,
+           non_opted_in_users = EXCLUDED.non_opted_in_users,
            updated = EXCLUDED.updated",
     )
     .bind(total_messages.max(0))
@@ -93,6 +113,8 @@ pub async fn refresh_page_stats(pool: &PgPool) -> Result<(), Box<dyn std::error:
     .bind(coding_minutes.max(0))
     .bind(slack_time_secs.max(0))
     .bind(db_size_bytes.max(0))
+    .bind(opted_in_users.max(0))
+    .bind(non_opted_in_users.max(0))
     .bind(now_secs() as i64)
     .execute(pool)
     .await?;
