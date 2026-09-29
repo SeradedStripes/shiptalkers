@@ -50,7 +50,8 @@ pub async fn opt_in_slack_user(
         "INSERT INTO slack_user_consents (slack_user_id, ship_talkers_id, consent_source)
          VALUES ($1, $3, $2)
          ON CONFLICT (slack_user_id) DO UPDATE SET consented_at = now(),
-         revoked_at = NULL, consent_source = EXCLUDED.consent_source,
+         revoked_at = NULL, manual_revoked_at = NULL,
+         consent_source = EXCLUDED.consent_source,
          backfill_started_at = NULL, backfill_completed_at = NULL",
     )
     .bind(slack_user_id)
@@ -95,7 +96,8 @@ pub async fn opt_out_slack_user(pool: &PgPool, slack_user_id: &str) -> Result<bo
     let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
     let result = sqlx::query(
         "UPDATE slack_user_consents
-         SET revoked_at = now(), backfill_started_at = NULL,
+         SET revoked_at = now(), manual_revoked_at = now(),
+             backfill_started_at = NULL,
              backfill_completed_at = NULL
          WHERE slack_user_id = $1 AND revoked_at IS NULL",
     )
@@ -116,6 +118,64 @@ pub async fn opt_out_slack_user(pool: &PgPool, slack_user_id: &str) -> Result<bo
     }
     tx.commit().await.map_err(|e| e.to_string())?;
     Ok(result.rows_affected() > 0)
+}
+
+pub async fn mark_slack_oauth_active(pool: &PgPool, slack_user_id: &str) -> Result<(), String> {
+    let ship_talkers_id = ship_talkers_lib::base36::encode(slack_user_id.as_bytes());
+    sqlx::query(
+        "INSERT INTO slack_user_consents
+             (slack_user_id, ship_talkers_id, consent_source, oauth_active)
+         VALUES ($1, $2, 'slack_oauth', true)
+         ON CONFLICT (slack_user_id) DO UPDATE SET
+             oauth_active = true, revoked_at = NULL",
+    )
+    .bind(slack_user_id)
+    .bind(ship_talkers_id)
+    .execute(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub async fn revoke_slack_oauth_consent(pool: &PgPool, slack_user_id: &str) -> Result<(), String> {
+    let result = sqlx::query(
+        "UPDATE slack_user_consents
+         SET oauth_active = false,
+             revoked_at = CASE
+                 WHEN manual_revoked_at IS NOT NULL THEN manual_revoked_at
+                 WHEN consent_source = 'slack_oauth' THEN now()
+                 ELSE revoked_at
+             END
+         WHERE slack_user_id = $1 AND oauth_active",
+    )
+    .bind(slack_user_id)
+    .execute(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    if result.rows_affected() > 0 {
+        sqlx::query("DELETE FROM user_scores WHERE user_id = $1")
+            .bind(slack_user_id)
+            .execute(pool)
+            .await
+            .map_err(|e| e.to_string())?;
+        sqlx::query("DELETE FROM channel_scores")
+            .execute(pool)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+pub async fn sync_active_slack_oauth_consents(pool: &PgPool) -> Result<(), String> {
+    let slack_ids: Vec<String> =
+        sqlx::query_scalar("SELECT slack_id FROM slack_oauth_tokens WHERE disabled_at IS NULL")
+            .fetch_all(pool)
+            .await
+            .map_err(|e| e.to_string())?;
+    for slack_id in slack_ids {
+        mark_slack_oauth_active(pool, &slack_id).await?;
+    }
+    Ok(())
 }
 
 pub async fn is_slack_user_consented(pool: &PgPool, slack_user_id: &str) -> bool {
@@ -225,9 +285,7 @@ impl AuthDb {
         .execute(&self.pool)
         .await
         .map_err(|e| e.to_string())?;
-        opt_in_slack_user(&self.pool, slack_id, "slack_oauth")
-            .await
-            .map(|_| ())
+        mark_slack_oauth_active(&self.pool, slack_id).await
     }
 
     pub async fn disable_slack_oauth_token(&self, slack_id: &str) -> Result<(), String> {
@@ -238,8 +296,8 @@ impl AuthDb {
         .bind(slack_id)
         .execute(&self.pool)
         .await
-        .map(|_| ())
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+        revoke_slack_oauth_consent(&self.pool, slack_id).await
     }
 }
 
