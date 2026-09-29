@@ -877,31 +877,6 @@ async fn upload_image(
         ));
     }
 
-    // Slack publishes the completed file message asynchronously.
-    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-    let star_message = "While you're here! Would you consider starring <https://github.com/SeradedStripes/shiptalkers|the ShipTalkers repository on GitHub>? It would really help the Stardance project payout, and it's genuinely appreciated.";
-    let response = client
-        .post("https://slack.com/api/chat.postMessage")
-        .header("Authorization", format!("Bearer {}", bot_token))
-        .form(&[
-            ("channel", channel),
-            ("thread_ts", thread_ts),
-            ("text", star_message),
-        ])
-        .send()
-        .await
-        .map_err(|e| format!("failed to send GitHub star message: {e}"))?;
-    let status = response.status();
-    let body = response.text().await.unwrap_or_default();
-    let parsed: PostMessageResponse = serde_json::from_str(&body)
-        .map_err(|e| format!("chat.postMessage returned bad JSON ({status}, {body:?}): {e}"))?;
-    if !parsed.ok {
-        return Err(format!(
-            "Slack API error sending GitHub star message: {} ({})",
-            parsed.error.unwrap_or_default(),
-            status
-        ));
-    }
     Ok(())
 }
 
