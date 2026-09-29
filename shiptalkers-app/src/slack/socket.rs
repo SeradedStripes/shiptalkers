@@ -1,5 +1,6 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Mutex;
+use std::sync::OnceLock;
 
 use futures_util::{SinkExt, StreamExt};
 use reqwest::Client;
@@ -297,6 +298,12 @@ const CONSENT_NOTICE: &str = "You have been opted in by sending a message.\nIt c
 const POPULATION_WAIT: &str =
     "It can take up to an hour since you opted in for your stats to be populated, please wait.";
 const RANGE_WAIT: &str = "The bot has not caught up to your coding and slack messages in that time range yet, please try again later";
+const OPT_OUT_CONFIRMATION: &str = "Are you sure you want to opt out? Respond \"yes\" to opt out";
+const OPT_OUT_SUCCESS: &str = "Opted out successfully";
+const PENDING_OPT_OUT_TTL_SECS: i64 = 600;
+
+static PENDING_OPT_OUTS: OnceLock<Mutex<HashMap<(String, String), (String, i64)>>> =
+    OnceLock::new();
 
 /// Marks a (channel, ts) as handled. Returns true if this is the first time we have seen it, false for any redelivery. Prunes stale entries on insert.
 fn mark_seen(seen: &Mutex<VecDeque<(String, String, i64)>>, channel: &str, ts: &str) -> bool {
@@ -311,6 +318,39 @@ fn mark_seen(seen: &Mutex<VecDeque<(String, String, i64)>>, channel: &str, ts: &
         guard.pop_front();
     }
     true
+}
+
+fn set_pending_opt_out(channel: &str, thread_ts: &str, user: &str) {
+    let pending = PENDING_OPT_OUTS.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut guard = pending.lock().unwrap_or_else(|p| p.into_inner());
+    let now = now_unix();
+    guard.retain(|_, (_, created)| now.saturating_sub(*created) < PENDING_OPT_OUT_TTL_SECS);
+    guard.insert(
+        (channel.to_string(), thread_ts.to_string()),
+        (user.to_string(), now),
+    );
+}
+
+fn pending_opt_out_owner(channel: &str, thread_ts: &str) -> Option<String> {
+    let pending = PENDING_OPT_OUTS.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut guard = pending.lock().unwrap_or_else(|p| p.into_inner());
+    let now = now_unix();
+    guard.retain(|_, (_, created)| now.saturating_sub(*created) < PENDING_OPT_OUT_TTL_SECS);
+    guard
+        .get(&(channel.to_string(), thread_ts.to_string()))
+        .map(|(user, _)| user.clone())
+}
+
+fn take_pending_opt_out(channel: &str, thread_ts: &str, user: &str) -> bool {
+    let pending = PENDING_OPT_OUTS.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut guard = pending.lock().unwrap_or_else(|p| p.into_inner());
+    let key = (channel.to_string(), thread_ts.to_string());
+    if guard.get(&key).is_some_and(|(owner, _)| owner == user) {
+        guard.remove(&key);
+        true
+    } else {
+        false
+    }
 }
 
 fn shard_for_ts(ts: &str, num_sockets: usize) -> usize {
@@ -492,6 +532,8 @@ async fn handle_message(
     }
     if let Some(thread_ts) = &msg.thread_ts
         && thread_ts != &msg.ts
+        && !pending_opt_out_owner(&msg.channel, thread_ts)
+            .is_some_and(|owner| msg.user.as_deref() == Some(owner.as_str()))
     {
         return;
     }
@@ -500,8 +542,38 @@ async fn handle_message(
     let text = msg.text.unwrap_or_default();
 
     if text.trim().eq_ignore_ascii_case("opt out") {
+        set_pending_opt_out(&msg.channel, &msg.ts, &sender);
+        if let Some(bot_token) = settings.get_list("SLACK_BOT_TOKENS").first().cloned()
+            && let Err(e) = post_message(
+                client,
+                &bot_token,
+                &msg.channel,
+                &msg.ts,
+                OPT_OUT_CONFIRMATION,
+            )
+            .await
+        {
+            tracing::error!("Stats bot: failed to post opt-out confirmation: {}", e);
+        }
+        return;
+    }
+
+    if msg.thread_ts.as_deref().is_some_and(|thread_ts| {
+        text.trim().eq_ignore_ascii_case("yes")
+            && take_pending_opt_out(&msg.channel, thread_ts, &sender)
+    }) {
         match postgres_db::opt_out_slack_user(pool, &sender).await {
-            Ok(true) => tracing::info!("Slack user {} opted out", sender),
+            Ok(true) => {
+                tracing::info!("Slack user {} opted out", sender);
+                if let Some(bot_token) = settings.get_list("SLACK_BOT_TOKENS").first().cloned()
+                    && let Some(thread_ts) = &msg.thread_ts
+                    && let Err(e) =
+                        post_message(client, &bot_token, &msg.channel, thread_ts, OPT_OUT_SUCCESS)
+                            .await
+                {
+                    tracing::error!("Stats bot: failed to post opt-out success: {}", e);
+                }
+            }
             Ok(false) => tracing::debug!("Slack user {} was already opted out", sender),
             Err(e) => tracing::error!("Failed to opt out Slack user {}: {}", sender, e),
         }
