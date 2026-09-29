@@ -82,7 +82,15 @@ p { color: #888; line-height: 1.6; margin-bottom: 1.5rem; }
 .btn:hover { background: #ec4899; }
 .btn:disabled { background: #444; cursor: not-allowed; }
 
-.links { display: flex; gap: 1rem; margin-top: 2rem; }
+.links {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1rem;
+    margin-top: 2rem;
+}
+.links .btn {
+    flex: 0 0 auto;
+}
 
 .pagination {
     display: flex;
