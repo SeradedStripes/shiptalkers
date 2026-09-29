@@ -80,6 +80,17 @@ pub async fn opt_in_slack_user(
 }
 
 pub async fn opt_out_slack_user(pool: &PgPool, slack_user_id: &str) -> Result<bool, String> {
+    let oauth_active: Option<i32> = sqlx::query_scalar(
+        "SELECT 1 FROM slack_oauth_tokens
+         WHERE slack_id = $1 AND disabled_at IS NULL",
+    )
+    .bind(slack_user_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    if oauth_active.is_some() {
+        return Ok(false);
+    }
     let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
     let result = sqlx::query(
         "UPDATE slack_user_consents
@@ -212,8 +223,10 @@ impl AuthDb {
         .bind(scopes)
         .execute(&self.pool)
         .await
-        .map(|_| ())
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+        opt_in_slack_user(&self.pool, slack_id, "slack_oauth")
+            .await
+            .map(|_| ())
     }
 
     pub async fn disable_slack_oauth_token(&self, slack_id: &str) -> Result<(), String> {
