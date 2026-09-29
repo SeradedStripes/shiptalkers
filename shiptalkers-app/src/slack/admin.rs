@@ -7,7 +7,8 @@ use crate::settings::RuntimeSettings;
 const HELP: &str = r#"Available commands:
 blacklist <channel_id>
 whitelist <channel_id>
-help"#;
+help
+Multiple IDs may be comma-separated: blacklist C123, C456"#;
 const NOT_ADMIN: &str = "You're not an admin silly <3";
 
 #[derive(Debug, Deserialize)]
@@ -40,18 +41,8 @@ pub async fn handle_message(
 
     let response = match command {
         AdminCommand::Help => Ok(HELP.to_string()),
-        AdminCommand::Blacklist(channel_id) => {
-            let channel_name = channel_name(pool, &channel_id).await;
-            postgres_db::blacklist_channel(pool, &channel_id)
-                .await
-                .map(|_| format!("Blacklisted channel: {channel_name} - {channel_id}"))
-        }
-        AdminCommand::Whitelist(channel_id) => {
-            let channel_name = channel_name(pool, &channel_id).await;
-            postgres_db::unblacklist_channel(pool, &channel_id)
-                .await
-                .map(|_| format!("Whitelisted channel: {channel_name} - {channel_id}"))
-        }
+        AdminCommand::Blacklist(channel_ids) => blacklist_channels(pool, &channel_ids).await,
+        AdminCommand::Whitelist(channel_ids) => whitelist_channels(pool, &channel_ids).await,
     };
 
     let message = match response {
@@ -69,8 +60,8 @@ pub async fn handle_message(
 
 enum AdminCommand {
     Help,
-    Blacklist(String),
-    Whitelist(String),
+    Blacklist(Vec<String>),
+    Whitelist(Vec<String>),
 }
 
 fn parse_command(text: &str) -> Option<AdminCommand> {
@@ -81,10 +72,59 @@ fn parse_command(text: &str) -> Option<AdminCommand> {
     }
     match tokens.next()?.to_ascii_lowercase().as_str() {
         "help" => Some(AdminCommand::Help),
-        "blacklist" => Some(AdminCommand::Blacklist(tokens.next()?.to_string())),
-        "whitelist" => Some(AdminCommand::Whitelist(tokens.next()?.to_string())),
+        "blacklist" => {
+            let ids = channel_ids(tokens);
+            (!ids.is_empty()).then_some(AdminCommand::Blacklist(ids))
+        }
+        "whitelist" => {
+            let ids = channel_ids(tokens);
+            (!ids.is_empty()).then_some(AdminCommand::Whitelist(ids))
+        }
         _ => None,
     }
+}
+
+fn channel_ids<'a>(tokens: impl Iterator<Item = &'a str>) -> Vec<String> {
+    tokens
+        .flat_map(|token| token.split(','))
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+async fn blacklist_channels(
+    pool: &crate::sqlx::PgPool,
+    channel_ids: &[String],
+) -> Result<String, String> {
+    let mut responses = Vec::with_capacity(channel_ids.len());
+    for channel_id in channel_ids {
+        let channel_name = channel_name(pool, channel_id).await;
+        postgres_db::blacklist_channel(pool, channel_id)
+            .await
+            .map_err(|error| format!("Command failed for {channel_id}: {error}"))?;
+        responses.push(format!(
+            "Blacklisted channel: {channel_name} - {channel_id}"
+        ));
+    }
+    Ok(responses.join("\n"))
+}
+
+async fn whitelist_channels(
+    pool: &crate::sqlx::PgPool,
+    channel_ids: &[String],
+) -> Result<String, String> {
+    let mut responses = Vec::with_capacity(channel_ids.len());
+    for channel_id in channel_ids {
+        let channel_name = channel_name(pool, channel_id).await;
+        postgres_db::unblacklist_channel(pool, channel_id)
+            .await
+            .map_err(|error| format!("Command failed for {channel_id}: {error}"))?;
+        responses.push(format!(
+            "Whitelisted channel: {channel_name} - {channel_id}"
+        ));
+    }
+    Ok(responses.join("\n"))
 }
 
 async fn channel_name(pool: &crate::sqlx::PgPool, channel_id: &str) -> String {
