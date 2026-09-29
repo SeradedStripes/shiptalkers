@@ -505,6 +505,11 @@ async fn handle_message(
         return;
     }
 
+    let range = match time_range::parse_time_range_at(&text, now_unix()) {
+        Some(range) => range,
+        None if is_bare_mention(&text) => TimeRange::AllTime,
+        None => return,
+    };
     let first_consent = match postgres_db::opt_in_slack_user(pool, &sender, "slack_message").await {
         Ok(first) => first,
         Err(e) => {
@@ -515,20 +520,6 @@ async fn handle_message(
     let Some(bot_token) = settings.get_list("SLACK_BOT_TOKENS").first().cloned() else {
         tracing::warn!("Stats bot: no bot tokens configured, skipping reply");
         return;
-    };
-
-    let range = match time_range::parse_time_range_at(&text, now_unix()) {
-        Some(range) => range,
-        None if is_bare_mention(&text) => TimeRange::AllTime,
-        None => {
-            if first_consent
-                && let Err(e) =
-                    post_message(client, &bot_token, &msg.channel, &msg.ts, CONSENT_NOTICE).await
-            {
-                tracing::error!("Stats bot: failed to post consent notice: {}", e);
-            }
-            return;
-        }
     };
     let user = extract_mentioned_user(&text).unwrap_or_else(|| sender.clone());
     tracing::info!(
@@ -911,38 +902,6 @@ async fn upload_image(
         ));
     }
 
-    Ok(())
-}
-
-async fn post_message(
-    client: &Client,
-    bot_token: &str,
-    channel: &str,
-    thread_ts: &str,
-    text: &str,
-) -> Result<(), String> {
-    let response = client
-        .post("https://slack.com/api/chat.postMessage")
-        .header("Authorization", format!("Bearer {bot_token}"))
-        .form(&[
-            ("channel", channel),
-            ("thread_ts", thread_ts),
-            ("text", text),
-        ])
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
-    let status = response.status();
-    let body = response.text().await.unwrap_or_default();
-    let parsed: PostMessageResponse = serde_json::from_str(&body)
-        .map_err(|e| format!("chat.postMessage returned bad JSON ({status}, {body:?}): {e}"))?;
-    if !parsed.ok {
-        return Err(format!(
-            "Slack API error: {} ({})",
-            parsed.error.unwrap_or_default(),
-            status
-        ));
-    }
     Ok(())
 }
 
