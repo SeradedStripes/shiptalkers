@@ -10,6 +10,15 @@
     {% include "header.html" %}
     <div class="container">
         <h1><span class="live"></span>Linked Accounts</h1>
+        <form class="search" method="get" action="/boards/linked">
+            <label for="linked-filter">Filter:</label>
+            <select id="linked-filter" name="filter" onchange="this.form.submit()">
+                <option value="all"{% if filter == "all" %} selected{% endif %}>All linked accounts</option>
+                <option value="slack"{% if filter == "slack" %} selected{% endif %}>Slack OAuth</option>
+                <option value="hackatime"{% if filter == "hackatime" %} selected{% endif %}>Hackatime</option>
+            </select>
+            <noscript><button type="submit">Filter</button></noscript>
+        </form>
         <div class="table-card">
             <table>
                 <thead>

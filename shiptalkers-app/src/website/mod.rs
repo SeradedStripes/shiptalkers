@@ -209,6 +209,7 @@ pub struct BoardsTemplate {
 #[template(path = "boards_linked.html")]
 pub struct LinkedBoardsTemplate {
     pub rows: Vec<LinkedBoardRow>,
+    pub filter: String,
     pub signed_in: bool,
     pub page_load_ms: String,
 }
@@ -327,6 +328,8 @@ pub struct BoardCategoryTemplate {
 pub struct PrivateChannelsTemplate {
     pub rows: Vec<PrivateChannelRow>,
     pub query: String,
+    pub token_filter: String,
+    pub token_options: Vec<String>,
     pub has_previous: bool,
     pub has_next: bool,
     pub page: u64,

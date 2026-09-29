@@ -12,9 +12,26 @@
     <div class="container">
         <a href="/boards" class="back-link">Back to all boards</a>
         <h1><span class="live"></span>Private Channels</h1>
-        {% include "directory_pagination.html" %}
+        <nav class="pagination" aria-label="Pagination">
+            {% if has_previous %}<a class="btn" href="{{ directory_path }}?page={{ page - 1 }}&amp;token={{ token_filter }}{% if !query.is_empty() %}&amp;q={{ query }}{% endif %}">Previous</a>{% else %}<span class="btn disabled">Previous</span>{% endif %}
+            <form method="get" action="{{ directory_path }}">
+                {% if !query.is_empty() %}<input type="hidden" name="q" value="{{ query }}">{% endif %}
+                {% if !token_filter.is_empty() %}<input type="hidden" name="token" value="{{ token_filter }}">{% endif %}
+                <select id="page-select" name="page" aria-label="Select page" onchange="this.form.submit()">
+                    {% for p in 1..=page_count %}<option value="{{ p }}"{% if p == page %} selected{% endif %}>{{ p }}</option>{% endfor %}
+                </select>
+            </form>
+            {% if has_next %}<a class="btn" href="{{ directory_path }}?page={{ page + 1 }}&amp;token={{ token_filter }}{% if !query.is_empty() %}&amp;q={{ query }}{% endif %}">Next</a>{% else %}<span class="btn disabled">Next</span>{% endif %}
+        </nav>
         <form class="search" method="get" action="{{ directory_path }}">
             <input type="text" name="q" placeholder="Channel name or Slack ID..." value="{{ query }}">
+            <label for="token-filter">Token:</label>
+            <select id="token-filter" name="token">
+                <option value=""{% if token_filter.is_empty() %} selected{% endif %}>All tokens</option>
+                {% for token in token_options %}
+                <option value="{{ token }}"{% if token.as_str() == token_filter.as_str() %} selected{% endif %}>{{ token }}</option>
+                {% endfor %}
+            </select>
             <button type="submit">Search</button>
         </form>
         <div class="table-card">
@@ -31,7 +48,11 @@
                 </tbody>
             </table>
         </div>
-        {% include "directory_pagination.html" %}
+        <nav class="pagination" aria-label="Pagination">
+            {% if has_previous %}<a class="btn" href="{{ directory_path }}?page={{ page - 1 }}&amp;token={{ token_filter }}{% if !query.is_empty() %}&amp;q={{ query }}{% endif %}">Previous</a>{% else %}<span class="btn disabled">Previous</span>{% endif %}
+            <span>Page {{ page }} of {{ page_count }}</span>
+            {% if has_next %}<a class="btn" href="{{ directory_path }}?page={{ page + 1 }}&amp;token={{ token_filter }}{% if !query.is_empty() %}&amp;q={{ query }}{% endif %}">Next</a>{% else %}<span class="btn disabled">Next</span>{% endif %}
+        </nav>
     </div>
     {% include "footer.html" %}
 </body>

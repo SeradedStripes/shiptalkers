@@ -30,9 +30,16 @@ pub(super) async fn get_boards(
 pub(super) async fn get_linked_boards(
     State(state): State<AppState>,
     headers: HeaderMap,
+    Query(params): Query<HashMap<String, String>>,
 ) -> Result<Html<String>, StatusCode> {
     let started = Instant::now();
     let pool = state.pool()?;
+    let filter = match params.get("filter").map(String::as_str) {
+        Some("slack") => "slack",
+        Some("hackatime") => "hackatime",
+        _ => "all",
+    }
+    .to_string();
     let records: Vec<(
         String,
         bool,
@@ -55,9 +62,12 @@ pub(super) async fn get_linked_boards(
              FROM slack_oauth_tokens
              WHERE disabled_at IS NULL
          ) s ON s.slack_id = u.user_id
-         WHERE h.access_token != '' OR s.slack_id IS NOT NULL
+         WHERE ($1 = 'all' AND (h.access_token != '' OR s.slack_id IS NOT NULL))
+            OR ($1 = 'slack' AND s.slack_id IS NOT NULL)
+            OR ($1 = 'hackatime' AND h.access_token != '')
          ORDER BY COALESCE(u.ship_talkers_id, u.user_id), u.user_id",
     )
+    .bind(&filter)
     .fetch_all(pool)
     .await
     .unwrap_or_default();
@@ -92,6 +102,7 @@ pub(super) async fn get_linked_boards(
         .collect();
     let template = LinkedBoardsTemplate {
         rows,
+        filter,
         signed_in: signed_in(&state, &headers),
         page_load_ms: format!("{}ms", started.elapsed().as_millis()),
     };
@@ -146,6 +157,7 @@ pub(super) async fn get_private_channels_board(
     let started = Instant::now();
     let pool = state.pool()?;
     let query = params.get("q").cloned().unwrap_or_default();
+    let token_filter = params.get("token").cloned().unwrap_or_default();
     let pattern = format!("%{}%", query.trim());
     let requested_page = params
         .get("page")
@@ -153,10 +165,20 @@ pub(super) async fn get_private_channels_board(
         .filter(|page| *page > 0)
         .unwrap_or(1);
     let total: i64 = super::sqlx::query_scalar(
-        "SELECT count(*) FROM slack_channels
-         WHERE is_private = 1 AND (name ILIKE $1 OR channel_id ILIKE $1)",
+        "WITH token_numbers AS (
+             SELECT slack_id, row_number() OVER (ORDER BY slack_id) - 1 AS token_no
+             FROM slack_oauth_tokens WHERE disabled_at IS NULL
+         )
+         SELECT count(*) FROM slack_channels c
+         WHERE c.is_private = 1 AND (c.name ILIKE $1 OR c.channel_id ILIKE $1)
+           AND ($2 = '' OR EXISTS (
+               SELECT 1 FROM slack_oauth_channel_access a
+               JOIN token_numbers t ON t.slack_id = a.slack_id
+               WHERE a.channel_id = c.channel_id AND t.token_no = $2::bigint
+           ))",
     )
     .bind(&pattern)
+    .bind(&token_filter)
     .fetch_one(pool)
     .await
     .unwrap_or(0);
@@ -175,11 +197,17 @@ pub(super) async fn get_private_channels_board(
          LEFT JOIN slack_oauth_channel_access a ON a.channel_id = c.channel_id
          LEFT JOIN token_numbers t ON t.slack_id = a.slack_id
          WHERE c.is_private = 1 AND (c.name ILIKE $1 OR c.channel_id ILIKE $1)
+           AND ($2 = '' OR EXISTS (
+               SELECT 1 FROM slack_oauth_channel_access a2
+               JOIN token_numbers t2 ON t2.slack_id = a2.slack_id
+               WHERE a2.channel_id = c.channel_id AND t2.token_no = $2::bigint
+           ))
          GROUP BY c.name, c.channel_id
          ORDER BY c.name, c.channel_id
          LIMIT $2 OFFSET $3",
     )
     .bind(&pattern)
+    .bind(&token_filter)
     .bind(super::DIRECTORY_PAGE_SIZE)
     .bind((page - 1) as i64 * super::DIRECTORY_PAGE_SIZE)
     .fetch_all(pool)
@@ -195,9 +223,18 @@ pub(super) async fn get_private_channels_board(
             token_ids,
         })
         .collect();
+    let token_options: Vec<i64> = super::sqlx::query_scalar(
+        "SELECT row_number() OVER (ORDER BY slack_id) - 1
+         FROM slack_oauth_tokens WHERE disabled_at IS NULL ORDER BY slack_id",
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
     let template = PrivateChannelsTemplate {
         rows,
         query,
+        token_filter,
+        token_options: token_options.into_iter().map(|id| id.to_string()).collect(),
         has_previous: page > 1,
         has_next: page < page_count,
         page,
