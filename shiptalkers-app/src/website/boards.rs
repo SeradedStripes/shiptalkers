@@ -269,7 +269,7 @@ pub(super) async fn get_private_channels_board(
            ))
          GROUP BY c.name, c.channel_id
          ORDER BY c.name, c.channel_id
-         LIMIT $2 OFFSET $3",
+          LIMIT $3 OFFSET $4",
     )
     .bind(&pattern)
     .bind(&token_key)
