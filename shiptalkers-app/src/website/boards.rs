@@ -1,7 +1,8 @@
 use super::{
-    AppState, BoardCategoryTemplate, BoardEntry, BoardsTemplate, EXCLUDE_BOTS_DELETED_SCORE,
-    EXCLUDE_BOTS_DELETED_SLACK_ID, LinkedBoardRow, LinkedBoardsTemplate, PgPool, RankedRow, State,
-    StatusCode, fmt_duration, fmt_minutes, fmt_thousands, signed_in, sql_escape,
+    AppState, BlacklistedChannelRow, BlacklistedChannelsTemplate, BoardCategoryTemplate,
+    BoardEntry, BoardsTemplate, EXCLUDE_BOTS_DELETED_SCORE, EXCLUDE_BOTS_DELETED_SLACK_ID,
+    LinkedBoardRow, LinkedBoardsTemplate, PgPool, RankedRow, State, StatusCode, fmt_duration,
+    fmt_minutes, fmt_thousands, signed_in, sql_escape,
 };
 use askama::Template;
 use axum::extract::{Path, Query};
@@ -97,6 +98,40 @@ pub(super) async fn get_linked_boards(
         .render()
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Html(html))
+}
+
+pub(super) async fn get_blacklisted_channels(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Html<String>, StatusCode> {
+    let started = Instant::now();
+    let pool = state.pool()?;
+    let rows: Vec<BlacklistedChannelRow> = super::sqlx::query_as::<_, (String, String, String)>(
+        "SELECT ship_talkers_id, slack_channel_id, channel_name
+         FROM blacklisted_channels ORDER BY slack_channel_id",
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default()
+    .into_iter()
+    .map(
+        |(ship_talkers_id, slack_channel_id, channel_name)| BlacklistedChannelRow {
+            ship_talkers_id,
+            slack_channel_id,
+            channel_name,
+        },
+    )
+    .collect();
+    let template = BlacklistedChannelsTemplate {
+        rows,
+        signed_in: signed_in(&state, &headers),
+        page_load_ms: format!("{}ms", started.elapsed().as_millis()),
+    };
+    Ok(Html(
+        template
+            .render()
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+    ))
 }
 
 pub(super) async fn get_board_category(

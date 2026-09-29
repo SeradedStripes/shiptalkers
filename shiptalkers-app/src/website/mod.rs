@@ -212,6 +212,20 @@ pub struct LinkedBoardsTemplate {
     pub page_load_ms: String,
 }
 
+#[derive(Template)]
+#[template(path = "boards_blacklisted_channels.html")]
+pub struct BlacklistedChannelsTemplate {
+    pub rows: Vec<BlacklistedChannelRow>,
+    pub signed_in: bool,
+    pub page_load_ms: String,
+}
+
+pub struct BlacklistedChannelRow {
+    pub ship_talkers_id: String,
+    pub slack_channel_id: String,
+    pub channel_name: String,
+}
+
 pub struct LinkedBoardRow {
     pub shiptalkers_id: String,
     pub hackatime: bool,
@@ -360,6 +374,10 @@ pub fn router(
         .route("/stats/{id}", get(stats::get_stats_for_id))
         .route("/boards", get(boards::get_boards))
         .route("/boards/linked", get(boards::get_linked_boards))
+        .route(
+            "/boards/blacklisted-channels",
+            get(boards::get_blacklisted_channels),
+        )
         .route("/boards/users", get(users::get_users_board))
         .route("/boards/users/", get(users::get_users_board))
         .route("/boards/channels/", get(channels::get_channels_board))

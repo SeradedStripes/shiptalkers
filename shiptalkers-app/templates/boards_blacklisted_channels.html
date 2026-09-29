@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Blacklisted Channels - Ship Talkers</title>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body class="boards">
+    {% include "header.html" %}
+    <div class="container">
+        <h1><span class="live"></span>Blacklisted Channels</h1>
+        <div class="table-card">
+            <table>
+                <thead>
+                    <tr><th>Channel Name</th><th>Ship Talkers ID</th><th>Slack Channel ID</th></tr>
+                </thead>
+                <tbody>
+                    {% for row in rows %}
+                    <tr><td>{{ row.channel_name }}</td><td>{{ row.ship_talkers_id }}</td><td>{{ row.slack_channel_id }}</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+    {% include "footer.html" %}
+</body>
+</html>

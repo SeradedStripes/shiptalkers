@@ -4,8 +4,8 @@ use crate::sqlx::Row;
 use std::collections::HashMap;
 
 pub use ship_talkers_lib::db::{
-    INSERT_CHUNK, SlackChannelRow, SlackUserRow, connect, insert_new_channels_rows, migrate,
-    placeholders, upsert_users,
+    BlacklistedChannelRow, INSERT_CHUNK, SlackChannelRow, SlackUserRow, blacklist_channel, connect,
+    get_blacklisted_channel_ids, insert_new_channels_rows, migrate, placeholders, upsert_users,
 };
 
 #[derive(Clone)]
@@ -65,7 +65,7 @@ pub async fn get_private_channel_access(
 }
 
 pub async fn get_private_channel_ids(pool: &PgPool) -> Result<Vec<String>, sqlx::Error> {
-    sqlx::query_scalar("SELECT channel_id FROM slack_channels WHERE is_private = 1")
+    sqlx::query_scalar("SELECT channel_id FROM slack_channels WHERE is_private = 1 AND channel_id NOT IN (SELECT slack_channel_id FROM blacklisted_channels)")
         .fetch_all(pool)
         .await
 }
@@ -286,7 +286,7 @@ pub async fn get_known_channel_ids(
     pool: &PgPool,
 ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     let rows: Vec<String> =
-        sqlx::query_scalar("SELECT channel_id FROM slack_channels ORDER BY channel_id")
+        sqlx::query_scalar("SELECT channel_id FROM slack_channels WHERE channel_id NOT IN (SELECT slack_channel_id FROM blacklisted_channels) ORDER BY channel_id")
             .fetch_all(pool)
             .await?;
     Ok(rows)

@@ -36,6 +36,78 @@ pub struct SlackUserRow {
     pub is_app_user: u8,
 }
 
+#[derive(Debug, Clone)]
+pub struct BlacklistedChannelRow {
+    pub slack_channel_id: String,
+    pub ship_talkers_id: String,
+    pub channel_name: String,
+}
+
+pub async fn get_blacklisted_channel_ids(
+    pool: &PgPool,
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    Ok(
+        sqlx::query_scalar("SELECT slack_channel_id FROM blacklisted_channels")
+            .fetch_all(pool)
+            .await?,
+    )
+}
+
+pub async fn blacklist_channel(
+    pool: &PgPool,
+    slack_channel_id: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let ship_talkers_id = crate::base36::encode(slack_channel_id.as_bytes());
+    let mut tx = pool.begin().await?;
+    sqlx::query(
+        "INSERT INTO blacklisted_channels
+             (slack_channel_id, ship_talkers_id, channel_name)
+         SELECT $1, $2, COALESCE(name, '')
+         FROM slack_channels WHERE channel_id = $1
+         UNION ALL
+         SELECT $1, $2, ''
+         WHERE NOT EXISTS (SELECT 1 FROM slack_channels WHERE channel_id = $1)
+         ON CONFLICT (slack_channel_id) DO NOTHING",
+    )
+    .bind(slack_channel_id)
+    .bind(&ship_talkers_id)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query("DELETE FROM slack_reactions WHERE channel_id = $1")
+        .bind(slack_channel_id)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query(
+        "DELETE FROM slack_messages
+         WHERE channel_id = (SELECT internal_id FROM slack_channels WHERE channel_id = $1)",
+    )
+    .bind(slack_channel_id)
+    .execute(&mut *tx)
+    .await?;
+    for table in [
+        "thread_checkpoints",
+        "scrape_checkpoints",
+        "scraped_channels",
+        "slack_oauth_channel_access",
+    ] {
+        let query = format!("DELETE FROM {table} WHERE channel_id = $1");
+        sqlx::query(sqlx::AssertSqlSafe(query.as_str()))
+            .bind(slack_channel_id)
+            .execute(&mut *tx)
+            .await?;
+    }
+    sqlx::query("DELETE FROM channel_scores WHERE channel_id = $1")
+        .bind(slack_channel_id)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("DELETE FROM slack_channels WHERE channel_id = $1")
+        .bind(slack_channel_id)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
 pub fn placeholders(rows: usize, cols: usize) -> String {
     (0..rows)
         .map(|r| {
@@ -119,6 +191,20 @@ pub async fn insert_new_channels_rows(
                 .bind(ch.created_at as i64);
         }
         q.execute(pool).await?;
+        sqlx::query(
+            "UPDATE blacklisted_channels b
+             SET channel_name = c.name
+             FROM slack_channels c
+             WHERE c.channel_id = b.slack_channel_id",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "DELETE FROM slack_channels
+             WHERE channel_id IN (SELECT slack_channel_id FROM blacklisted_channels)",
+        )
+        .execute(pool)
+        .await?;
     }
     tracing::info!("Inserted {} new channels into Postgres", count);
     Ok(count)
