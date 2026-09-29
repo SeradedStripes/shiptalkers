@@ -5,9 +5,9 @@ use crate::db::postgres_db;
 use crate::settings::RuntimeSettings;
 
 const HELP: &str = r#"Available commands:
-@shiptalkers blacklist <channel_id>
-@shiptalkers whitelist <channel_id>
-@shiptalkers help"#;
+blacklist <channel_id>
+whitelist <channel_id>
+help"#;
 const NOT_ADMIN: &str = "You're not an admin silly <3";
 
 #[derive(Debug, Deserialize)]
