@@ -24,11 +24,6 @@
                 <button type="submit" class="btn" name="disable_consent" value="1">Blacklist + disable consent</button>
             </form>
         </div>
-        <nav class="pagination" aria-label="Pagination">
-            {% if has_previous %}<a class="btn" href="/boards/blacklisted-users?page={{ page - 1 }}">Previous</a>{% else %}<span class="btn disabled">Previous</span>{% endif %}
-            <span>Page {{ page }} of {{ page_count }}</span>
-            {% if has_next %}<a class="btn" href="/boards/blacklisted-users?page={{ page + 1 }}">Next</a>{% else %}<span class="btn disabled">Next</span>{% endif %}
-        </nav>
         <div class="table-card">
             <table>
                 <thead><tr><th>Slack User</th><th>Slack ID</th><th>Blacklisted</th><th>Consent Status</th><th></th></tr></thead>
@@ -50,6 +45,11 @@
                 </tbody>
             </table>
         </div>
+        <nav class="pagination" aria-label="Pagination">
+            {% if has_previous %}<a class="btn" href="/boards/blacklisted-users?page={{ page - 1 }}">Previous</a>{% else %}<span class="btn disabled">Previous</span>{% endif %}
+            <span>Page {{ page }} of {{ page_count }}</span>
+            {% if has_next %}<a class="btn" href="/boards/blacklisted-users?page={{ page + 1 }}">Next</a>{% else %}<span class="btn disabled">Next</span>{% endif %}
+        </nav>
     </div>
     {% include "footer.html" %}
 </body>
