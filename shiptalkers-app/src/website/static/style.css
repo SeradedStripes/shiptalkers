@@ -59,7 +59,7 @@ body.search .container { max-width: 700px; }
 }
 .search button:hover { background: #ec4899; }
 
-input[type="text"], input[type="search"], select {
+input[type="text"], input[type="search"], textarea, select {
     padding: 0.65rem 0.8rem;
     background: #242424;
     border: 1px solid #444;
@@ -67,7 +67,8 @@ input[type="text"], input[type="search"], select {
     color: #fff;
     font: inherit;
 }
-input[type="text"]:focus, input[type="search"]:focus, select:focus {
+textarea { resize: vertical; }
+input[type="text"]:focus, input[type="search"]:focus, textarea:focus, select:focus {
     outline: 2px solid #f472b6;
     outline-offset: 1px;
     border-color: #f472b6;
@@ -79,6 +80,7 @@ input[type="text"]:focus, input[type="search"]:focus, select:focus {
     gap: 0.75rem;
 }
 .admin-form input[type="text"] { flex: 1 1 18rem; min-width: 0; }
+.admin-form textarea { flex: 1 1 24rem; min-width: 0; }
 .admin-form .btn { flex: 0 0 auto; }
 .inline-form { margin: 0; }
 
@@ -182,7 +184,7 @@ body.stats .grid { grid-template-columns: repeat(4, 1fr); }
 }
 @media (max-width: 600px) {
     .admin-form { align-items: stretch; }
-    .admin-form input[type="text"], .admin-form .btn { width: 100%; }
+    .admin-form input[type="text"], .admin-form textarea, .admin-form .btn { width: 100%; }
 }
 .stat { background: #1a1a1a; border-radius: 12px; padding: 1.5rem; }
 body.stats .stat.double{ grid-column: span 2; }

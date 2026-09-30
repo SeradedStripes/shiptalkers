@@ -19,7 +19,7 @@
         <div class="card">
             <form class="admin-form" action="/boards/blacklisted-users/add" method="post">
                 <input type="hidden" name="csrf" value="{{ csrf_token }}">
-                <input type="text" name="slack_user_id" placeholder="Slack user ID, e.g. U0123456789" required>
+                <textarea name="slack_user_ids" placeholder="Slack user IDs, one per line or comma-separated" rows="3" required></textarea>
                 <button type="submit" class="btn" name="blacklist_only" value="1">Blacklist user</button>
                 <button type="submit" class="btn" name="disable_consent" value="1">Blacklist + disable consent</button>
             </form>

@@ -325,15 +325,13 @@ pub(super) async fn add_blacklisted_channel(
     Form(params): Form<HashMap<String, String>>,
 ) -> Result<Redirect, StatusCode> {
     check_blacklist_form(&state, &headers, params.get("csrf").map(String::as_str)).await?;
-    let slack_id = params
-        .get("slack_channel_id")
-        .map(|id| id.trim())
-        .filter(|id| !id.is_empty())
-        .ok_or(StatusCode::BAD_REQUEST)?;
-    crate::db::postgres_db::blacklist_channel(state.pool()?, slack_id)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    record_audit(&state, &headers, "channel", slack_id, "blacklist", true).await?;
+    let ids = form_ids(&params, "slack_channel_ids", "slack_channel_id")?;
+    for slack_id in ids {
+        crate::db::postgres_db::blacklist_channel(state.pool()?, &slack_id)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        record_audit(&state, &headers, "channel", &slack_id, "blacklist", true).await?;
+    }
     Ok(Redirect::to("/boards/blacklisted-channels"))
 }
 
@@ -429,31 +427,52 @@ pub(super) async fn add_blacklisted_user(
     Form(params): Form<HashMap<String, String>>,
 ) -> Result<Redirect, StatusCode> {
     check_blacklist_form(&state, &headers, params.get("csrf").map(String::as_str)).await?;
-    let slack_id = params
-        .get("slack_user_id")
-        .map(|id| id.trim())
-        .filter(|id| !id.is_empty())
-        .ok_or(StatusCode::BAD_REQUEST)?;
+    let ids = form_ids(&params, "slack_user_ids", "slack_user_id")?;
     let disable_consent = params.contains_key("disable_consent");
-    state
-        .auth_db()?
-        .blacklist_slack_user(slack_id, disable_consent)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    record_audit(
-        &state,
-        &headers,
-        "user",
-        slack_id,
-        if disable_consent {
-            "blacklist_and_disable_consent"
-        } else {
-            "blacklist"
-        },
-        disable_consent,
-    )
-    .await?;
+    for slack_id in ids {
+        state
+            .auth_db()?
+            .blacklist_slack_user(&slack_id, disable_consent)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        record_audit(
+            &state,
+            &headers,
+            "user",
+            &slack_id,
+            if disable_consent {
+                "blacklist_and_disable_consent"
+            } else {
+                "blacklist"
+            },
+            disable_consent,
+        )
+        .await?;
+    }
     Ok(Redirect::to("/boards/blacklisted-users"))
+}
+
+fn form_ids(
+    params: &HashMap<String, String>,
+    bulk_key: &str,
+    single_key: &str,
+) -> Result<Vec<String>, StatusCode> {
+    let value = params
+        .get(bulk_key)
+        .or_else(|| params.get(single_key))
+        .map(String::as_str)
+        .unwrap_or_default();
+    let ids: Vec<String> = value
+        .split(|character: char| character == ',' || character.is_whitespace())
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(str::to_string)
+        .collect();
+    if ids.is_empty() {
+        Err(StatusCode::BAD_REQUEST)
+    } else {
+        Ok(ids)
+    }
 }
 
 pub(super) async fn remove_blacklisted_user(
