@@ -239,6 +239,8 @@ pub struct BlacklistedUsersTemplate {
 pub struct BlacklistedUserRow {
     pub slack_user_id: String,
     pub name: String,
+    pub blacklisted: bool,
+    pub consent_status: String,
 }
 
 pub struct BlacklistedChannelRow {

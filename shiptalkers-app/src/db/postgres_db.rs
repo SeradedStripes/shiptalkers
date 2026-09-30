@@ -275,11 +275,19 @@ impl AuthDb {
         .map_err(|e| e.to_string())
     }
 
-    pub async fn list_blacklisted_slack_users(&self) -> Result<Vec<(String, String)>, String> {
+    pub async fn list_blacklisted_slack_users(
+        &self,
+    ) -> Result<Vec<(String, String, String)>, String> {
         sqlx::query_as(
-            "SELECT b.slack_user_id, COALESCE(u.merged_name, '')
+            "SELECT b.slack_user_id, COALESCE(u.merged_name, ''),
+                    CASE
+                        WHEN c.slack_user_id IS NULL THEN 'None'
+                        WHEN c.revoked_at IS NULL THEN 'Active'
+                        ELSE 'Revoked'
+                    END
              FROM blacklisted_slack_users b
              LEFT JOIN users u ON u.user_id = b.slack_user_id
+             LEFT JOIN slack_user_consents c ON c.slack_user_id = b.slack_user_id
              ORDER BY b.slack_user_id",
         )
         .fetch_all(&self.pool)
@@ -287,7 +295,11 @@ impl AuthDb {
         .map_err(|e| e.to_string())
     }
 
-    pub async fn blacklist_slack_user(&self, slack_id: &str) -> Result<(), String> {
+    pub async fn blacklist_slack_user(
+        &self,
+        slack_id: &str,
+        disable_consent: bool,
+    ) -> Result<(), String> {
         sqlx::query(
             "INSERT INTO blacklisted_slack_users (slack_user_id) VALUES ($1)
              ON CONFLICT (slack_user_id) DO NOTHING",
@@ -296,7 +308,11 @@ impl AuthDb {
         .execute(&self.pool)
         .await
         .map_err(|e| e.to_string())?;
-        self.disable_slack_oauth_token_only(slack_id).await
+        self.disable_slack_oauth_token_only(slack_id).await?;
+        if disable_consent {
+            opt_out_slack_user(&self.pool, slack_id).await?;
+        }
+        Ok(())
     }
 
     pub async fn unblacklist_slack_user(&self, slack_id: &str) -> Result<(), String> {

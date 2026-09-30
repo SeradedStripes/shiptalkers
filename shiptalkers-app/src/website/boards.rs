@@ -12,6 +12,15 @@ use axum::response::{Html, Redirect};
 use std::collections::HashMap;
 use std::time::Instant;
 
+type LinkedBoardRecord = (
+    String,
+    bool,
+    Option<String>,
+    bool,
+    Option<String>,
+    Option<i64>,
+);
+
 pub(super) async fn get_boards(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -54,9 +63,9 @@ pub(super) async fn get_linked_boards(
     let total: i64 = super::sqlx::query_scalar(
         "SELECT count(*) FROM users u
          LEFT JOIN hackatime_connections h ON h.slack_id = u.user_id
-         LEFT JOIN slack_oauth_tokens s ON s.slack_id = u.user_id AND s.disabled_at IS NULL
-         WHERE (($1 = 'all' AND (h.access_token != '' OR s.slack_id IS NOT NULL))
-            OR ($1 = 'slack' AND s.slack_id IS NOT NULL)
+           LEFT JOIN slack_oauth_tokens s ON s.slack_id = u.user_id AND s.disabled_at IS NULL
+           WHERE (($1 = 'all' AND (h.access_token != '' OR s.slack_id IS NOT NULL))
+              OR ($1 = 'slack' AND s.slack_id IS NOT NULL)
             OR ($1 = 'hackatime' AND h.access_token != ''))
            AND (COALESCE(u.ship_talkers_id, u.user_id) ILIKE $2
                 OR u.user_id ILIKE $2 OR COALESCE(u.merged_name, '') ILIKE $2)",
@@ -70,20 +79,13 @@ pub(super) async fn get_linked_boards(
         .div_ceil(super::DIRECTORY_PAGE_SIZE as u64)
         .max(1);
     let page = requested_page.min(page_count);
-    let records: Vec<(
-        String,
-        bool,
-        Option<String>,
-        bool,
-        Option<String>,
-        Option<i64>,
-    )> = super::sqlx::query_as(
+    let records: Vec<LinkedBoardRecord> = super::sqlx::query_as(
         "SELECT COALESCE(u.ship_talkers_id, u.user_id),
                 COALESCE(h.access_token != '', false),
                 to_char(h.connected_at AT TIME ZONE 'UTC', 'YYYY-MM-DD'),
                 s.slack_id IS NOT NULL,
                 to_char(s.connected_at AT TIME ZONE 'UTC', 'YYYY-MM-DD'),
-                s.token_no
+                 s.token_no
          FROM users u
          LEFT JOIN hackatime_connections h ON h.slack_id = u.user_id
          LEFT JOIN (
@@ -91,14 +93,14 @@ pub(super) async fn get_linked_boards(
                     row_number() OVER (ORDER BY slack_id) - 1 AS token_no
              FROM slack_oauth_tokens
              WHERE disabled_at IS NULL
-         ) s ON s.slack_id = u.user_id
-         WHERE (($1 = 'all' AND (h.access_token != '' OR s.slack_id IS NOT NULL))
-            OR ($1 = 'slack' AND s.slack_id IS NOT NULL)
+          ) s ON s.slack_id = u.user_id
+           WHERE (($1 = 'all' AND (h.access_token != '' OR s.slack_id IS NOT NULL))
+              OR ($1 = 'slack' AND s.slack_id IS NOT NULL)
             OR ($1 = 'hackatime' AND h.access_token != ''))
          AND (COALESCE(u.ship_talkers_id, u.user_id) ILIKE $2
               OR u.user_id ILIKE $2 OR COALESCE(u.merged_name, '') ILIKE $2)
          GROUP BY COALESCE(u.ship_talkers_id, u.user_id), u.user_id,
-                  h.access_token, h.connected_at, s.slack_id, s.connected_at, s.token_no
+                    h.access_token, h.connected_at, s.slack_id, s.connected_at, s.token_no
          ORDER BY COALESCE(u.ship_talkers_id, u.user_id), u.user_id
          LIMIT $3 OFFSET $4",
     )
@@ -211,9 +213,11 @@ pub(super) async fn get_blacklisted_users(
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .into_iter()
-        .map(|(slack_user_id, name)| BlacklistedUserRow {
+        .map(|(slack_user_id, name, consent_status)| BlacklistedUserRow {
             slack_user_id,
             name,
+            blacklisted: true,
+            consent_status,
         })
         .collect();
     let csrf_token =
@@ -256,9 +260,10 @@ pub(super) async fn add_blacklisted_user(
         .map(|id| id.trim())
         .filter(|id| !id.is_empty())
         .ok_or(StatusCode::BAD_REQUEST)?;
+    let disable_consent = params.contains_key("disable_consent");
     state
         .auth_db()?
-        .blacklist_slack_user(slack_id)
+        .blacklist_slack_user(slack_id, disable_consent)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Redirect::to("/boards/blacklisted-users"))
