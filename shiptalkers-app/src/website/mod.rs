@@ -223,6 +223,10 @@ pub struct LinkedBoardsTemplate {
 #[template(path = "boards_blacklisted_channels.html")]
 pub struct BlacklistedChannelsTemplate {
     pub rows: Vec<BlacklistedChannelRow>,
+    pub has_previous: bool,
+    pub has_next: bool,
+    pub page: u64,
+    pub page_count: u64,
     pub signed_in: bool,
     pub page_load_ms: String,
 }
@@ -232,6 +236,10 @@ pub struct BlacklistedChannelsTemplate {
 pub struct BlacklistedUsersTemplate {
     pub rows: Vec<BlacklistedUserRow>,
     pub csrf_token: String,
+    pub has_previous: bool,
+    pub has_next: bool,
+    pub page: u64,
+    pub page_count: u64,
     pub signed_in: bool,
     pub page_load_ms: String,
 }

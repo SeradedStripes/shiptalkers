@@ -11,6 +11,11 @@
     <div class="container">
         <h1><span class="live"></span>Blacklisted OAuth Users</h1>
         <p>These Slack users cannot start or complete Slack OAuth. Existing OAuth tokens are disabled, while scraping and consent are preserved.</p>
+        <nav class="pagination" aria-label="Pagination">
+            {% if has_previous %}<a class="btn" href="/boards/blacklisted-users?page={{ page - 1 }}">Previous</a>{% else %}<span class="btn disabled">Previous</span>{% endif %}
+            <span>Page {{ page }} of {{ page_count }}</span>
+            {% if has_next %}<a class="btn" href="/boards/blacklisted-users?page={{ page + 1 }}">Next</a>{% else %}<span class="btn disabled">Next</span>{% endif %}
+        </nav>
         <div class="card">
             <form class="admin-form" action="/boards/blacklisted-users/add" method="post">
                 <input type="hidden" name="csrf" value="{{ csrf_token }}">
@@ -19,6 +24,11 @@
                 <button type="submit" class="btn" name="disable_consent" value="1">Blacklist + disable consent</button>
             </form>
         </div>
+        <nav class="pagination" aria-label="Pagination">
+            {% if has_previous %}<a class="btn" href="/boards/blacklisted-users?page={{ page - 1 }}">Previous</a>{% else %}<span class="btn disabled">Previous</span>{% endif %}
+            <span>Page {{ page }} of {{ page_count }}</span>
+            {% if has_next %}<a class="btn" href="/boards/blacklisted-users?page={{ page + 1 }}">Next</a>{% else %}<span class="btn disabled">Next</span>{% endif %}
+        </nav>
         <div class="table-card">
             <table>
                 <thead><tr><th>Slack User</th><th>Slack ID</th><th>Blacklisted</th><th>Consent Status</th><th></th></tr></thead>

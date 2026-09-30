@@ -277,6 +277,8 @@ impl AuthDb {
 
     pub async fn list_blacklisted_slack_users(
         &self,
+        limit: i64,
+        offset: i64,
     ) -> Result<Vec<(String, String, String)>, String> {
         sqlx::query_as(
             "SELECT b.slack_user_id, COALESCE(u.merged_name, ''),
@@ -288,11 +290,20 @@ impl AuthDb {
              FROM blacklisted_slack_users b
              LEFT JOIN users u ON u.user_id = b.slack_user_id
              LEFT JOIN slack_user_consents c ON c.slack_user_id = b.slack_user_id
-             ORDER BY b.slack_user_id",
+             ORDER BY b.slack_user_id LIMIT $1 OFFSET $2",
         )
+        .bind(limit)
+        .bind(offset)
         .fetch_all(&self.pool)
         .await
         .map_err(|e| e.to_string())
+    }
+
+    pub async fn count_blacklisted_slack_users(&self) -> Result<i64, String> {
+        sqlx::query_scalar("SELECT count(*) FROM blacklisted_slack_users")
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| e.to_string())
     }
 
     pub async fn blacklist_slack_user(

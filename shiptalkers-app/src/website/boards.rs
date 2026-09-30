@@ -165,16 +165,32 @@ pub(super) async fn get_linked_boards(
 pub(super) async fn get_blacklisted_channels(
     State(state): State<AppState>,
     headers: HeaderMap,
+    Query(params): Query<HashMap<String, String>>,
 ) -> Result<Html<String>, StatusCode> {
     if !super::shiptalkers_admin_signed_in(&state, &headers) {
         return Err(StatusCode::FORBIDDEN);
     }
     let started = Instant::now();
     let pool = state.pool()?;
+    let requested_page = params
+        .get("page")
+        .and_then(|page| page.parse::<u64>().ok())
+        .filter(|page| *page > 0)
+        .unwrap_or(1);
+    let total: i64 = super::sqlx::query_scalar("SELECT count(*) FROM blacklisted_channels")
+        .fetch_one(pool)
+        .await
+        .unwrap_or(0);
+    let page_count = (total.max(0) as u64)
+        .div_ceil(super::DIRECTORY_PAGE_SIZE as u64)
+        .max(1);
+    let page = requested_page.min(page_count);
     let rows: Vec<BlacklistedChannelRow> = super::sqlx::query_as::<_, (String, String, String)>(
         "SELECT ship_talkers_id, slack_channel_id, channel_name
-         FROM blacklisted_channels ORDER BY slack_channel_id",
+         FROM blacklisted_channels ORDER BY slack_channel_id LIMIT $1 OFFSET $2",
     )
+    .bind(super::DIRECTORY_PAGE_SIZE)
+    .bind((page - 1) as i64 * super::DIRECTORY_PAGE_SIZE)
     .fetch_all(pool)
     .await
     .unwrap_or_default()
@@ -189,6 +205,10 @@ pub(super) async fn get_blacklisted_channels(
     .collect();
     let template = BlacklistedChannelsTemplate {
         rows,
+        has_previous: page > 1,
+        has_next: page < page_count,
+        page,
+        page_count,
         signed_in: signed_in(&state, &headers),
         page_load_ms: format!("{}ms", started.elapsed().as_millis()),
     };
@@ -202,14 +222,32 @@ pub(super) async fn get_blacklisted_channels(
 pub(super) async fn get_blacklisted_users(
     State(state): State<AppState>,
     headers: HeaderMap,
+    Query(params): Query<HashMap<String, String>>,
 ) -> Result<Html<String>, StatusCode> {
     if !super::shiptalkers_admin_signed_in(&state, &headers) {
         return Err(StatusCode::FORBIDDEN);
     }
     let started = Instant::now();
+    let requested_page = params
+        .get("page")
+        .and_then(|page| page.parse::<u64>().ok())
+        .filter(|page| *page > 0)
+        .unwrap_or(1);
+    let total = state
+        .auth_db()?
+        .count_blacklisted_slack_users()
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let page_count = (total.max(0) as u64)
+        .div_ceil(super::DIRECTORY_PAGE_SIZE as u64)
+        .max(1);
+    let page = requested_page.min(page_count);
     let rows = state
         .auth_db()?
-        .list_blacklisted_slack_users()
+        .list_blacklisted_slack_users(
+            super::DIRECTORY_PAGE_SIZE,
+            (page - 1) as i64 * super::DIRECTORY_PAGE_SIZE,
+        )
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .into_iter()
@@ -225,6 +263,10 @@ pub(super) async fn get_blacklisted_users(
     let template = BlacklistedUsersTemplate {
         rows,
         csrf_token,
+        has_previous: page > 1,
+        has_next: page < page_count,
+        page,
+        page_count,
         signed_in: true,
         page_load_ms: format!("{}ms", started.elapsed().as_millis()),
     };
