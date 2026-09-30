@@ -141,8 +141,8 @@ p { color: #888; line-height: 1.6; margin-bottom: 1.5rem; }
 .board-directory th, .board-directory td { vertical-align: top; }
 .board-directory .search { width: 100%; }
 .board-directory .search input { min-width: 0; }
-.private-channels table th:nth-child(1), .private-channels table td:nth-child(1) { width: 4%; }
-.private-channels table th:nth-child(2), .private-channels table td:nth-child(2) { width: 31%; }
+.private-channels table th:nth-child(1), .private-channels table td:nth-child(1) { width: 8%; white-space: nowrap; }
+.private-channels table th:nth-child(2), .private-channels table td:nth-child(2) { width: 28%; }
 .private-channels table th:nth-child(3), .private-channels table td:nth-child(3) { width: 35%; }
 .private-channels table th:nth-child(4), .private-channels table td:nth-child(4) { width: 30%; }
 
