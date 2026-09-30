@@ -229,6 +229,62 @@ pub struct AuthDb {
 }
 
 impl AuthDb {
+    pub async fn is_admin_user(&self, slack_id: &str) -> Result<bool, String> {
+        sqlx::query_scalar::<_, i32>("SELECT 1 FROM admin_users WHERE slack_id = $1")
+            .bind(slack_id)
+            .fetch_optional(&self.pool)
+            .await
+            .map(|row| row.is_some())
+            .map_err(|e| e.to_string())
+    }
+
+    pub async fn list_admin_users(
+        &self,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<(String, String, String)>, String> {
+        sqlx::query_as(
+            "SELECT a.slack_id, COALESCE(u.username, ''), a.added_by
+             FROM admin_users a
+             LEFT JOIN users u ON u.user_id = a.slack_id
+             ORDER BY a.slack_id LIMIT $1 OFFSET $2",
+        )
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| e.to_string())
+    }
+
+    pub async fn count_admin_users(&self) -> Result<i64, String> {
+        sqlx::query_scalar("SELECT count(*) FROM admin_users")
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| e.to_string())
+    }
+
+    pub async fn add_admin_user(&self, slack_id: &str, added_by: &str) -> Result<(), String> {
+        sqlx::query(
+            "INSERT INTO admin_users (slack_id, added_by) VALUES ($1, $2)
+             ON CONFLICT (slack_id) DO UPDATE SET added_by = EXCLUDED.added_by",
+        )
+        .bind(slack_id)
+        .bind(added_by)
+        .execute(&self.pool)
+        .await
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+    }
+
+    pub async fn remove_admin_user(&self, slack_id: &str) -> Result<(), String> {
+        sqlx::query("DELETE FROM admin_users WHERE slack_id = $1")
+            .bind(slack_id)
+            .execute(&self.pool)
+            .await
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+
     pub fn new(pool: PgPool) -> Self {
         Self { pool }
     }

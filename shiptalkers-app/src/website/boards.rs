@@ -1,7 +1,7 @@
 use super::{
-    AppState, BlacklistedChannelRow, BlacklistedChannelsTemplate, BlacklistedUserRow,
-    BlacklistedUsersTemplate, BoardCategoryTemplate, BoardEntry, BoardsTemplate,
-    EXCLUDE_BOTS_DELETED_SCORE, EXCLUDE_BOTS_DELETED_SLACK_ID, LinkedBoardRow,
+    AdminUserRow, AdminUsersTemplate, AppState, BlacklistedChannelRow, BlacklistedChannelsTemplate,
+    BlacklistedUserRow, BlacklistedUsersTemplate, BoardCategoryTemplate, BoardEntry,
+    BoardsTemplate, EXCLUDE_BOTS_DELETED_SCORE, EXCLUDE_BOTS_DELETED_SLACK_ID, LinkedBoardRow,
     LinkedBoardsTemplate, PgPool, PrivateChannelRow, PrivateChannelToken, PrivateChannelsTemplate,
     RankedRow, State, StatusCode, fmt_duration, fmt_minutes, fmt_thousands, signed_in, sql_escape,
 };
@@ -28,7 +28,7 @@ pub(super) async fn get_boards(
     let started = Instant::now();
     let template = BoardsTemplate {
         signed_in: signed_in(&state, &headers),
-        is_admin: super::shiptalkers_admin_signed_in(&state, &headers),
+        is_admin: super::shiptalkers_admin_signed_in(&state, &headers).await,
         page_load_ms: format!("{}ms", started.elapsed().as_millis()),
     };
     let html = template
@@ -37,12 +37,109 @@ pub(super) async fn get_boards(
     Ok(Html(html))
 }
 
+pub(super) async fn get_admin_users(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<HashMap<String, String>>,
+) -> Result<Html<String>, StatusCode> {
+    if !super::shiptalkers_admin_signed_in(&state, &headers).await {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    let started = Instant::now();
+    let db = state.auth_db()?;
+    let requested_page = params
+        .get("page")
+        .and_then(|page| page.parse::<u64>().ok())
+        .filter(|page| *page > 0)
+        .unwrap_or(1);
+    let total = db
+        .count_admin_users()
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let page_count = (total.max(0) as u64)
+        .div_ceil(super::DIRECTORY_PAGE_SIZE as u64)
+        .max(1);
+    let page = requested_page.min(page_count);
+    let rows = db
+        .list_admin_users(
+            super::DIRECTORY_PAGE_SIZE,
+            (page - 1) as i64 * super::DIRECTORY_PAGE_SIZE,
+        )
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .into_iter()
+        .map(|(slack_id, username, added_by)| AdminUserRow {
+            username: if username.is_empty() {
+                "-".into()
+            } else {
+                username
+            },
+            slack_id,
+            added_by,
+        })
+        .collect();
+    let csrf_token =
+        super::auth::csrf_token_for(&headers, &state.settings.auth_config()).unwrap_or_default();
+    let template = AdminUsersTemplate {
+        rows,
+        csrf_token,
+        has_previous: page > 1,
+        has_next: page < page_count,
+        page,
+        page_count,
+        signed_in: true,
+        page_load_ms: format!("{}ms", started.elapsed().as_millis()),
+    };
+    Ok(Html(
+        template
+            .render()
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+    ))
+}
+
+pub(super) async fn add_admin_user(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Form(params): Form<HashMap<String, String>>,
+) -> Result<Redirect, StatusCode> {
+    check_blacklist_form(&state, &headers, params.get("csrf").map(String::as_str)).await?;
+    let slack_id = params
+        .get("slack_id")
+        .map(|id| id.trim())
+        .filter(|id| !id.is_empty())
+        .ok_or(StatusCode::BAD_REQUEST)?;
+    let added_by = super::auth::session_from_request(&headers, &state.settings.auth_config())
+        .ok_or(StatusCode::UNAUTHORIZED)?
+        .slack_id;
+    state
+        .auth_db()?
+        .add_admin_user(slack_id, &added_by)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Redirect::to("/boards/admin-users"))
+}
+
+pub(super) async fn remove_admin_user(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(slack_id): Path<String>,
+    Form(params): Form<HashMap<String, String>>,
+) -> Result<Redirect, StatusCode> {
+    check_blacklist_form(&state, &headers, params.get("csrf").map(String::as_str)).await?;
+    state
+        .auth_db()?
+        .remove_admin_user(&slack_id)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Redirect::to("/boards/admin-users"))
+}
+
 pub(super) async fn get_linked_boards(
     State(state): State<AppState>,
     headers: HeaderMap,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<Html<String>, StatusCode> {
-    if !super::shiptalkers_admin_signed_in(&state, &headers) {
+    if !super::shiptalkers_admin_signed_in(&state, &headers).await {
         return Err(StatusCode::FORBIDDEN);
     }
     let started = Instant::now();
@@ -167,7 +264,7 @@ pub(super) async fn get_blacklisted_channels(
     headers: HeaderMap,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<Html<String>, StatusCode> {
-    if !super::shiptalkers_admin_signed_in(&state, &headers) {
+    if !super::shiptalkers_admin_signed_in(&state, &headers).await {
         return Err(StatusCode::FORBIDDEN);
     }
     let started = Instant::now();
@@ -256,7 +353,7 @@ pub(super) async fn get_blacklisted_users(
     headers: HeaderMap,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<Html<String>, StatusCode> {
-    if !super::shiptalkers_admin_signed_in(&state, &headers) {
+    if !super::shiptalkers_admin_signed_in(&state, &headers).await {
         return Err(StatusCode::FORBIDDEN);
     }
     let started = Instant::now();
@@ -314,7 +411,7 @@ async fn check_blacklist_form(
     headers: &HeaderMap,
     csrf: Option<&str>,
 ) -> Result<(), StatusCode> {
-    if !super::shiptalkers_admin_signed_in(state, headers) {
+    if !super::shiptalkers_admin_signed_in(state, headers).await {
         return Err(StatusCode::FORBIDDEN);
     }
     if !super::auth::csrf_matches(headers, &state.settings.auth_config(), csrf) {
@@ -363,7 +460,7 @@ pub(super) async fn get_private_channels_board(
     headers: HeaderMap,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<Html<String>, StatusCode> {
-    if !super::shiptalkers_admin_signed_in(&state, &headers) {
+    if !super::shiptalkers_admin_signed_in(&state, &headers).await {
         return Err(StatusCode::FORBIDDEN);
     }
     let started = Instant::now();

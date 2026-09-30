@@ -32,7 +32,13 @@ pub async fn handle_message(
         return false;
     };
 
-    if !settings.is_shiptalkers_admin(sender) {
+    let database_admin =
+        crate::sqlx::query_scalar::<_, i32>("SELECT 1 FROM admin_users WHERE slack_id = $1")
+            .bind(sender)
+            .fetch_optional(pool)
+            .await
+            .is_ok_and(|row| row.is_some());
+    if !settings.is_shiptalkers_admin(sender) && !database_admin {
         if let Err(error) =
             post_thread_message(client, settings, channel, thread_ts, NOT_ADMIN).await
         {

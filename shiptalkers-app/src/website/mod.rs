@@ -258,6 +258,25 @@ pub struct BlacklistedChannelRow {
     pub channel_name: String,
 }
 
+#[derive(Template)]
+#[template(path = "boards_admin_users.html")]
+pub struct AdminUsersTemplate {
+    pub rows: Vec<AdminUserRow>,
+    pub csrf_token: String,
+    pub has_previous: bool,
+    pub has_next: bool,
+    pub page: u64,
+    pub page_count: u64,
+    pub signed_in: bool,
+    pub page_load_ms: String,
+}
+
+pub struct AdminUserRow {
+    pub username: String,
+    pub slack_id: String,
+    pub added_by: String,
+}
+
 pub struct LinkedBoardRow {
     pub rank: u64,
     pub shiptalkers_id: String,
@@ -464,6 +483,12 @@ pub fn router(
             "/boards/blacklisted-users/{slack_id}/remove",
             post(boards::remove_blacklisted_user),
         )
+        .route("/boards/admin-users", get(boards::get_admin_users))
+        .route("/boards/admin-users/add", post(boards::add_admin_user))
+        .route(
+            "/boards/admin-users/{slack_id}/remove",
+            post(boards::remove_admin_user),
+        )
         .route("/boards/users", get(users::get_users_board))
         .route("/boards/users/", get(users::get_users_board))
         .route("/boards/channels/", get(channels::get_channels_board))
@@ -548,9 +573,18 @@ fn signed_in(state: &AppState, headers: &HeaderMap) -> bool {
     auth::session_from_request(headers, &state.settings.auth_config()).is_some()
 }
 
-pub(super) fn shiptalkers_admin_signed_in(state: &AppState, headers: &HeaderMap) -> bool {
-    auth::session_from_request(headers, &state.settings.auth_config())
-        .is_some_and(|session| state.is_shiptalkers_admin(&session.slack_id))
+pub(super) async fn shiptalkers_admin_signed_in(state: &AppState, headers: &HeaderMap) -> bool {
+    let Some(session) = auth::session_from_request(headers, &state.settings.auth_config()) else {
+        return false;
+    };
+    if state.is_shiptalkers_admin(&session.slack_id) {
+        return true;
+    }
+    if let Some(db) = state.auth_db.as_ref() {
+        db.is_admin_user(&session.slack_id).await.unwrap_or(false)
+    } else {
+        false
+    }
 }
 
 pub fn fmt_thousands(n: u64) -> String {
