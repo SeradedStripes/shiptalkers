@@ -34,6 +34,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tracing::info!("Connecting to Postgres...");
         let pool = db::postgres_db::connect(&database_url).await?;
         db::postgres_db::migrate(&pool).await?;
+        if let Err(error) = db::postgres_db::lock_blacklisted_user_consents(&pool).await {
+            tracing::warn!(
+                "Failed to lock consents for previously blacklisted users: {}",
+                error
+            );
+        }
         if let Err(error) = db::postgres_db::sync_active_slack_oauth_consents(&pool).await {
             tracing::warn!("Failed to sync active Slack OAuth consents: {}", error);
         }

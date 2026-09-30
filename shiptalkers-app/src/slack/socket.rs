@@ -295,11 +295,13 @@ async fn serve_socket(
 
 const SEEN_TTL_SECS: i64 = 600;
 const SEEN_MAX: usize = 512;
-const CONSENT_NOTICE: &str = "You have been opted in by sending a message.\nIt can take up to an hour for your stats to be populated, check back soon";
+const CONSENT_NOTICE: &str = "You have been opted in by sending a message.\nIt can take up to an hour for your stats to be populated, check back soon. Once you opt out, you will be unable to opt in ever again.";
+const CONSENT_LOCKED: &str =
+    "You previously opted out of Ship Talkers, so you cannot opt in again.";
 const POPULATION_WAIT: &str =
     "It can take up to an hour since you opted in for your stats to be populated, please wait.";
 const RANGE_WAIT: &str = "The bot has not caught up to your coding and slack messages in that time range yet, please try again later";
-const OPT_OUT_CONFIRMATION: &str = "Are you sure you want to opt out? Respond \"yes\" to opt out";
+const OPT_OUT_CONFIRMATION: &str = "Are you sure you want to opt out? This permanently deletes your Ship Talkers data, and there is no going back: you will never be able to opt in again. Respond \"yes\" to confirm.";
 const OPT_OUT_SUCCESS: &str = "Opted out successfully";
 const OUTPUT_LINK: &str =
     "https://hackclub.enterprise.slack.com/archives/C07TCQ45NTS/p1790691255153049";
@@ -628,6 +630,16 @@ async fn handle_message(
         Ok(first) => first,
         Err(e) => {
             tracing::error!("Failed to record consent for Slack user {}: {}", sender, e);
+            if e.contains("opted out permanently")
+                && let Some(bot_token) = settings.get_list("SLACK_BOT_TOKENS").first().cloned()
+                && let Err(post_error) =
+                    post_message(client, &bot_token, &msg.channel, &msg.ts, CONSENT_LOCKED).await
+            {
+                tracing::error!(
+                    "Stats bot: failed to explain locked consent: {}",
+                    post_error
+                );
+            }
             return;
         }
     };
