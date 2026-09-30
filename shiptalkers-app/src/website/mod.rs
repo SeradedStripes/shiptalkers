@@ -223,6 +223,7 @@ pub struct LinkedBoardsTemplate {
 #[template(path = "boards_blacklisted_channels.html")]
 pub struct BlacklistedChannelsTemplate {
     pub rows: Vec<BlacklistedChannelRow>,
+    pub csrf_token: String,
     pub has_previous: bool,
     pub has_next: bool,
     pub page: u64,
@@ -442,6 +443,14 @@ pub fn router(
         .route(
             "/boards/blacklisted-channels",
             get(boards::get_blacklisted_channels),
+        )
+        .route(
+            "/boards/blacklisted-channels/add",
+            post(boards::add_blacklisted_channel),
+        )
+        .route(
+            "/boards/blacklisted-channels/{slack_id}/remove",
+            post(boards::remove_blacklisted_channel),
         )
         .route(
             "/boards/blacklisted-users",

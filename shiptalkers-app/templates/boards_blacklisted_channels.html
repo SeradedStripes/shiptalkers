@@ -10,6 +10,14 @@
     {% include "header.html" %}
     <div class="container">
         <h1><span class="live"></span>Blacklisted Channels</h1>
+        <div class="card">
+            <form class="admin-form" action="/boards/blacklisted-channels/add" method="post">
+                <input type="hidden" name="csrf" value="{{ csrf_token }}">
+                <input type="text" name="slack_channel_id" placeholder="Slack channel ID, e.g. C0123456789" required>
+                <button type="submit" class="btn">Blacklist channel</button>
+            </form>
+            <p class="status">Blacklisting removes stored messages and channel data.</p>
+        </div>
         <nav class="pagination" aria-label="Pagination">
             {% if has_previous %}<a class="btn" href="/boards/blacklisted-channels?page={{ page - 1 }}">Previous</a>{% else %}<span class="btn disabled">Previous</span>{% endif %}
             <span>Page {{ page }} of {{ page_count }}</span>
@@ -18,11 +26,21 @@
         <div class="table-card">
             <table>
                 <thead>
-                    <tr><th>Channel Name</th><th>Ship Talkers ID</th><th>Slack Channel ID</th></tr>
+                    <tr><th>Channel Name</th><th>Ship Talkers ID</th><th>Slack Channel ID</th><th></th></tr>
                 </thead>
                 <tbody>
                     {% for row in rows %}
-                    <tr><td>{{ row.channel_name }}</td><td>{{ row.ship_talkers_id }}</td><td>{{ row.slack_channel_id }}</td></tr>
+                    <tr>
+                        <td>{{ row.channel_name }}</td>
+                        <td>{{ row.ship_talkers_id }}</td>
+                        <td>{{ row.slack_channel_id }}</td>
+                        <td>
+                            <form class="inline-form" action="/boards/blacklisted-channels/{{ row.slack_channel_id }}/remove" method="post">
+                                <input type="hidden" name="csrf" value="{{ csrf_token }}">
+                                <button type="submit" class="btn">Remove blacklist</button>
+                            </form>
+                        </td>
+                    </tr>
                     {% endfor %}
                 </tbody>
             </table>

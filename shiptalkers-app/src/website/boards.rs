@@ -205,6 +205,8 @@ pub(super) async fn get_blacklisted_channels(
     .collect();
     let template = BlacklistedChannelsTemplate {
         rows,
+        csrf_token: super::auth::csrf_token_for(&headers, &state.settings.auth_config())
+            .unwrap_or_default(),
         has_previous: page > 1,
         has_next: page < page_count,
         page,
@@ -217,6 +219,36 @@ pub(super) async fn get_blacklisted_channels(
             .render()
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
     ))
+}
+
+pub(super) async fn add_blacklisted_channel(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Form(params): Form<HashMap<String, String>>,
+) -> Result<Redirect, StatusCode> {
+    check_blacklist_form(&state, &headers, params.get("csrf").map(String::as_str)).await?;
+    let slack_id = params
+        .get("slack_channel_id")
+        .map(|id| id.trim())
+        .filter(|id| !id.is_empty())
+        .ok_or(StatusCode::BAD_REQUEST)?;
+    crate::db::postgres_db::blacklist_channel(state.pool()?, slack_id)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Redirect::to("/boards/blacklisted-channels"))
+}
+
+pub(super) async fn remove_blacklisted_channel(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(slack_id): Path<String>,
+    Form(params): Form<HashMap<String, String>>,
+) -> Result<Redirect, StatusCode> {
+    check_blacklist_form(&state, &headers, params.get("csrf").map(String::as_str)).await?;
+    crate::db::postgres_db::unblacklist_channel(state.pool()?, &slack_id)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Redirect::to("/boards/blacklisted-channels"))
 }
 
 pub(super) async fn get_blacklisted_users(
