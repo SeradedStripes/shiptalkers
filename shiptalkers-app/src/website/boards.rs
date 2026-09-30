@@ -32,6 +32,9 @@ pub(super) async fn get_linked_boards(
     headers: HeaderMap,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<Html<String>, StatusCode> {
+    if !super::shiptalkers_admin_signed_in(&state, &headers) {
+        return Err(StatusCode::FORBIDDEN);
+    }
     let started = Instant::now();
     let pool = state.pool()?;
     let filter = match params.get("filter").map(String::as_str) {
@@ -160,6 +163,9 @@ pub(super) async fn get_blacklisted_channels(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Html<String>, StatusCode> {
+    if !super::shiptalkers_admin_signed_in(&state, &headers) {
+        return Err(StatusCode::FORBIDDEN);
+    }
     let started = Instant::now();
     let pool = state.pool()?;
     let rows: Vec<BlacklistedChannelRow> = super::sqlx::query_as::<_, (String, String, String)>(
