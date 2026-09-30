@@ -52,8 +52,10 @@ pub async fn handle_message(
         AdminCommand::Blacklist {
             channel_ids,
             silent,
-        } => blacklist_channels(pool, &channel_ids, silent).await,
-        AdminCommand::Whitelist(channel_ids) => whitelist_channels(pool, &channel_ids).await,
+        } => blacklist_channels(pool, &channel_ids, silent, sender).await,
+        AdminCommand::Whitelist(channel_ids) => {
+            whitelist_channels(pool, &channel_ids, sender).await
+        }
     };
 
     let message = match response {
@@ -133,6 +135,7 @@ async fn blacklist_channels(
     pool: &crate::sqlx::PgPool,
     channel_ids: &[String],
     silent: bool,
+    actor: &str,
 ) -> Result<String, String> {
     let mut responses = Vec::with_capacity(channel_ids.len());
     for channel_id in channel_ids {
@@ -140,6 +143,8 @@ async fn blacklist_channels(
         postgres_db::blacklist_channel(pool, channel_id)
             .await
             .map_err(|error| format!("Command failed for {channel_id}: {error}"))?;
+        postgres_db::record_admin_audit_log(pool, "channel", channel_id, "blacklist", actor, true)
+            .await?;
         responses.push(format!(
             "Blacklisted channel: {} - {channel_id}",
             if silent {
@@ -168,6 +173,7 @@ fn blur_channel_name(name: &str) -> String {
 async fn whitelist_channels(
     pool: &crate::sqlx::PgPool,
     channel_ids: &[String],
+    actor: &str,
 ) -> Result<String, String> {
     let mut responses = Vec::with_capacity(channel_ids.len());
     for channel_id in channel_ids {
@@ -175,6 +181,15 @@ async fn whitelist_channels(
         postgres_db::unblacklist_channel(pool, channel_id)
             .await
             .map_err(|error| format!("Command failed for {channel_id}: {error}"))?;
+        postgres_db::record_admin_audit_log(
+            pool,
+            "channel",
+            channel_id,
+            "unblacklist",
+            actor,
+            false,
+        )
+        .await?;
         responses.push(format!(
             "Whitelisted channel: {channel_name} - {channel_id}"
         ));

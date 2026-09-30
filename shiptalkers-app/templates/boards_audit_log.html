@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Audit Log - Ship Talkers</title>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body class="boards">
+    {% include "header.html" %}
+    <div class="container">
+        <h1><span class="live"></span>Audit Log</h1>
+        <nav class="pagination" aria-label="Pagination">
+            {% if has_previous %}<a class="btn" href="/boards/audit-log?page={{ page - 1 }}">Previous</a>{% else %}<span class="btn disabled">Previous</span>{% endif %}
+            <span>Page {{ page }} of {{ page_count }}</span>
+            {% if has_next %}<a class="btn" href="/boards/audit-log?page={{ page + 1 }}">Next</a>{% else %}<span class="btn disabled">Next</span>{% endif %}
+        </nav>
+        <div class="table-card">
+            <table>
+                <thead><tr><th>Target Type</th><th>Target ID</th><th>Action</th><th>Actor</th><th>Data Deleted</th><th>Created</th></tr></thead>
+                <tbody>
+                    {% for row in rows %}
+                    <tr>
+                        <td>{{ row.target_type }}</td>
+                        <td>{{ row.target_id }}</td>
+                        <td>{{ row.action }}</td>
+                        <td>{{ row.actor_slack_id }}</td>
+                        <td>{% if row.data_deleted %}Yes{% else %}No{% endif %}</td>
+                        <td>{{ row.created_at }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        <nav class="pagination" aria-label="Pagination">
+            {% if has_previous %}<a class="btn" href="/boards/audit-log?page={{ page - 1 }}">Previous</a>{% else %}<span class="btn disabled">Previous</span>{% endif %}
+            <span>Page {{ page }} of {{ page_count }}</span>
+            {% if has_next %}<a class="btn" href="/boards/audit-log?page={{ page + 1 }}">Next</a>{% else %}<span class="btn disabled">Next</span>{% endif %}
+        </nav>
+    </div>
+    {% include "footer.html" %}
+</body>
+</html>

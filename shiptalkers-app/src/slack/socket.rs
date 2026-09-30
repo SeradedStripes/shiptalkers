@@ -582,6 +582,18 @@ async fn handle_message(
         match postgres_db::opt_out_slack_user(pool, &sender).await {
             Ok(true) => {
                 tracing::info!("Slack user {} opted out", sender);
+                if let Err(e) = postgres_db::record_admin_audit_log(
+                    pool,
+                    "user",
+                    &sender,
+                    "disable_consent",
+                    &sender,
+                    true,
+                )
+                .await
+                {
+                    tracing::warn!("Failed to record opt-out audit log for {}: {}", sender, e);
+                }
                 if let Some(bot_token) = settings.get_list("SLACK_BOT_TOKENS").first().cloned()
                     && let Some(thread_ts) = &msg.thread_ts
                     && let Err(e) =

@@ -1,7 +1,8 @@
 use super::{
-    AdminUserRow, AdminUsersTemplate, AppState, BlacklistedChannelRow, BlacklistedChannelsTemplate,
-    BlacklistedUserRow, BlacklistedUsersTemplate, BoardCategoryTemplate, BoardEntry,
-    BoardsTemplate, EXCLUDE_BOTS_DELETED_SCORE, EXCLUDE_BOTS_DELETED_SLACK_ID, LinkedBoardRow,
+    AdminUserRow, AdminUsersTemplate, AppState, AuditLogRow, AuditLogTemplate,
+    BlacklistedChannelRow, BlacklistedChannelsTemplate, BlacklistedUserRow,
+    BlacklistedUsersTemplate, BoardCategoryTemplate, BoardEntry, BoardsTemplate,
+    EXCLUDE_BOTS_DELETED_SCORE, EXCLUDE_BOTS_DELETED_SLACK_ID, LinkedBoardRow,
     LinkedBoardsTemplate, PgPool, PrivateChannelRow, PrivateChannelToken, PrivateChannelsTemplate,
     RankedRow, State, StatusCode, fmt_duration, fmt_minutes, fmt_thousands, signed_in, sql_escape,
 };
@@ -332,6 +333,7 @@ pub(super) async fn add_blacklisted_channel(
     crate::db::postgres_db::blacklist_channel(state.pool()?, slack_id)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    record_audit(&state, &headers, "channel", slack_id, "blacklist", true).await?;
     Ok(Redirect::to("/boards/blacklisted-channels"))
 }
 
@@ -345,6 +347,7 @@ pub(super) async fn remove_blacklisted_channel(
     crate::db::postgres_db::unblacklist_channel(state.pool()?, &slack_id)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    record_audit(&state, &headers, "channel", &slack_id, "unblacklist", false).await?;
     Ok(Redirect::to("/boards/blacklisted-channels"))
 }
 
@@ -437,6 +440,19 @@ pub(super) async fn add_blacklisted_user(
         .blacklist_slack_user(slack_id, disable_consent)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    record_audit(
+        &state,
+        &headers,
+        "user",
+        slack_id,
+        if disable_consent {
+            "blacklist_and_disable_consent"
+        } else {
+            "blacklist"
+        },
+        disable_consent,
+    )
+    .await?;
     Ok(Redirect::to("/boards/blacklisted-users"))
 }
 
@@ -452,7 +468,96 @@ pub(super) async fn remove_blacklisted_user(
         .unblacklist_slack_user(&slack_id)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    record_audit(&state, &headers, "user", &slack_id, "unblacklist", false).await?;
     Ok(Redirect::to("/boards/blacklisted-users"))
+}
+
+async fn record_audit(
+    state: &AppState,
+    headers: &HeaderMap,
+    target_type: &str,
+    target_id: &str,
+    action: &str,
+    data_deleted: bool,
+) -> Result<(), StatusCode> {
+    let actor = super::auth::session_from_request(headers, &state.settings.auth_config())
+        .ok_or(StatusCode::UNAUTHORIZED)?
+        .slack_id;
+    crate::db::postgres_db::record_admin_audit_log(
+        state.pool()?,
+        target_type,
+        target_id,
+        action,
+        &actor,
+        data_deleted,
+    )
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+}
+
+pub(super) async fn get_audit_log(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<HashMap<String, String>>,
+) -> Result<Html<String>, StatusCode> {
+    if !super::shiptalkers_admin_signed_in(&state, &headers).await {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    let started = Instant::now();
+    let pool = state.pool()?;
+    let requested_page = params
+        .get("page")
+        .and_then(|page| page.parse::<u64>().ok())
+        .filter(|page| *page > 0)
+        .unwrap_or(1);
+    let total: i64 = super::sqlx::query_scalar("SELECT count(*) FROM admin_audit_log")
+        .fetch_one(pool)
+        .await
+        .unwrap_or(0);
+    let page_count = (total.max(0) as u64)
+        .div_ceil(super::DIRECTORY_PAGE_SIZE as u64)
+        .max(1);
+    let page = requested_page.min(page_count);
+    let records: Vec<(String, String, String, String, bool, String)> = super::sqlx::query_as(
+        "SELECT target_type, target_id, action, actor_slack_id, data_deleted,
+                to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
+         FROM admin_audit_log
+         ORDER BY created_at DESC, id DESC LIMIT $1 OFFSET $2",
+    )
+    .bind(super::DIRECTORY_PAGE_SIZE)
+    .bind((page - 1) as i64 * super::DIRECTORY_PAGE_SIZE)
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
+    let rows = records
+        .into_iter()
+        .map(
+            |(target_type, target_id, action, actor_slack_id, data_deleted, created_at)| {
+                AuditLogRow {
+                    target_type,
+                    target_id,
+                    action,
+                    actor_slack_id,
+                    data_deleted,
+                    created_at,
+                }
+            },
+        )
+        .collect();
+    let template = AuditLogTemplate {
+        rows,
+        has_previous: page > 1,
+        has_next: page < page_count,
+        page,
+        page_count,
+        signed_in: true,
+        page_load_ms: format!("{}ms", started.elapsed().as_millis()),
+    };
+    Ok(Html(
+        template
+            .render()
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+    ))
 }
 
 pub(super) async fn get_private_channels_board(

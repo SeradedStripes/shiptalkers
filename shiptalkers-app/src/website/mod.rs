@@ -277,6 +277,27 @@ pub struct AdminUserRow {
     pub added_by: String,
 }
 
+#[derive(Template)]
+#[template(path = "boards_audit_log.html")]
+pub struct AuditLogTemplate {
+    pub rows: Vec<AuditLogRow>,
+    pub has_previous: bool,
+    pub has_next: bool,
+    pub page: u64,
+    pub page_count: u64,
+    pub signed_in: bool,
+    pub page_load_ms: String,
+}
+
+pub struct AuditLogRow {
+    pub target_type: String,
+    pub target_id: String,
+    pub action: String,
+    pub actor_slack_id: String,
+    pub data_deleted: bool,
+    pub created_at: String,
+}
+
 pub struct LinkedBoardRow {
     pub rank: u64,
     pub shiptalkers_id: String,
@@ -489,6 +510,7 @@ pub fn router(
             "/boards/admin-users/{slack_id}/remove",
             post(boards::remove_admin_user),
         )
+        .route("/boards/audit-log", get(boards::get_audit_log))
         .route("/boards/users", get(users::get_users_board))
         .route("/boards/users/", get(users::get_users_board))
         .route("/boards/channels/", get(channels::get_channels_board))

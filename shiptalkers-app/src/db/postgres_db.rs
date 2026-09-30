@@ -14,6 +14,30 @@ pub use ship_talkers_lib::db::{
     unblacklist_channel, upsert_users,
 };
 
+pub async fn record_admin_audit_log(
+    pool: &PgPool,
+    target_type: &str,
+    target_id: &str,
+    action: &str,
+    actor_slack_id: &str,
+    data_deleted: bool,
+) -> Result<(), String> {
+    sqlx::query(
+        "INSERT INTO admin_audit_log
+             (target_type, target_id, action, actor_slack_id, data_deleted)
+         VALUES ($1, $2, $3, $4, $5)",
+    )
+    .bind(target_type)
+    .bind(target_id)
+    .bind(action)
+    .bind(actor_slack_id)
+    .bind(data_deleted)
+    .execute(pool)
+    .await
+    .map(|_| ())
+    .map_err(|e| e.to_string())
+}
+
 pub async fn insert_new_channels(
     pool: &PgPool,
     channels: &[SlackChannelRow],
