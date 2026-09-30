@@ -141,6 +141,10 @@ p { color: #888; line-height: 1.6; margin-bottom: 1.5rem; }
 .board-directory th, .board-directory td { vertical-align: top; }
 .board-directory .search { width: 100%; }
 .board-directory .search input { min-width: 0; }
+.private-channels table th:nth-child(1), .private-channels table td:nth-child(1) { width: 4%; }
+.private-channels table th:nth-child(2), .private-channels table td:nth-child(2) { width: 31%; }
+.private-channels table th:nth-child(3), .private-channels table td:nth-child(3) { width: 35%; }
+.private-channels table th:nth-child(4), .private-channels table td:nth-child(4) { width: 30%; }
 
 .card { background: #1a1a1a; border-radius: 12px; padding: 1.5rem; margin-bottom: 1rem; }
 .card h2 { font-size: 1.25rem; margin-bottom: 0.5rem; }

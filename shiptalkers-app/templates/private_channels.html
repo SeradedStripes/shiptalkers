@@ -7,7 +7,7 @@
     <title>Private Channels - Ship Talkers</title>
     <link rel="stylesheet" href="/style.css">
 </head>
-<body class="boards board-directory">
+<body class="boards board-directory private-channels">
     {% include "header.html" %}
     <div class="container">
         <a href="/boards" class="back-link">Back to all boards</a>
@@ -42,7 +42,12 @@
                     <tr><td colspan="4" class="empty">No private channels found</td></tr>
                 {% else %}
                     {% for row in rows %}
-                    <tr><td>{{ row.rank }}</td><td>{{ row.name }}</td><td>{{ row.channel_id }}</td><td>{{ row.token_ids }}</td></tr>
+                    <tr>
+                        <td>{{ row.rank }}</td>
+                        <td><a href="/stats/{{ row.channel_url_id }}">{{ row.name }}</a></td>
+                        <td><a href="/stats/{{ row.channel_url_id }}">{{ row.channel_id }}</a></td>
+                        <td>{% for token in row.tokens %}{% if !loop.first %},{% endif %}<a href="/stats/{{ token.user_url_id }}">{{ token.token_id }}</a>{% endfor %}</td>
+                    </tr>
                     {% endfor %}
                 {% endif %}
                 </tbody>

@@ -348,8 +348,14 @@ pub struct PrivateChannelsTemplate {
 pub struct PrivateChannelRow {
     pub rank: u64,
     pub name: String,
+    pub channel_url_id: String,
     pub channel_id: String,
-    pub token_ids: String,
+    pub tokens: Vec<PrivateChannelToken>,
+}
+
+pub struct PrivateChannelToken {
+    pub token_id: String,
+    pub user_url_id: String,
 }
 
 pub struct BoardEntry {

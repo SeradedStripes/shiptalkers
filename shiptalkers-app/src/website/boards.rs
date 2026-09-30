@@ -1,8 +1,9 @@
 use super::{
     AppState, BlacklistedChannelRow, BlacklistedChannelsTemplate, BoardCategoryTemplate,
     BoardEntry, BoardsTemplate, EXCLUDE_BOTS_DELETED_SCORE, EXCLUDE_BOTS_DELETED_SLACK_ID,
-    LinkedBoardRow, LinkedBoardsTemplate, PgPool, PrivateChannelRow, PrivateChannelsTemplate,
-    RankedRow, State, StatusCode, fmt_duration, fmt_minutes, fmt_thousands, signed_in, sql_escape,
+    LinkedBoardRow, LinkedBoardsTemplate, PgPool, PrivateChannelRow, PrivateChannelToken,
+    PrivateChannelsTemplate, RankedRow, State, StatusCode, fmt_duration, fmt_minutes,
+    fmt_thousands, signed_in, sql_escape,
 };
 use askama::Template;
 use axum::extract::{Path, Query};
@@ -257,23 +258,27 @@ pub(super) async fn get_private_channels_board(
         .div_ceil(super::DIRECTORY_PAGE_SIZE as u64)
         .max(1);
     let page = requested_page.min(page_count);
-    let records: Vec<(String, String, String)> = super::sqlx::query_as(
+    let records: Vec<(String, String, String, Vec<String>)> = super::sqlx::query_as(
         "WITH token_numbers AS (
              SELECT slack_id, row_number() OVER (ORDER BY slack_id) - 1 AS token_no
              FROM slack_oauth_tokens WHERE disabled_at IS NULL
          )
-         SELECT c.name, c.channel_id,
-                COALESCE(string_agg(t.token_no::text, ',' ORDER BY t.token_no), '')
+         SELECT c.name, COALESCE(c.ship_talkers_id, c.channel_id), c.channel_id,
+                COALESCE(array_agg(
+                    t.token_no::text || ':' || COALESCE(u.ship_talkers_id, u.user_id)
+                    ORDER BY t.token_no
+                ) FILTER (WHERE t.slack_id IS NOT NULL), ARRAY[]::text[])
          FROM slack_channels c
          LEFT JOIN slack_oauth_channel_access a ON a.channel_id = c.channel_id
          LEFT JOIN token_numbers t ON t.slack_id = a.slack_id
+         LEFT JOIN users u ON u.user_id = t.slack_id
          WHERE c.is_private = 1 AND (c.name ILIKE $1 OR c.channel_id ILIKE $1)
            AND ($2 = '' OR EXISTS (
                SELECT 1 FROM slack_oauth_channel_access a2
                JOIN token_numbers t2 ON t2.slack_id = a2.slack_id
                WHERE a2.channel_id = c.channel_id AND t2.slack_id = $2
            ))
-         GROUP BY c.name, c.channel_id
+          GROUP BY c.name, c.ship_talkers_id, c.channel_id
          ORDER BY c.name, c.channel_id
           LIMIT $3 OFFSET $4",
     )
@@ -287,12 +292,24 @@ pub(super) async fn get_private_channels_board(
     let rows = records
         .into_iter()
         .enumerate()
-        .map(|(index, (name, channel_id, token_ids))| PrivateChannelRow {
-            rank: (page - 1) * super::DIRECTORY_PAGE_SIZE as u64 + index as u64 + 1,
-            name,
-            channel_id,
-            token_ids,
-        })
+        .map(
+            |(index, (name, channel_url_id, channel_id, token_ids))| PrivateChannelRow {
+                rank: (page - 1) * super::DIRECTORY_PAGE_SIZE as u64 + index as u64 + 1,
+                name,
+                channel_url_id,
+                channel_id,
+                tokens: token_ids
+                    .into_iter()
+                    .filter_map(|token| {
+                        let (token_id, user_url_id) = token.split_once(':')?;
+                        Some(PrivateChannelToken {
+                            token_id: token_id.to_string(),
+                            user_url_id: user_url_id.to_string(),
+                        })
+                    })
+                    .collect(),
+            },
+        )
         .collect();
     let template = PrivateChannelsTemplate {
         rows,
