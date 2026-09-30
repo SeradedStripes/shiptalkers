@@ -315,8 +315,15 @@ pub async fn auth_slack_login(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, StatusCode> {
-    if session_from_request(&headers, &auth_config(&state)).is_none() {
-        return Err(StatusCode::UNAUTHORIZED);
+    let session =
+        session_from_request(&headers, &auth_config(&state)).ok_or(StatusCode::UNAUTHORIZED)?;
+    if state
+        .auth_db()?
+        .is_slack_oauth_blacklisted(&session.slack_id)
+        .await
+        .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?
+    {
+        return Err(StatusCode::FORBIDDEN);
     }
     let state_val = auth::random_state();
     let location = auth::slack_authorize_url(&auth_config(&state), &state_val);
@@ -351,6 +358,14 @@ pub async fn auth_slack_callback(
     }
     let session =
         session_from_request(&headers, &auth_config(&state)).ok_or(StatusCode::UNAUTHORIZED)?;
+    if state
+        .auth_db()?
+        .is_slack_oauth_blacklisted(&session.slack_id)
+        .await
+        .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?
+    {
+        return Err(StatusCode::FORBIDDEN);
+    }
     let token = auth::exchange_slack_code(&state.http, &auth_config(&state), &code)
         .await
         .map_err(|e| {

@@ -264,6 +264,62 @@ impl AuthDb {
         .is_ok_and(|row| row.is_some())
     }
 
+    pub async fn is_slack_oauth_blacklisted(&self, slack_id: &str) -> Result<bool, String> {
+        sqlx::query_scalar::<_, i32>(
+            "SELECT 1 FROM blacklisted_slack_users WHERE slack_user_id = $1",
+        )
+        .bind(slack_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map(|row| row.is_some())
+        .map_err(|e| e.to_string())
+    }
+
+    pub async fn list_blacklisted_slack_users(&self) -> Result<Vec<(String, String)>, String> {
+        sqlx::query_as(
+            "SELECT b.slack_user_id, COALESCE(u.merged_name, '')
+             FROM blacklisted_slack_users b
+             LEFT JOIN users u ON u.user_id = b.slack_user_id
+             ORDER BY b.slack_user_id",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| e.to_string())
+    }
+
+    pub async fn blacklist_slack_user(&self, slack_id: &str) -> Result<(), String> {
+        sqlx::query(
+            "INSERT INTO blacklisted_slack_users (slack_user_id) VALUES ($1)
+             ON CONFLICT (slack_user_id) DO NOTHING",
+        )
+        .bind(slack_id)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| e.to_string())?;
+        self.disable_slack_oauth_token_only(slack_id).await
+    }
+
+    pub async fn unblacklist_slack_user(&self, slack_id: &str) -> Result<(), String> {
+        sqlx::query("DELETE FROM blacklisted_slack_users WHERE slack_user_id = $1")
+            .bind(slack_id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    async fn disable_slack_oauth_token_only(&self, slack_id: &str) -> Result<(), String> {
+        sqlx::query(
+            "UPDATE slack_oauth_tokens SET disabled_at = now(), updated_at = now()
+             WHERE slack_id = $1",
+        )
+        .bind(slack_id)
+        .execute(&self.pool)
+        .await
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+    }
+
     pub async fn upsert_slack_oauth_token(
         &self,
         slack_id: &str,

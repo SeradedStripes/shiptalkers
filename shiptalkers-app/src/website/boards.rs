@@ -1,14 +1,14 @@
 use super::{
-    AppState, BlacklistedChannelRow, BlacklistedChannelsTemplate, BoardCategoryTemplate,
-    BoardEntry, BoardsTemplate, EXCLUDE_BOTS_DELETED_SCORE, EXCLUDE_BOTS_DELETED_SLACK_ID,
-    LinkedBoardRow, LinkedBoardsTemplate, PgPool, PrivateChannelRow, PrivateChannelToken,
-    PrivateChannelsTemplate, RankedRow, State, StatusCode, fmt_duration, fmt_minutes,
-    fmt_thousands, signed_in, sql_escape,
+    AppState, BlacklistedChannelRow, BlacklistedChannelsTemplate, BlacklistedUserRow,
+    BlacklistedUsersTemplate, BoardCategoryTemplate, BoardEntry, BoardsTemplate,
+    EXCLUDE_BOTS_DELETED_SCORE, EXCLUDE_BOTS_DELETED_SLACK_ID, LinkedBoardRow,
+    LinkedBoardsTemplate, PgPool, PrivateChannelRow, PrivateChannelToken, PrivateChannelsTemplate,
+    RankedRow, State, StatusCode, fmt_duration, fmt_minutes, fmt_thousands, signed_in, sql_escape,
 };
 use askama::Template;
-use axum::extract::{Path, Query};
+use axum::extract::{Form, Path, Query};
 use axum::http::HeaderMap;
-use axum::response::Html;
+use axum::response::{Html, Redirect};
 use std::collections::HashMap;
 use std::time::Instant;
 
@@ -195,6 +195,88 @@ pub(super) async fn get_blacklisted_channels(
             .render()
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
     ))
+}
+
+pub(super) async fn get_blacklisted_users(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Html<String>, StatusCode> {
+    if !super::shiptalkers_admin_signed_in(&state, &headers) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    let started = Instant::now();
+    let rows = state
+        .auth_db()?
+        .list_blacklisted_slack_users()
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .into_iter()
+        .map(|(slack_user_id, name)| BlacklistedUserRow {
+            slack_user_id,
+            name,
+        })
+        .collect();
+    let csrf_token =
+        super::auth::csrf_token_for(&headers, &state.settings.auth_config()).unwrap_or_default();
+    let template = BlacklistedUsersTemplate {
+        rows,
+        csrf_token,
+        signed_in: true,
+        page_load_ms: format!("{}ms", started.elapsed().as_millis()),
+    };
+    Ok(Html(
+        template
+            .render()
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+    ))
+}
+
+async fn check_blacklist_form(
+    state: &AppState,
+    headers: &HeaderMap,
+    csrf: Option<&str>,
+) -> Result<(), StatusCode> {
+    if !super::shiptalkers_admin_signed_in(state, headers) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    if !super::auth::csrf_matches(headers, &state.settings.auth_config(), csrf) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    Ok(())
+}
+
+pub(super) async fn add_blacklisted_user(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Form(params): Form<HashMap<String, String>>,
+) -> Result<Redirect, StatusCode> {
+    check_blacklist_form(&state, &headers, params.get("csrf").map(String::as_str)).await?;
+    let slack_id = params
+        .get("slack_user_id")
+        .map(|id| id.trim())
+        .filter(|id| !id.is_empty())
+        .ok_or(StatusCode::BAD_REQUEST)?;
+    state
+        .auth_db()?
+        .blacklist_slack_user(slack_id)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Redirect::to("/boards/blacklisted-users"))
+}
+
+pub(super) async fn remove_blacklisted_user(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(slack_id): Path<String>,
+    Form(params): Form<HashMap<String, String>>,
+) -> Result<Redirect, StatusCode> {
+    check_blacklist_form(&state, &headers, params.get("csrf").map(String::as_str)).await?;
+    state
+        .auth_db()?
+        .unblacklist_slack_user(&slack_id)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Redirect::to("/boards/blacklisted-users"))
 }
 
 pub(super) async fn get_private_channels_board(

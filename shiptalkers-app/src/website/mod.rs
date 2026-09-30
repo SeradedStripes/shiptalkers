@@ -227,6 +227,20 @@ pub struct BlacklistedChannelsTemplate {
     pub page_load_ms: String,
 }
 
+#[derive(Template)]
+#[template(path = "boards_blacklisted_users.html")]
+pub struct BlacklistedUsersTemplate {
+    pub rows: Vec<BlacklistedUserRow>,
+    pub csrf_token: String,
+    pub signed_in: bool,
+    pub page_load_ms: String,
+}
+
+pub struct BlacklistedUserRow {
+    pub slack_user_id: String,
+    pub name: String,
+}
+
 pub struct BlacklistedChannelRow {
     pub ship_talkers_id: String,
     pub slack_channel_id: String,
@@ -418,6 +432,18 @@ pub fn router(
         .route(
             "/boards/blacklisted-channels",
             get(boards::get_blacklisted_channels),
+        )
+        .route(
+            "/boards/blacklisted-users",
+            get(boards::get_blacklisted_users),
+        )
+        .route(
+            "/boards/blacklisted-users/add",
+            post(boards::add_blacklisted_user),
+        )
+        .route(
+            "/boards/blacklisted-users/{slack_id}/remove",
+            post(boards::remove_blacklisted_user),
         )
         .route("/boards/users", get(users::get_users_board))
         .route("/boards/users/", get(users::get_users_board))
