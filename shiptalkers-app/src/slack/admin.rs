@@ -6,7 +6,7 @@ use crate::settings::RuntimeSettings;
 
 const HELP: &str = r#"Available commands:
 ======================
-blacklist <channel_id>
+blacklist <channel_id> [--silent]
 whitelist <channel_id>
 ----------------------
 Multiple IDs may be comma-separated: blacklist C123, C456
@@ -43,7 +43,10 @@ pub async fn handle_message(
 
     let response = match command {
         AdminCommand::Help => Ok(HELP.to_string()),
-        AdminCommand::Blacklist(channel_ids) => blacklist_channels(pool, &channel_ids).await,
+        AdminCommand::Blacklist {
+            channel_ids,
+            silent,
+        } => blacklist_channels(pool, &channel_ids, silent).await,
         AdminCommand::Whitelist(channel_ids) => whitelist_channels(pool, &channel_ids).await,
     };
 
@@ -62,7 +65,10 @@ pub async fn handle_message(
 
 enum AdminCommand {
     Help,
-    Blacklist(Vec<String>),
+    Blacklist {
+        channel_ids: Vec<String>,
+        silent: bool,
+    },
     Whitelist(Vec<String>),
 }
 
@@ -75,8 +81,11 @@ fn parse_command(text: &str) -> Option<AdminCommand> {
     match tokens.next()?.to_ascii_lowercase().as_str() {
         "help" => Some(AdminCommand::Help),
         "blacklist" => {
-            let ids = channel_ids(tokens);
-            (!ids.is_empty()).then_some(AdminCommand::Blacklist(ids))
+            let (ids, silent) = channel_ids_and_silent(tokens);
+            (!ids.is_empty()).then_some(AdminCommand::Blacklist {
+                channel_ids: ids,
+                silent,
+            })
         }
         "whitelist" => {
             let ids = channel_ids(tokens);
@@ -95,9 +104,29 @@ fn channel_ids<'a>(tokens: impl Iterator<Item = &'a str>) -> Vec<String> {
         .collect()
 }
 
+fn channel_ids_and_silent<'a>(tokens: impl Iterator<Item = &'a str>) -> (Vec<String>, bool) {
+    let mut silent = false;
+    let ids = tokens
+        .filter(|token| {
+            if *token == "--silent" {
+                silent = true;
+                false
+            } else {
+                true
+            }
+        })
+        .flat_map(|token| token.split(','))
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+        .map(str::to_string)
+        .collect();
+    (ids, silent)
+}
+
 async fn blacklist_channels(
     pool: &crate::sqlx::PgPool,
     channel_ids: &[String],
+    silent: bool,
 ) -> Result<String, String> {
     let mut responses = Vec::with_capacity(channel_ids.len());
     for channel_id in channel_ids {
@@ -106,10 +135,28 @@ async fn blacklist_channels(
             .await
             .map_err(|error| format!("Command failed for {channel_id}: {error}"))?;
         responses.push(format!(
-            "Blacklisted channel: {channel_name} - {channel_id}"
+            "Blacklisted channel: {} - {channel_id}",
+            if silent {
+                blur_channel_name(&channel_name)
+            } else {
+                channel_name
+            }
         ));
     }
     Ok(responses.join("\n"))
+}
+
+fn blur_channel_name(name: &str) -> String {
+    name.split('-')
+        .map(|part| {
+            let chars: Vec<char> = part.chars().collect();
+            match chars.len() {
+                0..=2 => part.to_string(),
+                len => format!("{}{}{}", chars[0], "*".repeat(len - 2), chars[len - 1]),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("-")
 }
 
 async fn whitelist_channels(
