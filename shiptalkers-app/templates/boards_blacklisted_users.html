@@ -12,7 +12,7 @@
         <h1><span class="live"></span>Blacklisted OAuth Users</h1>
         <p>These Slack users cannot start or complete Slack OAuth. Existing OAuth tokens are disabled, while scraping and consent are preserved.</p>
         <div class="card">
-            <form action="/boards/blacklisted-users/add" method="post">
+            <form class="admin-form" action="/boards/blacklisted-users/add" method="post">
                 <input type="hidden" name="csrf" value="{{ csrf_token }}">
                 <input type="text" name="slack_user_id" placeholder="Slack user ID, e.g. U0123456789" required>
                 <button type="submit" class="btn" name="blacklist_only" value="1">Blacklist user</button>
@@ -30,7 +30,7 @@
                         <td>{% if row.blacklisted %}Yes{% else %}No{% endif %}</td>
                         <td>{{ row.consent_status }}</td>
                         <td>
-                            <form action="/boards/blacklisted-users/{{ row.slack_user_id }}/remove" method="post">
+                            <form class="inline-form" action="/boards/blacklisted-users/{{ row.slack_user_id }}/remove" method="post">
                                 <input type="hidden" name="csrf" value="{{ csrf_token }}">
                                 <button type="submit" class="btn">Remove blacklist</button>
                             </form>
