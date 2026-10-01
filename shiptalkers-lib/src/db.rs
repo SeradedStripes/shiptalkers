@@ -88,7 +88,6 @@ pub async fn blacklist_channel(
         "thread_checkpoints",
         "scrape_checkpoints",
         "scraped_channels",
-        "slack_oauth_channel_access",
     ] {
         let query = format!("DELETE FROM {table} WHERE channel_id = $1");
         sqlx::query(sqlx::AssertSqlSafe(query.as_str()))
@@ -178,6 +177,10 @@ pub async fn insert_new_channels_rows(
     pool: &PgPool,
     channels: &[SlackChannelRow],
 ) -> Result<u64, Box<dyn std::error::Error>> {
+    let channels: Vec<&SlackChannelRow> = channels
+        .iter()
+        .filter(|channel| channel.is_private == 0)
+        .collect();
     if channels.is_empty() {
         return Ok(0);
     }

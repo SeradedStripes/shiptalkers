@@ -10,7 +10,7 @@
     {% include "header.html" %}
     <div class="container">
         <h1>Link Accounts</h1>
-        <p>Connect your Slack and Hackatime accounts to start tracking.</p>
+        <p>Connect your Hackatime account to start tracking.</p>
 
         <div class="card">
             <h2>Hack Club</h2>
@@ -19,21 +19,6 @@
             {% else %}
             <p class="status">Not signed in</p>
             <a href="/auth/hackclub/login" class="btn" style="margin-top: 1rem;">Sign in with Hack Club</a>
-            {% endif %}
-        </div>
-
-        <div class="card">
-            <h2>Slack scraping</h2>
-            {% if slack_connected %}
-            <p class="status connected">Connected. Public channels and private channels you belong to can be scraped.</p>
-            <a href="/auth/slack/disconnect" class="btn" style="margin-top: 1rem;">Disconnect</a>
-            {% else %}
-            <p class="status">Not connected</p>
-            {% if signed_in %}
-            <a href="/auth/slack/login" class="btn" style="margin-top: 1rem;">Connect Slack</a>
-            {% else %}
-            <p class="status">Sign in first to connect Slack.</p>
-            {% endif %}
             {% endif %}
         </div>
 

@@ -20,6 +20,7 @@ const EXCLUDE_BOTS_DELETED_SCORE: &str = "user_id NOT IN (SELECT user_id FROM us
 
 pub mod api;
 pub mod auth;
+#[allow(dead_code)]
 mod boards;
 mod channels;
 mod main_page;
@@ -394,6 +395,20 @@ pub struct BoardCategoryTemplate {
     pub page_load_ms: String,
 }
 
+pub struct BoardEntry {
+    pub user_id: String,
+    pub url_id: String,
+    pub merged_name: String,
+    pub pfp: String,
+    pub value: String,
+    pub extra: String,
+    pub linked: bool,
+    pub rank: u64,
+    pub label: String,
+    pub highlight: bool,
+    pub status: String,
+}
+
 #[derive(Template)]
 #[template(path = "private_channels.html")]
 pub struct PrivateChannelsTemplate {
@@ -421,20 +436,6 @@ pub struct PrivateChannelRow {
 pub struct PrivateChannelToken {
     pub token_id: String,
     pub user_url_id: String,
-}
-
-pub struct BoardEntry {
-    pub user_id: String,
-    pub url_id: String,
-    pub merged_name: String,
-    pub pfp: String,
-    pub value: String,
-    pub extra: String,
-    pub linked: bool,
-    pub rank: u64,
-    pub label: String,
-    pub highlight: bool,
-    pub status: String,
 }
 
 pub struct SearchResult {
@@ -475,42 +476,6 @@ pub fn router(
         .route("/stats", get(stats::get_stats_page))
         .route("/stats/{id}", get(stats::get_stats_for_id))
         .route("/boards", get(boards::get_boards))
-        .route("/boards/linked", get(boards::get_linked_boards))
-        .route(
-            "/boards/private-channels",
-            get(boards::get_private_channels_board),
-        )
-        .route(
-            "/boards/blacklisted-channels",
-            get(boards::get_blacklisted_channels),
-        )
-        .route(
-            "/boards/blacklisted-channels/add",
-            post(boards::add_blacklisted_channel),
-        )
-        .route(
-            "/boards/blacklisted-channels/{slack_id}/remove",
-            post(boards::remove_blacklisted_channel),
-        )
-        .route(
-            "/boards/blacklisted-users",
-            get(boards::get_blacklisted_users),
-        )
-        .route(
-            "/boards/blacklisted-users/add",
-            post(boards::add_blacklisted_user),
-        )
-        .route(
-            "/boards/blacklisted-users/{slack_id}/remove",
-            post(boards::remove_blacklisted_user),
-        )
-        .route("/boards/admin-users", get(boards::get_admin_users))
-        .route("/boards/admin-users/add", post(boards::add_admin_user))
-        .route(
-            "/boards/admin-users/{slack_id}/remove",
-            post(boards::remove_admin_user),
-        )
-        .route("/boards/audit-log", get(boards::get_audit_log))
         .route("/boards/users", get(users::get_users_board))
         .route("/boards/users/", get(users::get_users_board))
         .route("/boards/channels/", get(channels::get_channels_board))
@@ -549,9 +514,6 @@ pub fn router(
         .route("/pfp/{id}", get(main_page::get_pfp))
         .route("/auth/hackclub/login", get(auth::auth_hackclub_login))
         .route("/auth/hackclub/callback", get(auth::auth_hackclub_callback))
-        .route("/auth/slack/login", get(auth::auth_slack_login))
-        .route("/auth/slack/callback", get(auth::auth_slack_callback))
-        .route("/auth/slack/disconnect", get(auth::auth_slack_disconnect))
         .route("/auth/hackatime/login", get(auth::auth_hackatime_login))
         .route(
             "/auth/hackatime/callback",
