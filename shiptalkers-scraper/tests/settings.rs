@@ -21,6 +21,7 @@ fn unset_keys_get_defaults() {
     assert_eq!(s.get("SLACK_USER_SYNC_DELAY_MS"), "3000");
     assert_eq!(s.get("DATABASE_URL"), "");
     assert_eq!(s.get("SLACK_BOT_TOKENS"), "");
+    assert_eq!(s.get("SLACK_USER_TOKENS"), "");
 }
 
 #[test]

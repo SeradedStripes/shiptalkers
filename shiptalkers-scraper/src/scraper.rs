@@ -252,12 +252,16 @@ pub async fn run_scraper(
         let request_delay = Duration::from_millis(settings.get_u64("SLACK_REQUEST_DELAY_MS"));
         let max_inflight = settings.get_u64("SLACK_MAX_INFLIGHT") as usize;
         let bot_tokens = settings.get_list("SLACK_BOT_TOKENS");
+        let mut scrape_tokens = bot_tokens.clone();
+        scrape_tokens.extend(settings.get_list("SLACK_USER_TOKENS"));
+        scrape_tokens.sort();
+        scrape_tokens.dedup();
         let list_pool =
-            slack::SlackClientPool::new(bot_tokens.clone(), request_delay, max_inflight);
+            slack::SlackClientPool::new(scrape_tokens.clone(), request_delay, max_inflight);
         // List and message passes have separate rate budgets, so run them in parallel
         let (list_result, _) = tokio::join!(
             full_fetch(&list_pool, &pool),
-            scrape_all_messages(&settings, &pool, bot_tokens)
+            scrape_all_messages(&settings, &pool, scrape_tokens)
         );
         if let Err(e) = list_result {
             tracing::warn!("Failed to fetch channel list: {}", e);

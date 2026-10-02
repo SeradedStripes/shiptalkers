@@ -6,6 +6,7 @@ pub const SETTING_KEYS: &[&str] = &[
     "HEALTH_PORT",
     "MAX_SCRAPING_PER_MIN",
     "SLACK_BOT_TOKENS",
+    "SLACK_USER_TOKENS",
     "SLACK_CHANNEL_CONCURRENCY",
     "SLACK_INCREMENTAL_BUDGET_SECS",
     "SLACK_MAX_INFLIGHT",
@@ -33,7 +34,7 @@ fn default_value(key: &str) -> &str {
 /// Keys that hold comma-separated lists. These also accept numbered variants
 /// (`SLACK_BOT_TOKENS_1`, `SLACK_BOT_TOKENS_2`, ...) so long tokens can be
 /// added as short separate lines instead of one giant line.
-const LIST_KEYS: &[&str] = &["SLACK_BOT_TOKENS"];
+const LIST_KEYS: &[&str] = &["SLACK_BOT_TOKENS", "SLACK_USER_TOKENS"];
 const MAX_LIST_VARIANTS: u32 = 64;
 
 /// Settings read from environment variables at startup, with defaults for keys
