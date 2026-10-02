@@ -252,8 +252,12 @@ pub async fn run_scraper(
         let request_delay = Duration::from_millis(settings.get_u64("SLACK_REQUEST_DELAY_MS"));
         let max_inflight = settings.get_u64("SLACK_MAX_INFLIGHT") as usize;
         let bot_tokens = settings.get_list("SLACK_BOT_TOKENS");
-        let mut scrape_tokens = bot_tokens.clone();
-        scrape_tokens.extend(settings.get_list("SLACK_USER_TOKENS"));
+        let user_tokens = settings.get_list("SLACK_USER_TOKENS");
+        let mut scrape_tokens = if user_tokens.is_empty() {
+            bot_tokens.clone()
+        } else {
+            user_tokens
+        };
         scrape_tokens.sort();
         scrape_tokens.dedup();
         let list_pool =
