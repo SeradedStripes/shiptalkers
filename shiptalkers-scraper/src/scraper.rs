@@ -304,6 +304,10 @@ async fn scrape_all_messages(
     scrape_messages(settings, pool, false, user_tokens).await;
 }
 
+/// Channel IDs never scraped, regardless of DONT_SCRAPE. Append here to
+/// permanently skip a channel without touching deployment config.
+const HARDCODED_DONT_SCRAPE: &[&str] = &["C0BUYMBQHT9"];
+
 async fn scrape_messages(
     settings: &settings::RuntimeSettings,
     pool: &sqlx::PgPool,
@@ -314,8 +318,9 @@ async fn scrape_messages(
         .get_or_init(|| tokio::sync::Mutex::new(()))
         .lock()
         .await;
-    let dont_scrape: std::collections::HashSet<String> =
+    let mut dont_scrape: std::collections::HashSet<String> =
         settings.get_list("DONT_SCRAPE").into_iter().collect();
+    dont_scrape.extend(HARDCODED_DONT_SCRAPE.iter().map(|s| s.to_string()));
     let channels: Vec<String> = match db::postgres_db::get_known_channel_ids(pool).await {
         Ok(c) => c,
         Err(e) => {
