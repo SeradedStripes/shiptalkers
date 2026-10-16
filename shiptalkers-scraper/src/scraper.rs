@@ -314,13 +314,24 @@ async fn scrape_messages(
         .get_or_init(|| tokio::sync::Mutex::new(()))
         .lock()
         .await;
-    let channels = match db::postgres_db::get_known_channel_ids(pool).await {
+    let dont_scrape: std::collections::HashSet<String> =
+        settings.get_list("DONT_SCRAPE").into_iter().collect();
+    let channels: Vec<String> = match db::postgres_db::get_known_channel_ids(pool).await {
         Ok(c) => c,
         Err(e) => {
             tracing::error!("Failed to get channel IDs: {}", e);
             return;
         }
-    };
+    }
+    .into_iter()
+    .filter(|c| !dont_scrape.contains(c))
+    .collect();
+    if !dont_scrape.is_empty() {
+        tracing::info!(
+            "Excluding {} channel(s) from DONT_SCRAPE",
+            dont_scrape.len()
+        );
+    }
     if let Err(e) = db::postgres_db::backfill_scraped_channels(pool).await {
         tracing::warn!("Failed to backfill scraped channels: {}", e);
     }

@@ -14,6 +14,7 @@ pub const SETTING_KEYS: &[&str] = &[
     "SLACK_THREAD_RESCAN_HOURS",
     "SLACK_THREAD_RESCAN_INTERVAL_HOURS",
     "SLACK_USER_SYNC_DELAY_MS",
+    "DONT_SCRAPE",
 ];
 
 fn default_value(key: &str) -> &str {
