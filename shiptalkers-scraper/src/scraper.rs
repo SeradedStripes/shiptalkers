@@ -251,15 +251,7 @@ pub async fn run_scraper(
         let cycle_start = std::time::Instant::now();
         let request_delay = Duration::from_millis(settings.get_u64("SLACK_REQUEST_DELAY_MS"));
         let max_inflight = settings.get_u64("SLACK_MAX_INFLIGHT") as usize;
-        let bot_tokens = settings.get_list("SLACK_BOT_TOKENS");
-        let user_tokens = settings.get_list("SLACK_USER_TOKENS");
-        let mut scrape_tokens = if user_tokens.is_empty() {
-            bot_tokens.clone()
-        } else {
-            user_tokens
-        };
-        scrape_tokens.sort();
-        scrape_tokens.dedup();
+        let scrape_tokens = scrape_tokens(&settings);
         let list_pool =
             slack::SlackClientPool::new(scrape_tokens.clone(), request_delay, max_inflight);
         // List and message passes have separate rate budgets, so run them in parallel
@@ -293,7 +285,25 @@ pub async fn scrape_incremental_messages(
     settings: &settings::RuntimeSettings,
     pool: &sqlx::PgPool,
 ) {
-    let _ = (settings, pool);
+    let tokens = scrape_tokens(settings);
+    if tokens.is_empty() {
+        return;
+    }
+    scrape_messages(settings, pool, true, tokens).await;
+}
+
+/// User tokens win when set; bot tokens are the fallback.
+fn scrape_tokens(settings: &settings::RuntimeSettings) -> Vec<String> {
+    let bot_tokens = settings.get_list("SLACK_BOT_TOKENS");
+    let user_tokens = settings.get_list("SLACK_USER_TOKENS");
+    let mut tokens = if user_tokens.is_empty() {
+        bot_tokens
+    } else {
+        user_tokens
+    };
+    tokens.sort();
+    tokens.dedup();
+    tokens
 }
 
 async fn scrape_all_messages(
