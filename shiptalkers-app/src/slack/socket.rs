@@ -301,6 +301,7 @@ const CONSENT_LOCKED: &str =
 const POPULATION_WAIT: &str =
     "It can take up to an hour since you opted in for your stats to be populated, please wait.";
 const RANGE_WAIT: &str = "The bot has not caught up to your coding and slack messages in that time range yet, please try again later";
+const HACKATIME_LINK_PROMPT: &str = "No Hackatime coding time found for this range. If you haven't linked your Hackatime account yet, you may need to do that here:";
 const OPT_OUT_CONFIRMATION: &str = "Are you sure you want to opt out? This permanently deletes your Ship Talkers data, and there is no going back: you will never be able to opt in again. Respond \"yes\" to confirm.";
 const OPT_OUT_SUCCESS: &str = "Opted out successfully";
 const OUTPUT_LINK: &str =
@@ -751,6 +752,14 @@ async fn handle_message(
     .await
     {
         tracing::error!("Stats bot: failed to upload stats image: {}", e);
+    }
+
+    if coding_seconds == 0 {
+        let link_url = format!("{}/link", base_url.trim_end_matches('/'));
+        let notice = format!("{HACKATIME_LINK_PROMPT} <{link_url}|Link Hackatime>");
+        if let Err(e) = post_message(client, &bot_token, &msg.channel, &msg.ts, &notice).await {
+            tracing::error!("Stats bot: failed to post Hackatime link prompt: {}", e);
+        }
     }
 }
 
