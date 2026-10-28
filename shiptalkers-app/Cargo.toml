@@ -23,8 +23,8 @@ axum = "0.8"
 askama = "0.16"
 tokio-tungstenite = { version = "0.30", features = ["rustls-tls-native-roots"] }
 futures-util = "0.3"
-resvg = { version = "0.48", default-features = false, features = ["text"] }
-usvg = { version = "0.48", default-features = false, features = ["text"] }
+resvg = { version = "0.49", default-features = false, features = ["text"] }
+usvg = { version = "0.49", default-features = false, features = ["text"] }
 mimalloc = "0.1"
 ttf-parser = "0.25"
 
