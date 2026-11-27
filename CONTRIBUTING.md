@@ -16,6 +16,5 @@ Easy as that :thumbs-up:
 
 ## Expected Environment
 
-- Docker compose installed
 - Rust installed (developed on 1.89)
 - justfile installed
