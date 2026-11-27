@@ -135,6 +135,7 @@ pub async fn opt_in_slack_user(
 
 pub async fn opt_out_slack_user(pool: &PgPool, slack_user_id: &str) -> Result<bool, String> {
     let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
+    let ship_talkers_id = ship_talkers_lib::base36::encode(slack_user_id.as_bytes());
     sqlx::query(
         "INSERT INTO slack_user_consents
              (slack_user_id, ship_talkers_id, consent_source, oauth_active)
@@ -142,7 +143,7 @@ pub async fn opt_out_slack_user(pool: &PgPool, slack_user_id: &str) -> Result<bo
          ON CONFLICT (slack_user_id) DO NOTHING",
     )
     .bind(slack_user_id)
-    .bind(ship_talkers_lib::base36::encode(slack_user_id.as_bytes()))
+    .bind(&ship_talkers_id)
     .execute(&mut *tx)
     .await
     .map_err(|e| e.to_string())?;
@@ -166,23 +167,23 @@ pub async fn opt_out_slack_user(pool: &PgPool, slack_user_id: &str) -> Result<bo
              JOIN slack_channels c ON c.internal_id = m.channel_id
              WHERE r.channel_id = c.channel_id
                AND r.message_ts = m.message_ts
-               AND i.anonymous_id = $1",
+               AND i.ship_talkers_id = $1",
         )
-        .bind(slack_user_id)
+        .bind(&ship_talkers_id)
         .execute(&mut *tx)
         .await
         .map_err(|e| e.to_string())?;
         sqlx::query(
             "DELETE FROM slack_messages m
              USING slack_identities i
-             WHERE i.internal_id = m.identity_id AND i.anonymous_id = $1",
+             WHERE i.internal_id = m.identity_id AND i.ship_talkers_id = $1",
         )
-        .bind(slack_user_id)
+        .bind(&ship_talkers_id)
         .execute(&mut *tx)
         .await
         .map_err(|e| e.to_string())?;
-        sqlx::query("DELETE FROM slack_identities WHERE anonymous_id = $1")
-            .bind(slack_user_id)
+        sqlx::query("DELETE FROM slack_identities WHERE ship_talkers_id = $1")
+            .bind(&ship_talkers_id)
             .execute(&mut *tx)
             .await
             .map_err(|e| e.to_string())?;
